@@ -131,6 +131,7 @@ struct TemplatesView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
+        .centeredContent()
     }
 
     private var searchField: some View {
@@ -173,6 +174,7 @@ struct TemplatesView: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .padding(.bottom, 220)
+            .centeredContent()
         }
         .refreshable { await model.loadTemplates() }
     }
@@ -462,8 +464,10 @@ struct TemplatesView: View {
                     .foregroundStyle(AG.fg2)
             }
         }
+        .centeredContent(AG.Width.action)
         .padding(.horizontal, 16)
         .padding(.bottom, 76)
+        .frame(maxWidth: .infinity)
         .background(
             LinearGradient(colors: [AG.bg2.opacity(0), AG.bg2.opacity(0.98), AG.bg2],
                            startPoint: .top, endPoint: .bottom)

@@ -70,6 +70,7 @@ struct ResultsView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 4)
                     .padding(.bottom, 280)
+                    .centeredContent(AG.Width.wide)
                 }
             }
             .background(AG.bg2)
@@ -112,6 +113,7 @@ struct ResultsView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 44)
+        .centeredContent(AG.Width.wide)
     }
 
     private func shareText(_ result: GradingResult) -> String {
@@ -264,6 +266,7 @@ private struct BreakdownSheet: View {
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 8)
+            .centeredContent()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -281,6 +284,7 @@ private struct BreakdownSheet: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
                 .padding(.bottom, 90)
+                .centeredContent()
             }
         }
         .frame(maxHeight: expanded ? 470 : 225)

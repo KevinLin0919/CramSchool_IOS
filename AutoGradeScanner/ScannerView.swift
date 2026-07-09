@@ -124,7 +124,9 @@ struct ScannerView: View {
 
     @ViewBuilder
     private func overlayContent(in geo: GeometryProxy) -> some View {
-        let frameWidth = min(geo.size.width - 100, 300)
+        // Scale the guide frame with the screen so it stays generous on
+        // iPad instead of being pinned to a phone-sized 300pt box.
+        let frameWidth = min(geo.size.width - 80, geo.size.height * 0.5, 460)
         let frameHeight = frameWidth * 400 / 290
 
         VStack(spacing: 0) {
@@ -177,12 +179,14 @@ struct ScannerView: View {
                              total: answers.count,
                              onViewResults: { model.screen = .results },
                              onRescan: rescan)
+                    .centeredContent(AG.Width.card)
                     .padding(.horizontal, 12)
                     .padding(.bottom, geo.safeAreaInsets.bottom + 16)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
 
             case .failed(let message):
                 failedCard(message)
+                    .centeredContent(AG.Width.card)
                     .padding(.horizontal, 12)
                     .padding(.bottom, geo.safeAreaInsets.bottom + 16)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
