@@ -44,6 +44,18 @@ enum AG {
     static let warn = Color(hex: 0xFF9500)
     static let warnBg = Color(hex: 0xFFF4D6)
 
+    // Readable content widths for the universal (iPhone + iPad) layout.
+    // On iPhone the screen is narrower than these caps, so the modifier
+    // below is a no-op; on iPad it constrains content and centers it
+    // instead of letting everything stretch edge to edge.
+    enum Width {
+        static let content: CGFloat = 640   // lists, forms, headers, cards
+        static let wide: CGFloat = 720      // results image column
+        static let action: CGFloat = 440    // primary action buttons
+        static let card: CGFloat = 520      // floating scanner cards
+        static let tabBar: CGFloat = 480    // custom tab bar cluster
+    }
+
     // subject accent colors (SUBJECT_TINT in templates.jsx)
     static func subjectTint(_ subject: String) -> Color {
         switch subject {
@@ -57,5 +69,15 @@ enum AG {
         case "社會", "公民": return Color(hex: 0x9333EA)
         default: return fg2
         }
+    }
+}
+
+extension View {
+    // Cap content to a readable width and center it. No-op on iPhone
+    // (content is already narrower than the cap); on iPad it keeps the
+    // content in a centered column instead of stretching full width.
+    func centeredContent(_ maxWidth: CGFloat = AG.Width.content) -> some View {
+        frame(maxWidth: maxWidth)
+            .frame(maxWidth: .infinity, alignment: .center)
     }
 }

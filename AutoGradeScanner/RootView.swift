@@ -37,7 +37,7 @@ private struct TabBarView: View {
             tabButton(screen: .results, icon: "chart.bar", label: "結果",
                       disabled: !model.hasResults)
         }
-        .frame(maxWidth: .infinity)
+        .centeredContent(AG.Width.tabBar)
         .padding(.horizontal, 8)
         .padding(.top, 8)
         .padding(.bottom, 4)
