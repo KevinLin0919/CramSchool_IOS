@@ -41,6 +41,20 @@
 - 年級／科目分組是從 `exam_name` 解析（如「高一數學段考一」→ 高一 / 數學），
   無法解析的歸到「其他」。建模板時名稱包含年級科目即可正確分組。
 
+## 裝置端 XFeat(Core ML)
+
+App 內建 [XFeat](https://github.com/verlab/accelerated_features)(CVPR 2024)特徵匹配模型
+(`XFeat.mlmodel`,fp16 約 1.3MB,由 accelerated_features repo 的 `export_coreml.py` 匯出,
+輸入 832×608 灰階,在裝置上離線推論,不需伺服器):
+
+- `XFeatEngine.swift` — 載入模型、灰階前處理、NMS / top-k / 64 維描述子取樣
+- `XFeatMatcher.swift` — mutual-nearest-neighbor 餘弦匹配(Accelerate)、RANSAC homography、
+  `XFeatAligner.alignmentHomography(template:scan:)` 高階 API
+
+用途:把學生考卷照片對位到模板的標準卷影像,直接投影模板題框
+(homography 以 0–1 正規化座標表示,模板 800×600 canvas 座標除以 `WebCanvas` 尺寸即可投影),
+不再依賴 YOLO 偵測框的順序。
+
 ## 專案結構
 
 ```
@@ -58,5 +72,8 @@ AutoGradeScanner/
 ├── ScannerView.swift           畫面二：掃描批改
 ├── ResultsView.swift           畫面三：批改結果
 ├── NewTemplateView.swift       新增模板流程
-└── SettingsView.swift          伺服器位址設定
+├── SettingsView.swift          伺服器位址設定
+├── XFeat.mlmodel               裝置端 XFeat 特徵模型(Core ML)
+├── XFeatEngine.swift           XFeat 推論＋特徵點/描述子後處理
+└── XFeatMatcher.swift          特徵匹配＋RANSAC homography 對位
 ```
