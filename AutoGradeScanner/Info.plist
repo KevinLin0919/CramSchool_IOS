@@ -11,5 +11,7 @@
 	<string>需要使用相機掃描學生考卷，進行即時辨識與批改。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>需要存取相簿以選取考卷照片進行批改。</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>需要儲存對位測試結果圖到相簿。</string>
 </dict>
 </plist>
