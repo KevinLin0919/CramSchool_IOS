@@ -2,7 +2,7 @@ name: iOS starter workflow
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "coreml-xfeat" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:

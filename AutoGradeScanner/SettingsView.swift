@@ -85,6 +85,14 @@ struct SettingsView: View {
                 } footer: {
                     Text("手機需與伺服器位於同一網路（或可透過 VPN 連線）才能使用批改功能。")
                 }
+
+                Section {
+                    NavigationLink("XFeat 對位測試") { XFeatDebugView() }
+                } header: {
+                    Text("開發者工具")
+                } footer: {
+                    Text("驗證裝置端 XFeat 特徵對位：把模板題框投影到考卷照片、產生半透明疊圖。")
+                }
             }
             .navigationTitle("伺服器設定")
             .navigationBarTitleDisplayMode(.inline)
