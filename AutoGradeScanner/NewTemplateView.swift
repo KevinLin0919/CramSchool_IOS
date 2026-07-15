@@ -275,9 +275,9 @@ struct NewTemplateView: View {
     }
 }
 
-// MARK: - UIKit camera picker (for photographing the master sheet)
+// MARK: - UIKit camera picker (master sheet photos; also used by XFeatDebugView)
 
-private struct CameraPicker: UIViewControllerRepresentable {
+struct CameraPicker: UIViewControllerRepresentable {
     var onImage: (UIImage) -> Void
     @Environment(\.dismiss) private var dismiss
 
