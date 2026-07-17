@@ -14,11 +14,19 @@ import UIKit
 enum DemoSelfTest {
     static func runIfRequested() {
         #if DEBUG
-        guard let scanPath = ProcessInfo.processInfo.environment["DEMO_SELFTEST_SCAN"] else { return }
-        Task { @MainActor in
-            await run(scanPath: scanPath)
-            fflush(stdout)
-            exit(0)
+        let env = ProcessInfo.processInfo.environment
+        if let livePaths = env["DEMO_SELFTEST_LIVE"] {
+            Task { @MainActor in
+                await runLive(paths: livePaths.split(separator: ",").map(String.init))
+                fflush(stdout)
+                exit(0)
+            }
+        } else if let scanPath = env["DEMO_SELFTEST_SCAN"] {
+            Task { @MainActor in
+                await run(scanPath: scanPath)
+                fflush(stdout)
+                exit(0)
+            }
         }
         #endif
     }
@@ -50,6 +58,57 @@ enum DemoSelfTest {
             }
         } catch {
             print("SELFTEST: FAILED — \(error.localizedDescription)")
+        }
+    }
+
+    // Live-session simulation: feed a sequence of frames (as if the camera
+    // panned across the paper) into LiveScanEngine and report how verdicts
+    // accumulate, then freeze and render the final result.
+    @MainActor
+    private static func runLive(paths: [String]) async {
+        guard let engine = LiveScanEngine(templateID: 9001, templateTitle: "自測") else {
+            print("SELFTEST LIVE: engine unavailable (demo mode off or template missing)")
+            return
+        }
+        var latest: LiveScanEngine.Update?
+        engine.onUpdate = { latest = $0 }
+
+        for _ in 0..<100 where !engine.isReady {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        guard engine.isReady else {
+            print("SELFTEST LIVE: template features never became ready")
+            return
+        }
+
+        for (index, path) in paths.enumerated() {
+            guard let frame = UIImage(contentsOfFile: path) else {
+                print("SELFTEST LIVE: cannot load \(path)")
+                continue
+            }
+            await engine.process(frame: frame)
+            let u = latest
+            print("SELFTEST LIVE frame\(index) (\((path as NSString).lastPathComponent)): "
+                  + "aligned=\(u?.aligned ?? false) visible=\(u?.boxes.count ?? 0) "
+                  + "graded=\(u?.gradedCount ?? 0)/\(u?.totalCount ?? 0)")
+        }
+
+        guard let result = engine.finish() else {
+            print("SELFTEST LIVE: nothing graded, no result")
+            return
+        }
+        print("SELFTEST LIVE final: \(result.answers.count) graded")
+        for a in result.answers {
+            let rect = a.rect.map {
+                String(format: "(%.3f, %.3f, %.3f, %.3f)", $0.minX, $0.minY, $0.width, $0.height)
+            } ?? "nil"
+            print("SELFTEST LIVE Q\(a.questionNumber) expected=\(a.expected) "
+                  + "recognized=\(a.recognized) correct=\(a.isCorrect) rect=\(rect)")
+        }
+        if let outPath = ProcessInfo.processInfo.environment["DEMO_SELFTEST_OUT"] {
+            let annotated = render(result)
+            try? annotated.pngData()?.write(to: URL(fileURLWithPath: outPath))
+            print("SELFTEST LIVE: wrote \(outPath)")
         }
     }
 

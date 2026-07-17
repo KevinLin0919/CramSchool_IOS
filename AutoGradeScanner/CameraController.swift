@@ -14,10 +14,17 @@ final class CameraController: NSObject, ObservableObject {
 
     var onCapture: ((UIImage) -> Void)?
 
+    // Live-grading tap: sampled video frames as upright UIImages. While set
+    // with autoCaptureEnabled = false, the scanner grades the stream in place
+    // instead of waiting for a still capture.
+    var onLiveFrame: ((UIImage) -> Void)?
+    var autoCaptureEnabled = true
+
     private let photoOutput = AVCapturePhotoOutput()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "autograde.camera.session")
     private let videoQueue = DispatchQueue(label: "autograde.camera.video")
+    private let ciContext = CIContext()
 
     private var configured = false
     private var currentPosition: AVCaptureDevice.Position = .back
@@ -139,10 +146,17 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard !hasCaptured else { return }
         frameIndex += 1
-        guard frameIndex % 6 == 0,
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // Live-grading tap. The consumer drops frames while busy, so this
+        // cadence is just an upper bound on conversion work.
+        if let onLiveFrame, frameIndex % 3 == 0,
+           let image = uprightImage(from: pixelBuffer) {
+            onLiveFrame(image)
+        }
+
+        guard autoCaptureEnabled, !hasCaptured, frameIndex % 6 == 0 else { return }
 
         let request = VNDetectRectanglesRequest()
         request.minimumAspectRatio = 0.35
@@ -167,6 +181,20 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             hasCaptured = true
             capturePhoto()
         }
+    }
+
+    // Camera frames arrive in sensor (landscape) orientation; rotate upright
+    // and downscale — XFeat shrinks to its model input anyway, and smaller
+    // frames keep the per-frame conversion cheap.
+    private func uprightImage(from pixelBuffer: CVPixelBuffer) -> UIImage? {
+        var image = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
+        let width = image.extent.width
+        if width > 1200 {
+            let scale = 1200 / width
+            image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
+        guard let cg = ciContext.createCGImage(image, from: image.extent) else { return nil }
+        return UIImage(cgImage: cg)
     }
 }
 
