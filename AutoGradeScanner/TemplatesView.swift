@@ -354,48 +354,55 @@ struct TemplatesView: View {
 
     // MARK: - Template row
 
+    // The row selects on tap; the leading thumbnail and the 眼睛 button both let
+    // the user actually see what the template is. Selection is an .onTapGesture
+    // (not an enclosing Button) so the preview button can own its own taps.
     private func templateRow(_ template: ExamTemplate, showSubject: Bool, isLast: Bool) -> some View {
         let selected = model.selectedTemplateID == template.id
-        return Button {
-            model.selectedTemplateID = template.id
-        } label: {
-            HStack(spacing: 12) {
-                if showSubject {
-                    Text(template.subject)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(AG.subjectTint(template.subject))
-                        .frame(width: 40, height: 40)
-                        .background(AG.subjectTint(template.subject).opacity(0.09))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+        return HStack(spacing: 12) {
+            TemplateThumbnail(template: template)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(showSubject ? template.fullTitle : template.displayName)
+                    .font(.system(size: 16, weight: selected ? .semibold : .medium))
+                    .foregroundStyle(AG.fg1)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text("\(template.annotationCount) 題")
+                    Text("・").foregroundStyle(AG.fg4)
+                    Text(template.dateText)
                 }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(showSubject ? template.fullTitle : template.displayName)
-                        .font(.system(size: 16, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(AG.fg1)
-                        .lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text("\(template.annotationCount) 題")
-                        Text("・").foregroundStyle(AG.fg4)
-                        Text(template.dateText)
-                    }
-                    .font(.system(size: 13))
-                    .foregroundStyle(AG.fg2)
-                }
-                Spacer()
-                selectCircle(selected: selected)
+                .font(.system(size: 13))
+                .foregroundStyle(AG.fg2)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .frame(minHeight: 56)
-            .background(selected ? AG.brand.opacity(0.06) : Color.clear)
-            .overlay(alignment: .bottom) {
-                if !isLast {
-                    AG.border1.frame(height: 0.5).padding(.leading, 14)
-                }
+
+            Spacer()
+
+            Button {
+                previewTarget = template
+            } label: {
+                Image(systemName: "eye")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(AG.fg3)
+                    .frame(width: 34, height: 34)
+                    .background(AG.bg2)
+                    .clipShape(Circle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            selectCircle(selected: selected)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(minHeight: 56)
+        .background(selected ? AG.brand.opacity(0.06) : Color.clear)
+        .overlay(alignment: .bottom) {
+            if !isLast {
+                AG.border1.frame(height: 0.5).padding(.leading, 14)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { model.selectedTemplateID = template.id }
         .contextMenu {
             Button {
                 renameTarget = template
@@ -482,34 +489,70 @@ private struct TemplatePreviewSheet: View {
     let template: ExamTemplate
     @Environment(\.dismiss) private var dismiss
 
+    @State private var answers: [String] = []
+    @State private var loaded = false
+
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(hex: 0x14181C).ignoresSafeArea()
-                AsyncImage(url: ServerConfig.templateImageURL(id: template.id)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFit().padding(12)
-                    case .failure:
-                        VStack(spacing: 8) {
-                            Image(systemName: "photo")
-                                .font(.system(size: 32))
-                            Text("無法載入預覽圖片")
-                                .font(.system(size: 14))
-                        }
-                        .foregroundStyle(.white.opacity(0.6))
-                    default:
-                        ProgressView().tint(.white)
-                    }
-                }
+                AG.bg2.ignoresSafeArea()
+                content
             }
-            .navigationTitle(template.examName)
+            .navigationTitle(template.fullTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
                 }
             }
+            .task { await load() }
         }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let image = DemoData.bundledImage(for: template.id) {
+            // Bundled demo template: show the real master sheet.
+            ScrollView {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(16)
+            }
+        } else if DemoData.isEnabled {
+            // Offline demo: no image, so render the answer key as a card.
+            if loaded {
+                AnswerSheetSchematic(title: template.fullTitle,
+                                     subject: template.subject,
+                                     answers: answers)
+            } else {
+                ProgressView().tint(AG.brand)
+            }
+        } else {
+            // Real backend: prefer the stored sheet image, fall back to the
+            // schematic if it can't be fetched.
+            AsyncImage(url: ServerConfig.templateImageURL(id: template.id)) { phase in
+                switch phase {
+                case .success(let image):
+                    ScrollView {
+                        image.resizable().scaledToFit().padding(16)
+                    }
+                case .failure:
+                    AnswerSheetSchematic(title: template.fullTitle,
+                                         subject: template.subject,
+                                         answers: answers)
+                default:
+                    ProgressView().tint(AG.brand)
+                }
+            }
+        }
+    }
+
+    private func load() async {
+        guard !loaded else { return }
+        let detail = try? await APIClient.shared.templateDetail(id: template.id)
+        answers = detail?.expectedAnswers ?? []
+        loaded = true
     }
 }
