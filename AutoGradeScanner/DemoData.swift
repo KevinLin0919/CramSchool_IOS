@@ -4,6 +4,32 @@ import UIKit
 // call and the grading pipeline return canned data instead of hitting the
 // LAN backends — so a sideloaded build works anywhere with no server on the
 // network. Turn it off in 設定 once the real backends are reachable.
+//
+// Templates listed in `bundledTemplates` carry a real master-sheet image and
+// real box coordinates: for those, grading runs genuine on-device XFeat
+// alignment and projects the boxes onto the photo — only the handwriting
+// "recognition" is canned. Everything else falls back to fabricated grids.
+
+struct BundledDemoTemplate {
+    let imageName: String     // master sheet image in the app bundle
+    let boxes: [CGRect]       // answer boxes, normalized (0...1) in the master image
+    let written: [String]     // canned "recognized" student answers, one per box
+}
+
+enum DemoGradingError: LocalizedError {
+    case alignmentFailed
+    case noVisibleBoxes
+
+    var errorDescription: String? {
+        switch self {
+        case .alignmentFailed:
+            return "無法將照片對齊到考卷模板，請對準考卷後再試一次"
+        case .noVisibleBoxes:
+            return "照片中沒有完整的答案格，請調整取景範圍"
+        }
+    }
+}
+
 final class DemoData {
     static let shared = DemoData()
 
@@ -29,6 +55,25 @@ final class DemoData {
     private var store: [Sample]
 
     private init() { store = DemoData.seed }
+
+    // Templates with real bundled assets; keyed by sample id. The boxes were
+    // measured on the master image (see scratchpad/gen_demo_assets.swift).
+    static let bundledTemplates: [Int: BundledDemoTemplate] = [
+        9001: BundledDemoTemplate(
+            imageName: "DemoMaster9001",
+            boxes: [
+                CGRect(x: 0.22083, y: 0.21625, width: 0.15833, height: 0.06250),
+                CGRect(x: 0.62083, y: 0.21625, width: 0.15833, height: 0.06250),
+                CGRect(x: 0.22083, y: 0.39125, width: 0.15833, height: 0.06250),
+                CGRect(x: 0.62083, y: 0.39125, width: 0.15833, height: 0.06250),
+                CGRect(x: 0.22083, y: 0.56625, width: 0.15833, height: 0.06250),
+                CGRect(x: 0.62083, y: 0.56625, width: 0.15833, height: 0.06250),
+                CGRect(x: 0.22083, y: 0.74125, width: 0.15833, height: 0.06250),
+                CGRect(x: 0.62083, y: 0.74125, width: 0.15833, height: 0.06250),
+            ],
+            // The demo student wrote Q4 and Q6 wrong.
+            written: ["12", "5", "36", "9", "144", "1", "20", "9"]),
+    ]
 
     private static let seed: [Sample] = [
         Sample(id: 9001, examName: "國一數學第三次段考",
@@ -63,6 +108,27 @@ final class DemoData {
     func templateDetail(id: Int) -> TemplateDetail {
         lock.lock(); let sample = store.first { $0.id == id }; lock.unlock()
         let answers = sample?.answers ?? []
+
+        // Bundled templates: convert their real normalized boxes into the
+        // 800x600 canvas space (aspect-fit centered) the UI expects.
+        if let bundled = DemoData.bundledTemplates[id],
+           let master = UIImage(named: bundled.imageName) {
+            let mW = Double(master.size.width), mH = Double(master.size.height)
+            let scale = min(WebCanvas.width / mW, WebCanvas.height / mH)
+            let offX = (WebCanvas.width - mW * scale) / 2
+            let offY = (WebCanvas.height - mH * scale) / 2
+            let annotations = bundled.boxes.enumerated().map { i, b in
+                TemplateAnnotation(className: "答案區",
+                                   bbox: [b.minX * mW * scale + offX,
+                                          b.minY * mH * scale + offY,
+                                          b.width * mW * scale,
+                                          b.height * mH * scale],
+                                   answer: i < answers.count ? answers[i] : "")
+            }
+            return TemplateDetail(id: id, examName: sample?.examName ?? "示範考卷",
+                                  pages: [TemplatePage(image: nil, annotations: annotations)])
+        }
+
         let boxes = DemoData.gridBoxes(count: answers.count,
                                        width: WebCanvas.width, height: WebCanvas.height)
         let annotations = zip(answers, boxes).map { answer, b in
@@ -113,9 +179,64 @@ final class DemoData {
 
     // MARK: - Grading
 
+    // Bundled templates get the real pipeline: on-device XFeat alignment of
+    // the photo against the master sheet, template boxes projected through
+    // the homography, and per-box visibility filtering — only the
+    // handwriting "recognition" comes from the canned script. Other
+    // templates fall back to the fabricated grid.
+    func grade(image: UIImage, templateID: Int, templateTitle: String) async throws -> GradingResult {
+        guard let bundled = DemoData.bundledTemplates[templateID],
+              let master = UIImage(named: bundled.imageName) else {
+            return fabricatedGrade(image: image, templateID: templateID,
+                                   templateTitle: templateTitle)
+        }
+
+        let homography = try await Task.detached(priority: .userInitiated) {
+            try XFeatAligner.partialAlignmentHomography(template: master, scan: image)
+        }.value
+
+        // Quality gate: better to ask for a retake than to draw boxes off a
+        // bad alignment.
+        var minInliers = 16
+        var minRatio = 0.3
+        #if DEBUG
+        // Tunable from the scheme/simctl environment while calibrating.
+        let env = ProcessInfo.processInfo.environment
+        minInliers = env["DEMO_GATE_INLIERS"].flatMap(Int.init) ?? minInliers
+        minRatio = env["DEMO_GATE_RATIO"].flatMap(Double.init) ?? minRatio
+        #endif
+        guard let h = homography, h.inlierCount >= minInliers, h.inlierRatio >= minRatio else {
+            throw DemoGradingError.alignmentFailed
+        }
+
+        let expected = answers(for: templateID)
+        // Only grade where the paper was actually observed: a box must land
+        // inside the photo frame AND lie entirely within the region covered
+        // by inlier features ("拍到哪改到哪"). The frame check alone is not
+        // enough — the homography happily extrapolates boxes onto desk area
+        // beyond a cut paper edge, and a box whose bottom edge survived the
+        // cut can anchor inliers while its answer is out of frame.
+        let support = h.sourceInlierBounds.insetBy(dx: -0.04, dy: -0.04)
+        var graded: [GradedAnswer] = []
+        for (i, box) in bundled.boxes.enumerated() {
+            let rect = h.project(box)
+            guard rect.minX >= -0.02, rect.minY >= -0.02,
+                  rect.maxX <= 1.02, rect.maxY <= 1.02,
+                  support.contains(box) else { continue }
+            let exp = i < expected.count ? expected[i] : ""
+            let recognized = i < bundled.written.count ? bundled.written[i] : exp
+            graded.append(GradedAnswer(id: i, expected: exp, recognized: recognized,
+                                       isCorrect: !exp.isEmpty && recognized == exp,
+                                       rect: rect))
+        }
+        guard !graded.isEmpty else { throw DemoGradingError.noVisibleBoxes }
+        return GradingResult(image: image, answers: graded,
+                             templateTitle: templateTitle, date: Date())
+    }
+
     // Fabricate a plausible graded result directly from the captured photo:
     // lay the template's answers over a tidy grid and mark ~75% correct.
-    func grade(image: UIImage, templateID: Int, templateTitle: String) -> GradingResult {
+    private func fabricatedGrade(image: UIImage, templateID: Int, templateTitle: String) -> GradingResult {
         let expected = answers(for: templateID)
         let count = expected.isEmpty ? 6 : expected.count
         let boxes = DemoData.gridBoxes(count: count, width: 1, height: 1) // normalized 0...1

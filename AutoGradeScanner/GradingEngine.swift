@@ -12,9 +12,9 @@ enum GradingEngine {
         let prepared = image.normalizedForUpload(maxDimension: 1600)
 
         if DemoData.isEnabled {
-            return DemoData.shared.grade(image: prepared,
-                                         templateID: templateID,
-                                         templateTitle: templateTitle)
+            return try await DemoData.shared.grade(image: prepared,
+                                                   templateID: templateID,
+                                                   templateTitle: templateTitle)
         }
 
         guard let jpeg = prepared.jpegData(compressionQuality: 0.85) else {

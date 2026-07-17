@@ -4,6 +4,10 @@ import SwiftUI
 struct AutoGradeScannerApp: App {
     @StateObject private var model = AppModel()
 
+    init() {
+        DemoSelfTest.runIfRequested()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
