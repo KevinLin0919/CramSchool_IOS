@@ -175,10 +175,7 @@ struct ScannerView: View {
                     .padding(.bottom, geo.safeAreaInsets.bottom + 24)
 
             case .done:
-                DoneCardView(correct: answers.filter(\.isCorrect).count,
-                             total: answers.count,
-                             onViewResults: { model.screen = .results },
-                             onRescan: rescan)
+                doneBar
                     .centeredContent(AG.Width.card)
                     .padding(.horizontal, 12)
                     .padding(.bottom, geo.safeAreaInsets.bottom + 16)
@@ -308,6 +305,44 @@ struct ScannerView: View {
             Text(label)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.white)
+        }
+    }
+
+    // Slim controls after grading — the verdict boxes on the image are the
+    // result; scoring/judgement stays with the teacher.
+    private var doneBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                model.screen = .results
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chart.bar")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("查看明細")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(.black.opacity(0.55))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.24), lineWidth: 1))
+            }
+
+            Button(action: rescan) {
+                HStack(spacing: 6) {
+                    Image(systemName: "viewfinder")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("掃描下一張")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(AG.brand)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .shadow(color: AG.brand.opacity(0.35), radius: 8, y: 6)
+            }
         }
     }
 
@@ -580,88 +615,3 @@ private struct StatusPillView: View {
     }
 }
 
-// MARK: - Done card
-
-private struct DoneCardView: View {
-    let correct: Int
-    let total: Int
-    let onViewResults: () -> Void
-    let onRescan: () -> Void
-
-    private var pct: Int {
-        total > 0 ? Int((Double(correct) / Double(total) * 100).rounded()) : 0
-    }
-    private var passed: Bool { pct >= 60 }
-
-    var body: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text("\(correct)")
-                        .font(.system(size: 40, weight: .bold))
-                        .foregroundStyle(passed ? AG.brand : AG.bad)
-                    Text("/\(total)")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(AG.fg3)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("批改完成・\(pct)%")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(AG.fg1)
-                    Text(total - correct == 0 ? "全部正確" : "\(total - correct) 題錯誤，已在畫面標示")
-                        .font(.system(size: 12))
-                        .foregroundStyle(AG.fg2)
-                }
-                Spacer()
-
-                Text(passed ? "通過" : "未通過")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(passed ? AG.brand : AG.bad)
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 5)
-                    .background(passed ? AG.brand.opacity(0.09) : AG.badBg)
-                    .clipShape(Capsule())
-            }
-
-            HStack(spacing: 10) {
-                Button(action: onViewResults) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chart.bar")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("查看明細")
-                            .font(.system(size: 15, weight: .semibold))
-                    }
-                    .foregroundStyle(AG.fg1)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(AG.bg2)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(AG.border2, lineWidth: 1))
-                }
-
-                Button(action: onRescan) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "viewfinder")
-                            .font(.system(size: 14, weight: .bold))
-                        Text("掃描下一張")
-                            .font(.system(size: 15, weight: .semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(AG.brand)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .shadow(color: AG.brand.opacity(0.35), radius: 8, y: 6)
-                }
-                .frame(maxWidth: .infinity)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 14)
-        .background(.white.opacity(0.97))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .shadow(color: .black.opacity(0.4), radius: 22, y: 16)
-    }
-}
