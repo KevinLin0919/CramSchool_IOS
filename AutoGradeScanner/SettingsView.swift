@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
+    @AppStorage(DemoData.modeKey) private var demoMode = true
     @AppStorage(ServerConfig.predictKey) private var predictBase = ServerConfig.defaultPredict
     @AppStorage(ServerConfig.ocrKey) private var ocrBase = ServerConfig.defaultOCR
     @AppStorage(ServerConfig.ocrGoogleKey) private var ocrGoogleBase = ServerConfig.defaultOCRGoogle
@@ -22,6 +23,12 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Toggle("示範模式（離線假資料）", isOn: $demoMode)
+                } footer: {
+                    Text("開啟後不連線伺服器，改用內建的範例考卷與批改結果，可離線展示。正式使用時請關閉，並填入下方伺服器位址。")
+                }
+
                 Section {
                     urlField("YOLO 偵測", text: $predictBase)
                 } footer: {
