@@ -75,6 +75,14 @@ final class DemoData {
             written: ["12", "5", "36", "9", "144", "1", "20", "9"]),
     ]
 
+    // The bundled master-sheet image for a template, if it ships one. Used by
+    // the picker to show a real thumbnail/preview offline instead of trying to
+    // fetch one from a server that isn't reachable in demo mode.
+    static func bundledImage(for id: Int) -> UIImage? {
+        guard let bundled = bundledTemplates[id] else { return nil }
+        return UIImage(named: bundled.imageName)
+    }
+
     private static let seed: [Sample] = [
         Sample(id: 9001, examName: "國一數學第三次段考",
                answers: ["12", "5", "36", "8", "144", "7", "20", "9"],
