@@ -84,6 +84,7 @@ final class APIClient {
     // MARK: - Exam templates
 
     func listTemplates(search: String? = nil) async throws -> [ExamTemplate] {
+        if DemoData.isEnabled { return DemoData.shared.templateList(search: search) }
         var urlString = "\(ServerConfig.templatesBase)/api/exam-templates"
         if let search, !search.isEmpty,
            let encoded = search.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
@@ -94,17 +95,20 @@ final class APIClient {
     }
 
     func templateDetail(id: Int) async throws -> TemplateDetail {
+        if DemoData.isEnabled { return DemoData.shared.templateDetail(id: id) }
         let data = try await request("\(ServerConfig.templatesBase)/api/exam-templates/\(id)")
         return try JSONDecoder().decode(TemplateDetail.self, from: data)
     }
 
     func renameTemplate(id: Int, name: String) async throws {
+        if DemoData.isEnabled { DemoData.shared.rename(id: id, name: name); return }
         _ = try await request("\(ServerConfig.templatesBase)/api/exam-templates/\(id)",
                               method: "PATCH",
                               jsonBody: ["exam_name": name])
     }
 
     func deleteTemplate(id: Int) async throws {
+        if DemoData.isEnabled { DemoData.shared.delete(id: id); return }
         _ = try await request("\(ServerConfig.templatesBase)/api/exam-templates/\(id)",
                               method: "DELETE")
     }
@@ -113,6 +117,11 @@ final class APIClient {
     // in web-canvas (800x600) space; imageBase64DataURL is a data: URL,
     // exactly like the web app's POST body.
     func createTemplate(name: String, imageBase64DataURL: String, pages: [[String: Any]]) async throws {
+        if DemoData.isEnabled {
+            let anns = (pages.first?["annotations"] as? [[String: Any]]) ?? []
+            DemoData.shared.create(name: name, answers: anns.map { ($0["answer"] as? String) ?? "" })
+            return
+        }
         _ = try await request("\(ServerConfig.templatesBase)/api/exam-templates",
                               method: "POST",
                               jsonBody: [
@@ -126,6 +135,7 @@ final class APIClient {
 
     // Returns bboxes [x1, y1, x2, y2] in the submitted image's pixel space.
     func predict(imageBase64: String) async throws -> [[Double]] {
+        if DemoData.isEnabled { return DemoData.shared.detect(imageBase64: imageBase64) }
         let data = try await request("\(ServerConfig.predictBase)/predict",
                                      method: "POST",
                                      jsonBody: ["image_base64": imageBase64])
@@ -160,6 +170,11 @@ final class APIClient {
 
     // Handwriting OCR for student papers -> {chinese, digit} per box.
     func ocrStudent(imageBase64: String, boxes: [[Double]]) async throws -> [OCRCandidate] {
+        if DemoData.isEnabled {
+            return DemoData.shared.ocr(count: boxes.count).map {
+                var c = OCRCandidate(); c.text = $0; return c
+            }
+        }
         let data = try await request("\(ServerConfig.ocrBase)/ocr",
                                      method: "POST",
                                      jsonBody: ocrPayload(imageBase64: imageBase64, boxes: boxes))
@@ -182,6 +197,7 @@ final class APIClient {
 
     // Google OCR for the master answer key -> plain text per box.
     func ocrMaster(imageBase64: String, boxes: [[Double]]) async throws -> [String] {
+        if DemoData.isEnabled { return DemoData.shared.ocr(count: boxes.count) }
         let data = try await request("\(ServerConfig.ocrGoogleBase)/ocr_google",
                                      method: "POST",
                                      jsonBody: ocrPayload(imageBase64: imageBase64, boxes: boxes))

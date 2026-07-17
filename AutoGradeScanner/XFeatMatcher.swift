@@ -11,8 +11,15 @@ enum XFeatMatcher {
     // similarity exceeds minSimilarity. Descriptors are unit length, so the
     // dot product is the cosine; the whole similarity matrix comes from one
     // A (n x 64) * B^T (64 x m) multiply.
+    //
+    // ratioMargin is a Lowe-style ambiguity filter: the best match must beat
+    // the runner-up by at least this much. Printed forms are full of repeated
+    // structure (identical answer-box frames in a regular grid) whose corners
+    // are indistinguishable to the descriptor; those all-alike matches would
+    // otherwise let RANSAC lock onto a row-shifted false alignment.
     static func match(_ a: XFeatFeatures, _ b: XFeatFeatures,
-                      minSimilarity: Float = 0.82) -> [(Int, Int)] {
+                      minSimilarity: Float = 0.82,
+                      ratioMargin: Float = 0.015) -> [(Int, Int)] {
         let n = a.count, m = b.count
         guard n > 0, m > 0 else { return [] }
 
@@ -28,6 +35,7 @@ enum XFeatMatcher {
 
         var bestColumnForRow = [Int](repeating: -1, count: n)
         var bestRowValue = [Float](repeating: -.infinity, count: n)
+        var secondRowValue = [Float](repeating: -.infinity, count: n)
         var bestRowForColumn = [Int](repeating: -1, count: m)
         var bestColumnValue = [Float](repeating: -.infinity, count: m)
         for i in 0..<n {
@@ -35,8 +43,11 @@ enum XFeatMatcher {
             for j in 0..<m {
                 let value = similarity[row + j]
                 if value > bestRowValue[i] {
+                    secondRowValue[i] = bestRowValue[i]
                     bestRowValue[i] = value
                     bestColumnForRow[i] = j
+                } else if value > secondRowValue[i] {
+                    secondRowValue[i] = value
                 }
                 if value > bestColumnValue[j] {
                     bestColumnValue[j] = value
@@ -48,7 +59,9 @@ enum XFeatMatcher {
         var pairs: [(Int, Int)] = []
         for i in 0..<n {
             let j = bestColumnForRow[i]
-            if j >= 0 && bestRowForColumn[j] == i && bestRowValue[i] >= minSimilarity {
+            if j >= 0 && bestRowForColumn[j] == i
+                && bestRowValue[i] >= minSimilarity
+                && bestRowValue[i] - secondRowValue[i] >= ratioMargin {
                 pairs.append((i, j))
             }
         }
@@ -61,6 +74,10 @@ enum XFeatMatcher {
         let matrix: simd_double3x3   // normalized source coords -> normalized destination coords
         let inlierCount: Int
         let matchCount: Int
+        // Bounding box (source/template normalized coords) of the inlier
+        // keypoints — the region of the source that was actually observed.
+        // Content projected from outside it is extrapolation, not evidence.
+        let sourceInlierBounds: CGRect
 
         var inlierRatio: Double {
             matchCount > 0 ? Double(inlierCount) / Double(matchCount) : 0
@@ -119,10 +136,18 @@ enum XFeatMatcher {
         }
 
         var inlierCount = 0
+        var minX = Double.infinity, minY = Double.infinity
+        var maxX = -Double.infinity, maxY = -Double.infinity
         for i in 0..<count where reprojectionErrorSq(refined, src[i], dst[i]) < thresholdSq {
             inlierCount += 1
+            minX = min(minX, src[i].x); maxX = max(maxX, src[i].x)
+            minY = min(minY, src[i].y); maxY = max(maxY, src[i].y)
         }
-        return Homography(matrix: refined, inlierCount: inlierCount, matchCount: count)
+        let bounds = inlierCount > 0
+            ? CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+            : .zero
+        return Homography(matrix: refined, inlierCount: inlierCount,
+                          matchCount: count, sourceInlierBounds: bounds)
     }
 
     // Direct linear transform with h33 fixed to 1, solved via normal
@@ -217,5 +242,96 @@ enum XFeatAligner {
         guard pairs.count >= minMatches else { return nil }
         return XFeatMatcher.findHomography(from: pairs.map { templateFeatures.keypoints[$0.0] },
                                            to: pairs.map { scanFeatures.keypoints[$0.1] })
+    }
+
+    // Partial-view alignment. A photo of only part of the sheet shows its
+    // content ~2x larger than the full-page template does, which breaks
+    // plain nearest-neighbor matching. Match the scan against several
+    // windows of the template (full page, top/bottom band) so one window's
+    // content scale roughly agrees with the photo, keep the candidate with
+    // the most RANSAC inliers, and map its homography back to full-template
+    // coordinates.
+    static func partialAlignmentHomography(template: UIImage, scan: UIImage,
+                                           minMatches: Int = 12) throws -> XFeatMatcher.Homography? {
+        try XFeatTemplateMatcher(template: template).align(scan: scan, minMatches: minMatches)
+    }
+}
+
+// Template-side feature cache for repeated alignment against one master
+// sheet: the window features are extracted once, so aligning a stream of
+// camera frames only pays for the scan-side extraction each time.
+final class XFeatTemplateMatcher {
+    private struct WindowEntry {
+        let window: CGRect            // normalized region of the template
+        let features: XFeatFeatures
+    }
+
+    private let entries: [WindowEntry]
+
+    init(template: UIImage) throws {
+        guard let engine = XFeatEngine.shared else { throw XFeatError.modelMissing }
+        let windows = [CGRect(x: 0, y: 0, width: 1, height: 1),
+                       CGRect(x: 0, y: 0, width: 1, height: 0.6),
+                       CGRect(x: 0, y: 0.4, width: 1, height: 0.6)]
+        entries = try windows.compactMap { window in
+            guard let cropped = XFeatTemplateMatcher.crop(template, to: window) else { return nil }
+            return WindowEntry(window: window, features: try engine.extract(from: cropped))
+        }
+    }
+
+    func align(scan: UIImage, minMatches: Int = 12) throws -> XFeatMatcher.Homography? {
+        guard let engine = XFeatEngine.shared else { throw XFeatError.modelMissing }
+        return align(scanFeatures: try engine.extract(from: scan), minMatches: minMatches)
+    }
+
+    func align(scanFeatures: XFeatFeatures, minMatches: Int = 12) -> XFeatMatcher.Homography? {
+        var best: XFeatMatcher.Homography?
+        for entry in entries {
+            let window = entry.window
+            let pairs = XFeatMatcher.match(entry.features, scanFeatures)
+            let h = pairs.count >= minMatches
+                ? XFeatMatcher.findHomography(from: pairs.map { entry.features.keypoints[$0.0] },
+                                              to: pairs.map { scanFeatures.keypoints[$0.1] })
+                : nil
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["DEMO_SELFTEST_SCAN"] != nil {
+                print("XFEAT window=\(window) features=\(entry.features.count) "
+                      + "pairs=\(pairs.count) inliers=\(h?.inlierCount ?? 0)")
+            }
+            #endif
+            guard let h else { continue }
+
+            // Compose with the affine that maps template-normalized coords
+            // into window-normalized coords, so callers always project
+            // full-template coordinates.
+            let a = simd_double3x3(rows: [
+                simd_double3(1 / Double(window.width), 0, -Double(window.minX) / Double(window.width)),
+                simd_double3(0, 1 / Double(window.height), -Double(window.minY) / Double(window.height)),
+                simd_double3(0, 0, 1)])
+            let b = h.sourceInlierBounds
+            let candidate = XFeatMatcher.Homography(
+                matrix: h.matrix * a,
+                inlierCount: h.inlierCount,
+                matchCount: h.matchCount,
+                sourceInlierBounds: CGRect(x: b.minX * window.width + window.minX,
+                                           y: b.minY * window.height + window.minY,
+                                           width: b.width * window.width,
+                                           height: b.height * window.height))
+            if candidate.inlierCount > (best?.inlierCount ?? 0) {
+                best = candidate
+            }
+        }
+        return best
+    }
+
+    private static func crop(_ image: UIImage, to normalized: CGRect) -> UIImage? {
+        if normalized == CGRect(x: 0, y: 0, width: 1, height: 1) { return image }
+        guard let cg = image.cgImage else { return nil }
+        let rect = CGRect(x: normalized.minX * CGFloat(cg.width),
+                          y: normalized.minY * CGFloat(cg.height),
+                          width: normalized.width * CGFloat(cg.width),
+                          height: normalized.height * CGFloat(cg.height))
+        guard let croppedCG = cg.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: croppedCG)
     }
 }

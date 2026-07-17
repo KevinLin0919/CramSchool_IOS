@@ -10,6 +10,13 @@ enum GradingEngine {
                       templateID: Int,
                       templateTitle: String) async throws -> GradingResult {
         let prepared = image.normalizedForUpload(maxDimension: 1600)
+
+        if DemoData.isEnabled {
+            return try await DemoData.shared.grade(image: prepared,
+                                                   templateID: templateID,
+                                                   templateTitle: templateTitle)
+        }
+
         guard let jpeg = prepared.jpegData(compressionQuality: 0.85) else {
             throw APIError.imageEncoding
         }

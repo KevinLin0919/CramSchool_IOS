@@ -23,6 +23,11 @@ struct ScannerView: View {
     @State private var pickerItem: PhotosPickerItem?
     @State private var gradingTask: Task<Void, Never>?
 
+    // Live grading (bundled demo templates): boxes track the paper in the
+    // viewfinder and verdicts accumulate as the camera pans across it.
+    @State private var liveEngine: LiveScanEngine?
+    @State private var liveUpdate: LiveScanEngine.Update?
+
     private var revealedCorrect: Int {
         answers.prefix(revealed).filter(\.isCorrect).count
     }
@@ -55,12 +60,17 @@ struct ScannerView: View {
         .background(Color.black)
         .onAppear {
             camera.onCapture = { image in handleCapture(image) }
-            if model.selectedTemplate != nil {
+            if let template = model.selectedTemplate {
                 camera.checkPermissionAndStart()
+                startLiveSession(for: template)
             }
         }
         .onDisappear {
             gradingTask?.cancel()
+            camera.onLiveFrame = nil
+            camera.autoCaptureEnabled = true
+            liveEngine = nil
+            liveUpdate = nil
             camera.stop()
         }
         .onChange(of: camera.paperDetected) { _, detected in
@@ -98,6 +108,11 @@ struct ScannerView: View {
         } else if camera.isAuthorized {
             CameraPreviewView(session: camera.session)
                 .ignoresSafeArea()
+                .overlay {
+                    if let live = liveUpdate, !live.boxes.isEmpty {
+                        LiveBoxesOverlay(update: live)
+                    }
+                }
         } else {
             VStack(spacing: 14) {
                 Image(systemName: "camera.fill")
@@ -146,8 +161,8 @@ struct ScannerView: View {
             Spacer()
         }
 
-        // Guide frame — only over the live camera
-        if captured == nil && camera.isAuthorized {
+        // Guide frame — only over the live camera, until live boxes take over
+        if captured == nil && camera.isAuthorized && !(liveUpdate?.aligned ?? false) {
             GuideFrameView(locked: phase != .aligning,
                            sweeping: phase == .aligning)
                 .frame(width: frameWidth, height: frameHeight)
@@ -159,26 +174,33 @@ struct ScannerView: View {
 
             switch phase {
             case .aligning, .detected, .grading:
-                StatusPillView(phase: phase,
-                               graded: revealed,
-                               total: totalQuestions)
-                    .padding(.bottom, 18)
+                if let live = liveUpdate, liveEngine != nil, captured == nil {
+                    livePill(live)
+                        .padding(.bottom, 14)
+
+                    if live.gradedCount > 0 {
+                        liveFinishButton(live)
+                            .padding(.bottom, 14)
+                    }
+                } else {
+                    StatusPillView(phase: phase,
+                                   graded: revealed,
+                                   total: totalQuestions)
+                        .padding(.bottom, 18)
+                }
 
                 if phase == .aligning || phase == .detected {
                     utilitiesRow
                         .padding(.bottom, 16)
                 }
 
-                Text(bottomHint)
+                Text(liveEngine != nil ? "・ 對到哪、改到哪，掃完按「完成」 ・" : bottomHint)
                     .font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.5))
                     .padding(.bottom, geo.safeAreaInsets.bottom + 24)
 
             case .done:
-                DoneCardView(correct: answers.filter(\.isCorrect).count,
-                             total: answers.count,
-                             onViewResults: { model.screen = .results },
-                             onRescan: rescan)
+                doneBar
                     .centeredContent(AG.Width.card)
                     .padding(.horizontal, 12)
                     .padding(.bottom, geo.safeAreaInsets.bottom + 16)
@@ -311,6 +333,44 @@ struct ScannerView: View {
         }
     }
 
+    // Slim controls after grading — the verdict boxes on the image are the
+    // result; scoring/judgement stays with the teacher.
+    private var doneBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                model.screen = .results
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chart.bar")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("查看明細")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(.black.opacity(0.55))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.24), lineWidth: 1))
+            }
+
+            Button(action: rescan) {
+                HStack(spacing: 6) {
+                    Image(systemName: "viewfinder")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("掃描下一張")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(AG.brand)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .shadow(color: AG.brand.opacity(0.35), radius: 8, y: 6)
+            }
+        }
+    }
+
     private func failedCard(_ message: String) -> some View {
         VStack(spacing: 14) {
             HStack(spacing: 12) {
@@ -393,6 +453,73 @@ struct ScannerView: View {
         .ignoresSafeArea()
     }
 
+    // MARK: - Live grading session
+
+    private func startLiveSession(for template: ExamTemplate) {
+        guard let engine = LiveScanEngine(templateID: template.id,
+                                          templateTitle: template.fullTitle) else { return }
+        engine.onUpdate = { update in liveUpdate = update }
+        liveEngine = engine
+        camera.autoCaptureEnabled = false
+        camera.onLiveFrame = { image in
+            Task { @MainActor in engine.submit(frame: image) }
+        }
+    }
+
+    private func livePill(_ live: LiveScanEngine.Update) -> some View {
+        HStack(spacing: 8) {
+            if live.aligned {
+                Image(systemName: "checkmark.viewfinder")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color(hex: 0x6FCF97))
+                Text("已對位・批改 \(live.gradedCount)/\(live.totalCount)")
+                    .monospacedDigit()
+            } else if !live.isReady {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(0.7)
+                Text("模板載入中…")
+            } else {
+                Text("將考卷置於畫面中，即時對位批改")
+            }
+        }
+        .font(.system(size: 15, weight: .medium))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(.black.opacity(0.55))
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
+    }
+
+    private func liveFinishButton(_ live: LiveScanEngine.Update) -> some View {
+        Button(action: finishLiveSession) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 15, weight: .bold))
+                Text("完成批改（\(live.gradedCount)/\(live.totalCount) 題）")
+                    .font(.system(size: 16, weight: .semibold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 26)
+            .frame(height: 48)
+            .background(AG.brand)
+            .clipShape(Capsule())
+            .shadow(color: AG.brand.opacity(0.4), radius: 10, y: 6)
+        }
+    }
+
+    private func finishLiveSession() {
+        guard let engine = liveEngine, let result = engine.finish() else { return }
+        camera.stop()
+        captured = result.image
+        answers = result.answers
+        revealed = result.answers.count
+        model.lastResult = result
+        withAnimation { phase = .done }
+    }
+
     // MARK: - Flow
 
     private func handleCapture(_ image: UIImage) {
@@ -446,8 +573,44 @@ struct ScannerView: View {
         answers = []
         revealed = 0
         phase = .aligning
+        liveEngine?.reset()
         camera.resetDetection()
         camera.checkPermissionAndStart()
+    }
+}
+
+// MARK: - Live verdict boxes over the camera preview
+
+// Maps frame-normalized rects into the aspect-fill preview: the frame is
+// scaled up until it covers the view and centered, so overlay coordinates
+// use the same transform.
+private struct LiveBoxesOverlay: View {
+    let update: LiveScanEngine.Update
+
+    var body: some View {
+        GeometryReader { geo in
+            let fw = max(update.frameSize.width, 1)
+            let fh = max(update.frameSize.height, 1)
+            let scale = max(geo.size.width / fw, geo.size.height / fh)
+            let dw = fw * scale, dh = fh * scale
+            let ox = (geo.size.width - dw) / 2
+            let oy = (geo.size.height - dh) / 2
+
+            ForEach(update.boxes) { box in
+                let color: Color = {
+                    guard let verdict = box.verdict else { return .white }
+                    return verdict ? AG.ok : AG.bad
+                }()
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(color.opacity(box.verdict == nil ? 0.05 : 0.15))
+                    .stroke(color, lineWidth: 3)
+                    .frame(width: box.rect.width * dw, height: box.rect.height * dh)
+                    .position(x: ox + box.rect.midX * dw,
+                              y: oy + box.rect.midY * dh)
+                    .animation(.linear(duration: 0.12), value: box.rect)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -580,88 +743,3 @@ private struct StatusPillView: View {
     }
 }
 
-// MARK: - Done card
-
-private struct DoneCardView: View {
-    let correct: Int
-    let total: Int
-    let onViewResults: () -> Void
-    let onRescan: () -> Void
-
-    private var pct: Int {
-        total > 0 ? Int((Double(correct) / Double(total) * 100).rounded()) : 0
-    }
-    private var passed: Bool { pct >= 60 }
-
-    var body: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text("\(correct)")
-                        .font(.system(size: 40, weight: .bold))
-                        .foregroundStyle(passed ? AG.brand : AG.bad)
-                    Text("/\(total)")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(AG.fg3)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("批改完成・\(pct)%")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(AG.fg1)
-                    Text(total - correct == 0 ? "全部正確" : "\(total - correct) 題錯誤，已在畫面標示")
-                        .font(.system(size: 12))
-                        .foregroundStyle(AG.fg2)
-                }
-                Spacer()
-
-                Text(passed ? "通過" : "未通過")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(passed ? AG.brand : AG.bad)
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 5)
-                    .background(passed ? AG.brand.opacity(0.09) : AG.badBg)
-                    .clipShape(Capsule())
-            }
-
-            HStack(spacing: 10) {
-                Button(action: onViewResults) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chart.bar")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("查看明細")
-                            .font(.system(size: 15, weight: .semibold))
-                    }
-                    .foregroundStyle(AG.fg1)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(AG.bg2)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(AG.border2, lineWidth: 1))
-                }
-
-                Button(action: onRescan) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "viewfinder")
-                            .font(.system(size: 14, weight: .bold))
-                        Text("掃描下一張")
-                            .font(.system(size: 15, weight: .semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(AG.brand)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .shadow(color: AG.brand.opacity(0.35), radius: 8, y: 6)
-                }
-                .frame(maxWidth: .infinity)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 14)
-        .background(.white.opacity(0.97))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .shadow(color: .black.opacity(0.4), radius: 22, y: 16)
-    }
-}
