@@ -253,25 +253,51 @@ enum XFeatAligner {
     // coordinates.
     static func partialAlignmentHomography(template: UIImage, scan: UIImage,
                                            minMatches: Int = 12) throws -> XFeatMatcher.Homography? {
-        guard let engine = XFeatEngine.shared else { throw XFeatError.modelMissing }
-        let scanFeatures = try engine.extract(from: scan)
+        try XFeatTemplateMatcher(template: template).align(scan: scan, minMatches: minMatches)
+    }
+}
 
+// Template-side feature cache for repeated alignment against one master
+// sheet: the window features are extracted once, so aligning a stream of
+// camera frames only pays for the scan-side extraction each time.
+final class XFeatTemplateMatcher {
+    private struct WindowEntry {
+        let window: CGRect            // normalized region of the template
+        let features: XFeatFeatures
+    }
+
+    private let entries: [WindowEntry]
+
+    init(template: UIImage) throws {
+        guard let engine = XFeatEngine.shared else { throw XFeatError.modelMissing }
         let windows = [CGRect(x: 0, y: 0, width: 1, height: 1),
                        CGRect(x: 0, y: 0, width: 1, height: 0.6),
                        CGRect(x: 0, y: 0.4, width: 1, height: 0.6)]
+        entries = try windows.compactMap { window in
+            guard let cropped = XFeatTemplateMatcher.crop(template, to: window) else { return nil }
+            return WindowEntry(window: window, features: try engine.extract(from: cropped))
+        }
+    }
 
+    func align(scan: UIImage, minMatches: Int = 12) throws -> XFeatMatcher.Homography? {
+        guard let engine = XFeatEngine.shared else { throw XFeatError.modelMissing }
+        return align(scanFeatures: try engine.extract(from: scan), minMatches: minMatches)
+    }
+
+    func align(scanFeatures: XFeatFeatures, minMatches: Int = 12) -> XFeatMatcher.Homography? {
         var best: XFeatMatcher.Homography?
-        for window in windows {
-            guard let cropped = crop(template, to: window) else { continue }
-            let features = try engine.extract(from: cropped)
-            let pairs = XFeatMatcher.match(features, scanFeatures)
+        for entry in entries {
+            let window = entry.window
+            let pairs = XFeatMatcher.match(entry.features, scanFeatures)
             let h = pairs.count >= minMatches
-                ? XFeatMatcher.findHomography(from: pairs.map { features.keypoints[$0.0] },
+                ? XFeatMatcher.findHomography(from: pairs.map { entry.features.keypoints[$0.0] },
                                               to: pairs.map { scanFeatures.keypoints[$0.1] })
                 : nil
             #if DEBUG
-            print("XFEAT window=\(window) features=\(features.count) "
-                  + "pairs=\(pairs.count) inliers=\(h?.inlierCount ?? 0)")
+            if ProcessInfo.processInfo.environment["DEMO_SELFTEST_SCAN"] != nil {
+                print("XFEAT window=\(window) features=\(entry.features.count) "
+                      + "pairs=\(pairs.count) inliers=\(h?.inlierCount ?? 0)")
+            }
             #endif
             guard let h else { continue }
 
