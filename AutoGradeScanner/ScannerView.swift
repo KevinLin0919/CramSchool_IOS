@@ -172,8 +172,11 @@ struct ScannerView: View {
             Spacer()
         }
 
-        // Guide frame — only over the live camera, until live boxes take over
-        if captured == nil && camera.isAuthorized && !(liveUpdate?.aligned ?? false) {
+        // Guide frame — only over the live camera, until live boxes take
+        // over. Keyed on box presence (persistent through brief alignment
+        // dropouts), not the per-frame aligned flag, so it doesn't strobe
+        // back in on a single missed frame.
+        if captured == nil && camera.isAuthorized && (liveUpdate?.boxes.isEmpty ?? true) {
             GuideFrameView(locked: phase != .aligning,
                            sweeping: phase == .aligning)
                 .frame(width: frameWidth, height: frameHeight)
@@ -481,7 +484,7 @@ struct ScannerView: View {
 
     private func livePill(_ live: LiveScanEngine.Update) -> some View {
         HStack(spacing: 8) {
-            if live.aligned {
+            if !live.boxes.isEmpty {
                 Image(systemName: "checkmark.viewfinder")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color(hex: 0x6FCF97))

@@ -52,6 +52,8 @@ final class LiveScanEngine {
     private var visibleQuads: [Int: [CGPoint]] = [:]
     private var visibleRects: [Int: CGRect] = [:]
     private var trackingHint: (windowIndex: Int, matrix: simd_double3x3)?
+    private var supportHistory: [CGRect] = []    // recent inlier bounds (template space)
+    private var grace: [Int: Int] = [:]          // per-box frames of display grace left
     private var lastFrame: UIImage?
     private var lastFrameSize = CGSize(width: 3, height: 4)
     private var lastAlignMillis: Double = 0
@@ -135,6 +137,8 @@ final class LiveScanEngine {
         seenStreak = [:]
         visibleQuads = [:]
         visibleRects = [:]
+        grace = [:]
+        supportHistory = []
         trackingHint = nil
         missStreak = 0
         lastFrame = nil
@@ -179,17 +183,44 @@ final class LiveScanEngine {
         anchorTimestamp = timestamp
         anchorIntrinsics = intrinsics
 
-        let support = h.sourceInlierBounds.insetBy(dx: -0.04, dy: -0.04)
+        // Support = where the paper was actually observed. The per-frame
+        // inlier bounds are noisy at tracking cadence (subsets of ~1024
+        // keypoints), so gate against the union of the last few frames and
+        // only require the box CENTER inside it — per-frame whole-rect
+        // containment made boxes strobe in and out.
+        supportHistory.append(h.sourceInlierBounds)
+        if supportHistory.count > 4 {
+            supportHistory.removeFirst(supportHistory.count - 4)
+        }
+        let support = supportHistory
+            .reduce(supportHistory[0]) { $0.union($1) }
+            .insetBy(dx: -0.05, dy: -0.05)
+
         var nowQuads: [Int: [CGPoint]] = [:]
         var nowRects: [Int: CGRect] = [:]
+        var confirmedNow = Set<Int>()
         for (i, box) in bundled.boxes.enumerated() {
             let corners = h.projectedCorners(of: box)
             let xs = corners.map(\.x), ys = corners.map(\.y)
             let rect = CGRect(x: xs.min()!, y: ys.min()!,
                               width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
-            guard rect.minX >= -0.02, rect.minY >= -0.02,
-                  rect.maxX <= 1.02, rect.maxY <= 1.02,
-                  support.contains(box) else { continue }
+            let inFrame = rect.minX >= -0.02 && rect.minY >= -0.02
+                && rect.maxX <= 1.02 && rect.maxY <= 1.02
+            let supported = support.contains(CGPoint(x: box.midX, y: box.midY))
+
+            // Existence hysteresis: a box that just passed keeps a few frames
+            // of display grace, so one noisy gate result can't blink it off.
+            // Grace frames still project through the CURRENT homography —
+            // the box stays glued, it just isn't treated as fresh evidence.
+            if inFrame && supported {
+                grace[i] = 6
+                confirmedNow.insert(i)
+            } else if inFrame, grace[i, default: 0] > 0 {
+                grace[i] = grace[i, default: 0] - 1
+            } else {
+                grace[i] = 0
+                continue
+            }
             nowQuads[i] = smoothed(corners, previous: visibleQuads[i])
             let sxs = nowQuads[i]!.map(\.x), sys = nowQuads[i]!.map(\.y)
             nowRects[i] = CGRect(x: sxs.min()!, y: sys.min()!,
@@ -197,7 +228,7 @@ final class LiveScanEngine {
         }
 
         for i in 0..<bundled.boxes.count {
-            if nowQuads[i] != nil {
+            if confirmedNow.contains(i) {
                 seenStreak[i, default: 0] += 1
                 if seenStreak[i, default: 0] >= 2, verdicts[i] == nil {
                     let exp = i < expected.count ? expected[i] : ""
@@ -216,18 +247,25 @@ final class LiveScanEngine {
     private func miss() {
         lastInlierCount = 0
         missStreak += 1
-        if missStreak >= 3 {
+        // At tracking cadence a brief motion-blur dropout burns through
+        // misses in a fraction of a second; clearing too eagerly strobes the
+        // whole overlay (and the guide frame back in). ~6 misses ≈ half a
+        // second of sustained loss before wiping.
+        if missStreak >= 6 {
             visibleQuads = [:]
             visibleRects = [:]
             seenStreak = [:]
+            grace = [:]
+            supportHistory = []
             trackingHint = nil
         }
         publish(aligned: false)
     }
 
-    // Adaptive low-pass on the projected corners: follow immediately when the
-    // box moved a lot (panning — smoothing there reads as lag), smooth when
-    // nearly still (kills jitter without visible delay).
+    // Adaptive low-pass on the projected corners: heavier smoothing when
+    // nearly still (kills jitter), fading continuously to instant follow on
+    // large motion. Continuous — a hard threshold made the overlay alternate
+    // between snapping and smoothing frame to frame, which read as jitter.
     private func smoothed(_ corners: [CGPoint], previous: [CGPoint]?) -> [CGPoint] {
         guard let previous, previous.count == corners.count else { return corners }
         let cx = corners.map(\.x).reduce(0, +) / CGFloat(corners.count)
@@ -235,7 +273,7 @@ final class LiveScanEngine {
         let px = previous.map(\.x).reduce(0, +) / CGFloat(previous.count)
         let py = previous.map(\.y).reduce(0, +) / CGFloat(previous.count)
         let displacement = hypot(cx - px, cy - py)
-        let alpha: CGFloat = displacement > 0.012 ? 1 : 0.45
+        let alpha = min(1, 0.35 + displacement / 0.02)
         return zip(previous, corners).map { p, c in
             CGPoint(x: p.x + (c.x - p.x) * alpha, y: p.y + (c.y - p.y) * alpha)
         }

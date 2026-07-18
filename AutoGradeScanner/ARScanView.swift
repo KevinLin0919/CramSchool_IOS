@@ -60,7 +60,8 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
     private var cameraHistory: [(time: TimeInterval, transform: simd_float4x4,
                                  intrinsics: simd_float3x3, resolution: CGSize)] = []
 
-    // Largest detected horizontal plane (the desk).
+    // Largest detected plane the paper is assumed to lie on (desk, or the
+    // monitor showing the demo sheet).
     private var deskPlane: ARPlaneAnchor?
 
     // World-pinned quad corners per question, from the latest anchor.
@@ -76,7 +77,9 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
         scene = SCNScene()
         automaticallyUpdatesLighting = true
         let configuration = ARWorldTrackingConfiguration()
-        configuration.planeDetection = [.horizontal]
+        // Horizontal for paper on a desk, vertical so a sheet shown on a
+        // monitor (the usual demo setup) can be pinned too.
+        configuration.planeDetection = [.horizontal, .vertical]
         session.run(configuration)
     }
 
@@ -133,7 +136,7 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
 
     private func adoptPlanes(_ anchors: [ARAnchor]) {
         for anchor in anchors {
-            guard let plane = anchor as? ARPlaneAnchor, plane.alignment == .horizontal else { continue }
+            guard let plane = anchor as? ARPlaneAnchor else { continue }
             if let current = deskPlane {
                 let currentArea = current.planeExtent.width * current.planeExtent.height
                 let area = plane.planeExtent.width * plane.planeExtent.height
