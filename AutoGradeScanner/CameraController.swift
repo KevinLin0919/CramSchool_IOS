@@ -214,14 +214,74 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
     }
 }
 
-// MARK: - SwiftUI preview layer
+// MARK: - SwiftUI preview layer + live verdict boxes
 
+// The live boxes are drawn as CAShapeLayers inside the preview view itself,
+// and every corner goes through the preview layer's official coordinate
+// conversion (layerPointConverted). That makes the overlay exact by
+// construction — videoGravity cropping, rotation and safe-area layout are
+// all accounted for by AVFoundation instead of hand-rolled aspect-fill math.
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
+    var live: LiveScanEngine.Update?
 
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+
+        private var boxLayers: [Int: CAShapeLayer] = [:]
+
+        var update: LiveScanEngine.Update? {
+            didSet { renderBoxes() }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            renderBoxes()
+        }
+
+        private func renderBoxes() {
+            CATransaction.begin()
+            // A short bridge between alignment updates; long implicit
+            // animations would re-introduce visible lag.
+            CATransaction.setAnimationDuration(0.06)
+
+            var seen = Set<Int>()
+            for box in update?.boxes ?? [] {
+                seen.insert(box.id)
+                let shape = boxLayers[box.id] ?? makeBoxLayer(id: box.id)
+                let path = UIBezierPath()
+                for (index, corner) in box.quad.enumerated() {
+                    // Upright-frame normalized -> capture-device space (the
+                    // unrotated sensor picture): the upright frame is the
+                    // sensor image rotated 90° CW, so invert that rotation.
+                    let device = CGPoint(x: corner.y, y: 1 - corner.x)
+                    let point = previewLayer.layerPointConverted(fromCaptureDevicePoint: device)
+                    index == 0 ? path.move(to: point) : path.addLine(to: point)
+                }
+                path.close()
+                let color: UIColor = box.verdict.map {
+                    $0 ? UIColor(AG.ok) : UIColor(AG.bad)
+                } ?? .white
+                shape.path = path.cgPath
+                shape.strokeColor = color.cgColor
+                shape.fillColor = color.withAlphaComponent(box.verdict == nil ? 0.05 : 0.15).cgColor
+            }
+            for (id, stale) in boxLayers where !seen.contains(id) {
+                stale.removeFromSuperlayer()
+                boxLayers[id] = nil
+            }
+            CATransaction.commit()
+        }
+
+        private func makeBoxLayer(id: Int) -> CAShapeLayer {
+            let shape = CAShapeLayer()
+            shape.lineWidth = 3
+            shape.lineJoin = .round
+            layer.addSublayer(shape)
+            boxLayers[id] = shape
+            return shape
+        }
     }
 
     func makeUIView(context: Context) -> PreviewView {
@@ -231,5 +291,7 @@ struct CameraPreviewView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: PreviewView, context: Context) {}
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        uiView.update = live
+    }
 }
