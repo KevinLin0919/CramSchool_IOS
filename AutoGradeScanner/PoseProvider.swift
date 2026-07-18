@@ -18,6 +18,10 @@ protocol PoseProvider: AnyObject {
     // interval (simulator, provider stopped, anchor too old) — callers then
     // draw the un-propagated anchor overlay, which is Phase 1 behavior.
     func cameraRotation(since: TimeInterval, lookAhead: TimeInterval) -> simd_double3x3?
+
+    // True after ~1.5 s without meaningful rotation — the "iPad on a stand"
+    // case, where consumers can relax their processing cadence.
+    var isStationary: Bool { get }
 }
 
 // Gyro-only implementation: compensates handheld rotation, which dominates
@@ -29,6 +33,7 @@ final class GyroPoseProvider: PoseProvider {
     private let lock = NSLock()
     private var samples: [(time: TimeInterval, attitude: simd_quatd)] = []
     private var latestRate = simd_double3.zero
+    private var lastMotionAt: TimeInterval = 0
 
     // Back camera axes in the device-locked portrait frame: image x = device
     // x, image y = -device y (screen y points up, image y down), camera
@@ -57,8 +62,17 @@ final class GyroPoseProvider: PoseProvider {
             self.latestRate = simd_double3(deviceMotion.rotationRate.x,
                                            deviceMotion.rotationRate.y,
                                            deviceMotion.rotationRate.z)
+            if simd_length(self.latestRate) > 0.03 {
+                self.lastMotionAt = deviceMotion.timestamp
+            }
             self.lock.unlock()
         }
+    }
+
+    var isStationary: Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let last = samples.last else { return false }
+        return last.time - lastMotionAt > 1.5
     }
 
     func stop() {

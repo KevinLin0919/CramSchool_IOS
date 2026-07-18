@@ -163,8 +163,11 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
         // Live-grading tap. The consumer drops frames while busy, so this
-        // cadence is just an upper bound on conversion work.
-        if let onLiveFrame, frameIndex % 3 == 0,
+        // cadence is just an upper bound on conversion work. On a stand
+        // (stationary device) the paper only moves when slid by hand, so
+        // half the alignment cadence saves battery with no visible cost.
+        let liveCadence = pose.isStationary ? 6 : 3
+        if let onLiveFrame, frameIndex % liveCadence == 0,
            let image = uprightImage(from: pixelBuffer) {
             let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
             let intrinsics = uprightIntrinsics(sampleBuffer: sampleBuffer,
