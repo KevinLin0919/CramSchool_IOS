@@ -1,4 +1,5 @@
 import UIKit
+import simd
 
 // Live grading session for one bundled demo template: camera frames come in,
 // XFeat aligns each against the cached template features, the template's
@@ -8,12 +9,17 @@ import UIKit
 // dropped. Verdicts are canned (demo mode) and lock in once a question has
 // been seen in two consecutive aligned frames, so panning across the paper
 // fills in colors progressively without flicker.
+//
+// While locked on, tracking state (last window + last homography) feeds the
+// matcher's fast path: one window instead of three, and a least-squares
+// refine of the previous solution instead of full RANSAC.
 @MainActor
 final class LiveScanEngine {
 
     struct Box: Identifiable {
         let id: Int               // question index
-        let rect: CGRect          // normalized in the upright frame
+        let quad: [CGPoint]       // projected corners (tl,tr,br,bl), normalized in the upright frame
+        let rect: CGRect          // axis-aligned bounds of quad
         let verdict: Bool?        // nil while pending (not yet locked in)
     }
 
@@ -24,6 +30,8 @@ final class LiveScanEngine {
         let totalCount: Int
         let frameSize: CGSize     // upright frame dimensions, for overlay mapping
         let isReady: Bool         // template features loaded
+        let alignMillis: Double   // last alignment wall time (0 until first result)
+        let inlierCount: Int      // last alignment inliers (0 when missed)
     }
 
     var onUpdate: ((Update) -> Void)?
@@ -39,9 +47,13 @@ final class LiveScanEngine {
     private var missStreak = 0
     private var verdicts: [Int: Bool] = [:]      // question -> correct, locked in
     private var seenStreak: [Int: Int] = [:]     // consecutive aligned sightings
+    private var visibleQuads: [Int: [CGPoint]] = [:]
     private var visibleRects: [Int: CGRect] = [:]
+    private var trackingHint: (windowIndex: Int, matrix: simd_double3x3)?
     private var lastFrame: UIImage?
     private var lastFrameSize = CGSize(width: 3, height: 4)
+    private var lastAlignMillis: Double = 0
+    private var lastInlierCount = 0
 
     private let minInliers: Int
     private let minRatio: Double
@@ -83,10 +95,13 @@ final class LiveScanEngine {
     func submit(frame: UIImage) {
         guard !busy, let matcher else { return }
         busy = true
+        let hint = trackingHint
         Task.detached(priority: .userInitiated) { [weak self] in
-            let homography = try? matcher.align(scan: frame)
+            let started = CACurrentMediaTime()
+            let tracked = try? matcher.alignTracked(scan: frame, hint: hint)
+            let millis = (CACurrentMediaTime() - started) * 1000
             await MainActor.run {
-                self?.integrate(frame: frame, homography: homography ?? nil)
+                self?.integrate(frame: frame, tracked: tracked ?? nil, millis: millis)
                 self?.busy = false
             }
         }
@@ -96,19 +111,26 @@ final class LiveScanEngine {
     func process(frame: UIImage) async {
         guard let matcher else { return }
         busy = true
-        let homography = try? await Task.detached(priority: .userInitiated) {
-            try matcher.align(scan: frame)
+        let hint = trackingHint
+        let started = CACurrentMediaTime()
+        let tracked = try? await Task.detached(priority: .userInitiated) {
+            try matcher.alignTracked(scan: frame, hint: hint)
         }.value
-        integrate(frame: frame, homography: homography)
+        integrate(frame: frame, tracked: tracked ?? nil,
+                  millis: (CACurrentMediaTime() - started) * 1000)
         busy = false
     }
 
     func reset() {
         verdicts = [:]
         seenStreak = [:]
+        visibleQuads = [:]
         visibleRects = [:]
+        trackingHint = nil
         missStreak = 0
         lastFrame = nil
+        lastAlignMillis = 0
+        lastInlierCount = 0
         publish()
     }
 
@@ -129,40 +151,38 @@ final class LiveScanEngine {
 
     // MARK: - Frame integration
 
-    private func integrate(frame: UIImage, homography h: XFeatMatcher.Homography?) {
-        guard let h, h.inlierCount >= minInliers, h.inlierRatio >= minRatio else {
-            missStreak += 1
-            if missStreak >= 3 {
-                visibleRects = [:]
-                seenStreak = [:]
-            }
-            publish(aligned: false)
-            return
-        }
+    private func integrate(frame: UIImage,
+                           tracked: XFeatTemplateMatcher.TrackedAlignment?,
+                           millis: Double) {
+        lastAlignMillis = millis
+        guard let tracked else { return miss() }
+        let h = tracked.homography
+        guard h.inlierCount >= minInliers, h.inlierRatio >= minRatio else { return miss() }
         missStreak = 0
+        trackingHint = (tracked.windowIndex, h.matrix)
+        lastInlierCount = h.inlierCount
         lastFrame = frame
         lastFrameSize = frame.size
 
         let support = h.sourceInlierBounds.insetBy(dx: -0.04, dy: -0.04)
-        var nowVisible: [Int: CGRect] = [:]
+        var nowQuads: [Int: [CGPoint]] = [:]
+        var nowRects: [Int: CGRect] = [:]
         for (i, box) in bundled.boxes.enumerated() {
-            let rect = h.project(box)
+            let corners = h.projectedCorners(of: box)
+            let xs = corners.map(\.x), ys = corners.map(\.y)
+            let rect = CGRect(x: xs.min()!, y: ys.min()!,
+                              width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
             guard rect.minX >= -0.02, rect.minY >= -0.02,
                   rect.maxX <= 1.02, rect.maxY <= 1.02,
                   support.contains(box) else { continue }
-            // Low-pass the rect so the overlay tracks without jitter.
-            if let previous = visibleRects[i] {
-                nowVisible[i] = CGRect(x: (previous.minX + rect.minX) / 2,
-                                       y: (previous.minY + rect.minY) / 2,
-                                       width: (previous.width + rect.width) / 2,
-                                       height: (previous.height + rect.height) / 2)
-            } else {
-                nowVisible[i] = rect
-            }
+            nowQuads[i] = smoothed(corners, previous: visibleQuads[i])
+            let sxs = nowQuads[i]!.map(\.x), sys = nowQuads[i]!.map(\.y)
+            nowRects[i] = CGRect(x: sxs.min()!, y: sys.min()!,
+                                 width: sxs.max()! - sxs.min()!, height: sys.max()! - sys.min()!)
         }
 
         for i in 0..<bundled.boxes.count {
-            if nowVisible[i] != nil {
+            if nowQuads[i] != nil {
                 seenStreak[i, default: 0] += 1
                 if seenStreak[i, default: 0] >= 2, verdicts[i] == nil {
                     let exp = i < expected.count ? expected[i] : ""
@@ -173,19 +193,51 @@ final class LiveScanEngine {
                 seenStreak[i] = 0
             }
         }
-        visibleRects = nowVisible
+        visibleQuads = nowQuads
+        visibleRects = nowRects
         publish(aligned: true)
     }
 
+    private func miss() {
+        lastInlierCount = 0
+        missStreak += 1
+        if missStreak >= 3 {
+            visibleQuads = [:]
+            visibleRects = [:]
+            seenStreak = [:]
+            trackingHint = nil
+        }
+        publish(aligned: false)
+    }
+
+    // Adaptive low-pass on the projected corners: follow immediately when the
+    // box moved a lot (panning — smoothing there reads as lag), smooth when
+    // nearly still (kills jitter without visible delay).
+    private func smoothed(_ corners: [CGPoint], previous: [CGPoint]?) -> [CGPoint] {
+        guard let previous, previous.count == corners.count else { return corners }
+        let cx = corners.map(\.x).reduce(0, +) / CGFloat(corners.count)
+        let cy = corners.map(\.y).reduce(0, +) / CGFloat(corners.count)
+        let px = previous.map(\.x).reduce(0, +) / CGFloat(previous.count)
+        let py = previous.map(\.y).reduce(0, +) / CGFloat(previous.count)
+        let displacement = hypot(cx - px, cy - py)
+        let alpha: CGFloat = displacement > 0.012 ? 1 : 0.45
+        return zip(previous, corners).map { p, c in
+            CGPoint(x: p.x + (c.x - p.x) * alpha, y: p.y + (c.y - p.y) * alpha)
+        }
+    }
+
     private func publish(aligned: Bool = false) {
-        let boxes = visibleRects.keys.sorted().map { i in
-            Box(id: i, rect: visibleRects[i]!, verdict: verdicts[i])
+        let boxes = visibleQuads.keys.sorted().map { i in
+            Box(id: i, quad: visibleQuads[i]!, rect: visibleRects[i] ?? .zero,
+                verdict: verdicts[i])
         }
         onUpdate?(Update(boxes: boxes,
                          aligned: aligned && !boxes.isEmpty,
                          gradedCount: verdicts.count,
                          totalCount: bundled.boxes.count,
                          frameSize: lastFrameSize,
-                         isReady: matcher != nil))
+                         isReady: matcher != nil,
+                         alignMillis: lastAlignMillis,
+                         inlierCount: lastInlierCount))
     }
 }

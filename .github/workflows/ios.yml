@@ -23,6 +23,61 @@ jobs:
             -configuration Debug \
             -destination "generic/platform=iOS Simulator"
 
+  selftest:
+    name: Demo grading self-test (simulator)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Boot simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          print(next(dev['udid'] for devs in data['devices'].values()
+                     for dev in devs if dev.get('isAvailable') and 'iPhone' in dev['name']))")
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl bootstatus "$UDID" -b
+      - name: Build (Debug, simulator)
+        run: |
+          xcodebuild build \
+            -project AutoGradeScanner.xcodeproj \
+            -scheme AutoGradeScanner \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -derivedDataPath build
+      - name: Install app
+        run: xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/AutoGradeScanner.app
+      - name: Still-photo grading self-test
+        run: |
+          SIMCTL_CHILD_DEMO_SELFTEST_SCAN="$PWD/TestFixtures/scan_full.jpg" \
+          SIMCTL_CHILD_DEMO_SELFTEST_OUT="$PWD/selftest_still.png" \
+          xcrun simctl launch --terminate-running-process --console-pty "$UDID" \
+            com.cramschool.autogradescanner | tee still.log
+          grep -q "SELFTEST: 8 visible boxes" still.log
+          grep -Eq "SELFTEST: Q1 .*correct=true" still.log
+          grep -Eq "SELFTEST: Q4 .*correct=false" still.log
+          grep -Eq "SELFTEST: Q6 .*correct=false" still.log
+      - name: Live-scan self-test (partial views, pan across the page)
+        run: |
+          F="$PWD/TestFixtures"
+          SIMCTL_CHILD_DEMO_SELFTEST_LIVE="$F/scan_top.jpg,$F/scan_top.jpg,$F/scan_bottom.jpg,$F/scan_bottom.jpg,$F/scan_full.jpg,$F/scan_full.jpg" \
+          SIMCTL_CHILD_DEMO_SELFTEST_OUT="$PWD/selftest_live.png" \
+          xcrun simctl launch --terminate-running-process --console-pty "$UDID" \
+            com.cramschool.autogradescanner | tee live.log
+          grep -q "SELFTEST LIVE final: 8 graded" live.log
+      - name: Upload self-test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-output
+          path: |
+            selftest_*.png
+            still.log
+            live.log
+
   ipa:
     name: Build unsigned .ipa for sideloading
     runs-on: macos-latest

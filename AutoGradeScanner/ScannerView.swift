@@ -106,13 +106,8 @@ struct ScannerView: View {
                     .animation(.spring(duration: 0.28), value: revealed)
             }
         } else if camera.isAuthorized {
-            CameraPreviewView(session: camera.session)
+            CameraPreviewView(session: camera.session, live: liveUpdate)
                 .ignoresSafeArea()
-                .overlay {
-                    if let live = liveUpdate, !live.boxes.isEmpty {
-                        LiveBoxesOverlay(update: live)
-                    }
-                }
         } else {
             VStack(spacing: 14) {
                 Image(systemName: "camera.fill")
@@ -472,7 +467,7 @@ struct ScannerView: View {
                 Image(systemName: "checkmark.viewfinder")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color(hex: 0x6FCF97))
-                Text("已對位・批改 \(live.gradedCount)/\(live.totalCount)")
+                Text("已對位・批改 \(live.gradedCount)/\(live.totalCount)" + debugSuffix(live))
                     .monospacedDigit()
             } else if !live.isReady {
                 ProgressView()
@@ -508,6 +503,17 @@ struct ScannerView: View {
             .clipShape(Capsule())
             .shadow(color: AG.brand.opacity(0.4), radius: 10, y: 6)
         }
+    }
+
+    // Latency/inlier HUD, debug builds only — for calibrating on device.
+    private func debugSuffix(_ live: LiveScanEngine.Update) -> String {
+        #if DEBUG
+        return live.alignMillis > 0
+            ? "・\(Int(live.alignMillis))ms・\(live.inlierCount)pt"
+            : ""
+        #else
+        return ""
+        #endif
     }
 
     private func finishLiveSession() {
@@ -576,41 +582,6 @@ struct ScannerView: View {
         liveEngine?.reset()
         camera.resetDetection()
         camera.checkPermissionAndStart()
-    }
-}
-
-// MARK: - Live verdict boxes over the camera preview
-
-// Maps frame-normalized rects into the aspect-fill preview: the frame is
-// scaled up until it covers the view and centered, so overlay coordinates
-// use the same transform.
-private struct LiveBoxesOverlay: View {
-    let update: LiveScanEngine.Update
-
-    var body: some View {
-        GeometryReader { geo in
-            let fw = max(update.frameSize.width, 1)
-            let fh = max(update.frameSize.height, 1)
-            let scale = max(geo.size.width / fw, geo.size.height / fh)
-            let dw = fw * scale, dh = fh * scale
-            let ox = (geo.size.width - dw) / 2
-            let oy = (geo.size.height - dh) / 2
-
-            ForEach(update.boxes) { box in
-                let color: Color = {
-                    guard let verdict = box.verdict else { return .white }
-                    return verdict ? AG.ok : AG.bad
-                }()
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(color.opacity(box.verdict == nil ? 0.05 : 0.15))
-                    .stroke(color, lineWidth: 3)
-                    .frame(width: box.rect.width * dw, height: box.rect.height * dh)
-                    .position(x: ox + box.rect.midX * dw,
-                              y: oy + box.rect.midY * dh)
-                    .animation(.linear(duration: 0.12), value: box.rect)
-            }
-        }
-        .allowsHitTesting(false)
     }
 }
 

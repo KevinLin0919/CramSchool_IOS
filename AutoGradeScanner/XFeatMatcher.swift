@@ -88,12 +88,19 @@ enum XFeatMatcher {
             return CGPoint(x: p.x / p.z, y: p.y / p.z)
         }
 
+        // The rect's four corners projected through the homography, in
+        // tl, tr, br, bl order. Drawing this quadrilateral (instead of its
+        // bounding box) keeps the overlay tight on a tilted page.
+        func projectedCorners(of rect: CGRect) -> [CGPoint] {
+            [CGPoint(x: rect.minX, y: rect.minY),
+             CGPoint(x: rect.maxX, y: rect.minY),
+             CGPoint(x: rect.maxX, y: rect.maxY),
+             CGPoint(x: rect.minX, y: rect.maxY)].map(project)
+        }
+
         // Axis-aligned bounding box of the projected corners.
         func project(_ rect: CGRect) -> CGRect {
-            let corners = [CGPoint(x: rect.minX, y: rect.minY),
-                           CGPoint(x: rect.maxX, y: rect.minY),
-                           CGPoint(x: rect.maxX, y: rect.maxY),
-                           CGPoint(x: rect.minX, y: rect.maxY)].map(project)
+            let corners = projectedCorners(of: rect)
             let xs = corners.map(\.x), ys = corners.map(\.y)
             return CGRect(x: xs.min()!, y: ys.min()!,
                           width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
@@ -103,15 +110,33 @@ enum XFeatMatcher {
     // Estimates the homography mapping source onto destination with RANSAC.
     // Points are expected in normalized 0...1 coordinates; the default
     // reprojection threshold (~0.008) is about 5 px on the model input.
+    //
+    // `prior` (the previous frame's solution, in the same coordinate spaces)
+    // enables a tracking fast path: when the prior still explains enough of
+    // the new matches it is refined by one least-squares pass and RANSAC is
+    // skipped entirely — the dominant per-frame cost while locked on.
     static func findHomography(from source: [CGPoint], to destination: [CGPoint],
                                reprojectionThreshold: Double = 0.008,
-                               iterations: Int = 800) -> Homography? {
+                               iterations: Int = 800,
+                               prior: simd_double3x3? = nil) -> Homography? {
         let count = min(source.count, destination.count)
         guard count >= 4 else { return nil }
 
         let src = source.map { simd_double2(Double($0.x), Double($0.y)) }
         let dst = destination.map { simd_double2(Double($0.x), Double($0.y)) }
         let thresholdSq = reprojectionThreshold * reprojectionThreshold
+
+        if let prior {
+            var priorInliers: [Int] = []
+            for i in 0..<count where reprojectionErrorSq(prior, src[i], dst[i]) < thresholdSq {
+                priorInliers.append(i)
+            }
+            if priorInliers.count >= 12,
+               let refined = solveHomography(indices: priorInliers, src: src, dst: dst),
+               let result = finalize(refined, src: src, dst: dst, thresholdSq: thresholdSq) {
+                return result
+            }
+        }
 
         var bestInliers: [Int] = []
         for _ in 0..<iterations {
@@ -134,20 +159,27 @@ enum XFeatMatcher {
               let refined = solveHomography(indices: bestInliers, src: src, dst: dst) else {
             return nil
         }
+        return finalize(refined, src: src, dst: dst, thresholdSq: thresholdSq)
+    }
 
+    // Recounts inliers of the refined matrix and packages the result.
+    private static func finalize(_ refined: simd_double3x3,
+                                 src: [simd_double2], dst: [simd_double2],
+                                 thresholdSq: Double) -> Homography? {
         var inlierCount = 0
         var minX = Double.infinity, minY = Double.infinity
         var maxX = -Double.infinity, maxY = -Double.infinity
-        for i in 0..<count where reprojectionErrorSq(refined, src[i], dst[i]) < thresholdSq {
+        for i in 0..<src.count where reprojectionErrorSq(refined, src[i], dst[i]) < thresholdSq {
             inlierCount += 1
             minX = min(minX, src[i].x); maxX = max(maxX, src[i].x)
             minY = min(minY, src[i].y); maxY = max(maxY, src[i].y)
         }
-        let bounds = inlierCount > 0
-            ? CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-            : .zero
+        guard inlierCount >= 4 else { return nil }
         return Homography(matrix: refined, inlierCount: inlierCount,
-                          matchCount: count, sourceInlierBounds: bounds)
+                          matchCount: src.count,
+                          sourceInlierBounds: CGRect(x: minX, y: minY,
+                                                     width: maxX - minX,
+                                                     height: maxY - minY))
     }
 
     // Direct linear transform with h33 fixed to 1, solved via normal
@@ -266,6 +298,18 @@ final class XFeatTemplateMatcher {
         let features: XFeatFeatures
     }
 
+    // A live-tracking result: the homography plus which template window
+    // produced it, so the next frame can try that window first.
+    struct TrackedAlignment {
+        let homography: XFeatMatcher.Homography
+        let windowIndex: Int
+    }
+
+    // The scan side keeps fewer keypoints than the template: matching cost is
+    // n×m, and camera frames show at most part of the page, so 1024 is ample
+    // while halving the similarity-matrix multiply.
+    static let scanTopK = 1024
+
     private let entries: [WindowEntry]
 
     init(template: UIImage) throws {
@@ -281,47 +325,86 @@ final class XFeatTemplateMatcher {
 
     func align(scan: UIImage, minMatches: Int = 12) throws -> XFeatMatcher.Homography? {
         guard let engine = XFeatEngine.shared else { throw XFeatError.modelMissing }
-        return align(scanFeatures: try engine.extract(from: scan), minMatches: minMatches)
+        let features = try engine.extract(from: scan, topK: XFeatTemplateMatcher.scanTopK)
+        return align(scanFeatures: features, minMatches: minMatches)
     }
 
     func align(scanFeatures: XFeatFeatures, minMatches: Int = 12) -> XFeatMatcher.Homography? {
-        var best: XFeatMatcher.Homography?
-        for entry in entries {
-            let window = entry.window
-            let pairs = XFeatMatcher.match(entry.features, scanFeatures)
-            let h = pairs.count >= minMatches
-                ? XFeatMatcher.findHomography(from: pairs.map { entry.features.keypoints[$0.0] },
-                                              to: pairs.map { scanFeatures.keypoints[$0.1] })
-                : nil
-            #if DEBUG
-            if ProcessInfo.processInfo.environment["DEMO_SELFTEST_SCAN"] != nil {
-                print("XFEAT window=\(window) features=\(entry.features.count) "
-                      + "pairs=\(pairs.count) inliers=\(h?.inlierCount ?? 0)")
-            }
-            #endif
-            guard let h else { continue }
+        alignTracked(scanFeatures: scanFeatures, minMatches: minMatches, hint: nil)?.homography
+    }
 
-            // Compose with the affine that maps template-normalized coords
-            // into window-normalized coords, so callers always project
-            // full-template coordinates.
-            let a = simd_double3x3(rows: [
-                simd_double3(1 / Double(window.width), 0, -Double(window.minX) / Double(window.width)),
-                simd_double3(0, 1 / Double(window.height), -Double(window.minY) / Double(window.height)),
-                simd_double3(0, 0, 1)])
-            let b = h.sourceInlierBounds
-            let candidate = XFeatMatcher.Homography(
-                matrix: h.matrix * a,
-                inlierCount: h.inlierCount,
-                matchCount: h.matchCount,
-                sourceInlierBounds: CGRect(x: b.minX * window.width + window.minX,
-                                           y: b.minY * window.height + window.minY,
-                                           width: b.width * window.width,
-                                           height: b.height * window.height))
-            if candidate.inlierCount > (best?.inlierCount ?? 0) {
-                best = candidate
+    func alignTracked(scan: UIImage, minMatches: Int = 12,
+                      hint: (windowIndex: Int, matrix: simd_double3x3)?) throws -> TrackedAlignment? {
+        guard let engine = XFeatEngine.shared else { throw XFeatError.modelMissing }
+        let features = try engine.extract(from: scan, topK: XFeatTemplateMatcher.scanTopK)
+        return alignTracked(scanFeatures: features, minMatches: minMatches, hint: hint)
+    }
+
+    // Tracking-aware alignment. With a hint from the previous frame the
+    // hinted window is tried first, seeded with the previous full-template
+    // homography as a RANSAC-skipping prior; a solid result short-circuits
+    // the other windows, cutting the per-frame matching cost to a third.
+    func alignTracked(scanFeatures: XFeatFeatures, minMatches: Int = 12,
+                      hint: (windowIndex: Int, matrix: simd_double3x3)?) -> TrackedAlignment? {
+        if let hint, entries.indices.contains(hint.windowIndex),
+           let quick = candidate(at: hint.windowIndex, scanFeatures: scanFeatures,
+                                 minMatches: minMatches, priorFullTemplate: hint.matrix),
+           quick.homography.inlierCount >= 24 {
+            return quick
+        }
+
+        var best: TrackedAlignment?
+        for index in entries.indices {
+            guard let c = candidate(at: index, scanFeatures: scanFeatures,
+                                    minMatches: minMatches, priorFullTemplate: nil) else { continue }
+            if c.homography.inlierCount > (best?.homography.inlierCount ?? 0) {
+                best = c
             }
         }
         return best
+    }
+
+    private func candidate(at index: Int, scanFeatures: XFeatFeatures,
+                           minMatches: Int,
+                           priorFullTemplate: simd_double3x3?) -> TrackedAlignment? {
+        let entry = entries[index]
+        let window = entry.window
+        let pairs = XFeatMatcher.match(entry.features, scanFeatures)
+
+        // Affine a maps full-template coords into this window's coords; its
+        // inverse turns a full-template prior into a window-space prior.
+        let a = simd_double3x3(rows: [
+            simd_double3(1 / Double(window.width), 0, -Double(window.minX) / Double(window.width)),
+            simd_double3(0, 1 / Double(window.height), -Double(window.minY) / Double(window.height)),
+            simd_double3(0, 0, 1)])
+        let aInverse = simd_double3x3(rows: [
+            simd_double3(Double(window.width), 0, Double(window.minX)),
+            simd_double3(0, Double(window.height), Double(window.minY)),
+            simd_double3(0, 0, 1)])
+
+        let h = pairs.count >= minMatches
+            ? XFeatMatcher.findHomography(from: pairs.map { entry.features.keypoints[$0.0] },
+                                          to: pairs.map { scanFeatures.keypoints[$0.1] },
+                                          prior: priorFullTemplate.map { $0 * aInverse })
+            : nil
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DEMO_SELFTEST_SCAN"] != nil {
+            print("XFEAT window=\(window) features=\(entry.features.count) "
+                  + "pairs=\(pairs.count) inliers=\(h?.inlierCount ?? 0)")
+        }
+        #endif
+        guard let h else { return nil }
+
+        let b = h.sourceInlierBounds
+        let composed = XFeatMatcher.Homography(
+            matrix: h.matrix * a,
+            inlierCount: h.inlierCount,
+            matchCount: h.matchCount,
+            sourceInlierBounds: CGRect(x: b.minX * window.width + window.minX,
+                                       y: b.minY * window.height + window.minY,
+                                       width: b.width * window.width,
+                                       height: b.height * window.height))
+        return TrackedAlignment(homography: composed, windowIndex: index)
     }
 
     private static func crop(_ image: UIImage, to normalized: CGRect) -> UIImage? {
