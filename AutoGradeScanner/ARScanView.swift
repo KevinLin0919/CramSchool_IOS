@@ -87,10 +87,16 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
     // MARK: - ARSessionDelegate
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        cameraHistory.append((frame.timestamp, frame.camera.transform,
-                              frame.camera.intrinsics, frame.camera.imageResolution))
-        if cameraHistory.count > 90 {
-            cameraHistory.removeFirst(cameraHistory.count - 90)
+        // Only trust poses while tracking is nominal: a degraded pose in the
+        // history would poison world pinning, and skipping it makes anchor
+        // lookups fail → the overlay silently falls back to anchor-rate
+        // quads until tracking recovers.
+        if case .normal = frame.camera.trackingState {
+            cameraHistory.append((frame.timestamp, frame.camera.transform,
+                                  frame.camera.intrinsics, frame.camera.imageResolution))
+            if cameraHistory.count > 90 {
+                cameraHistory.removeFirst(cameraHistory.count - 90)
+            }
         }
 
         // Feed XFeat at a throttled cadence, dropping frames while busy —
@@ -237,13 +243,19 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
         CATransaction.setDisableActions(true)
 
         let camera = session.currentFrame?.camera
+        let trackingNormal: Bool
+        if let camera, case .normal = camera.trackingState {
+            trackingNormal = true
+        } else {
+            trackingNormal = false
+        }
         let viewport = bounds.size
         var seen = Set<Int>()
         for box in update?.boxes ?? [] {
             let path = UIBezierPath()
             var complete = true
 
-            if let camera, viewport.width > 0, let world = worldQuads[box.id] {
+            if let camera, trackingNormal, viewport.width > 0, let world = worldQuads[box.id] {
                 // World-pinned: full 6-DOF compensation.
                 for (index, corner) in world.enumerated() {
                     let projected = camera.projectPoint(corner,
