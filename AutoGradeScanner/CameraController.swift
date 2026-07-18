@@ -1,6 +1,7 @@
 import AVFoundation
 import SwiftUI
 import Vision
+import simd
 
 // Camera session with automatic paper detection: Vision rectangle
 // detection runs on the video feed and, once a document-like rectangle
@@ -8,16 +9,22 @@ import Vision
 final class CameraController: NSObject, ObservableObject {
     let session = AVCaptureSession()
 
+    // Motion backbone for overlay propagation between XFeat anchors; runs
+    // alongside the session so timestamps share the host clock.
+    let pose: PoseProvider = GyroPoseProvider()
+
     @Published var isAuthorized = true
     @Published var isTorchOn = false
     @Published var paperDetected = false
 
     var onCapture: ((UIImage) -> Void)?
 
-    // Live-grading tap: sampled video frames as upright UIImages. While set
-    // with autoCaptureEnabled = false, the scanner grades the stream in place
-    // instead of waiting for a still capture.
-    var onLiveFrame: ((UIImage) -> Void)?
+    // Live-grading tap: sampled video frames as upright UIImages, with the
+    // frame's capture timestamp (host clock) and, when the device delivers
+    // them, its intrinsics mapped into the upright frame's normalized
+    // coordinates. While set with autoCaptureEnabled = false, the scanner
+    // grades the stream in place instead of waiting for a still capture.
+    var onLiveFrame: ((UIImage, TimeInterval, simd_double3x3?) -> Void)?
     var autoCaptureEnabled = true
 
     private let photoOutput = AVCapturePhotoOutput()
@@ -50,6 +57,7 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     func start() {
+        pose.start()
         sessionQueue.async {
             self.configureIfNeeded()
             if !self.session.isRunning {
@@ -59,6 +67,7 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     func stop() {
+        pose.stop()
         sessionQueue.async {
             if self.session.isRunning {
                 self.session.stopRunning()
@@ -93,6 +102,10 @@ final class CameraController: NSObject, ObservableObject {
         videoOutput.alwaysDiscardsLateVideoFrames = true
         if session.canAddOutput(videoOutput) {
             session.addOutput(videoOutput)
+        }
+        if let connection = videoOutput.connection(with: .video),
+           connection.isCameraIntrinsicMatrixDeliverySupported {
+            connection.isCameraIntrinsicMatrixDeliveryEnabled = true
         }
 
         session.commitConfiguration()
@@ -153,7 +166,11 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         // cadence is just an upper bound on conversion work.
         if let onLiveFrame, frameIndex % 3 == 0,
            let image = uprightImage(from: pixelBuffer) {
-            onLiveFrame(image)
+            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+            let intrinsics = uprightIntrinsics(sampleBuffer: sampleBuffer,
+                                               pixelBuffer: pixelBuffer,
+                                               uprightSize: image.size)
+            onLiveFrame(image, timestamp, intrinsics)
         }
 
         guard autoCaptureEnabled, !hasCaptured, frameIndex % 6 == 0 else { return }
@@ -181,6 +198,52 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             hasCaptured = true
             capturePhoto()
         }
+    }
+
+    // Camera intrinsics mapped into the upright analysis frame, expressed for
+    // normalized coordinates: K maps a camera ray onto (x, y) in 0...1 of the
+    // upright image. Used to turn a physical camera rotation into the 2D
+    // homography that shifts the overlay (K · R · K⁻¹). Falls back to a
+    // typical wide-camera focal length when delivery is unavailable.
+    private func uprightIntrinsics(sampleBuffer: CMSampleBuffer,
+                                   pixelBuffer: CVPixelBuffer,
+                                   uprightSize: CGSize) -> simd_double3x3? {
+        let bufferWidth = Double(CVPixelBufferGetWidth(pixelBuffer))
+        let bufferHeight = Double(CVPixelBufferGetHeight(pixelBuffer))
+        guard bufferWidth > 0, bufferHeight > 0,
+              uprightSize.width > 0, uprightSize.height > 0 else { return nil }
+
+        // Sensor-space intrinsics (pixel units of the delivered buffer).
+        var focal: Double
+        var centerX: Double
+        var centerY: Double
+        if let data = CMGetAttachment(sampleBuffer,
+                                      key: kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix,
+                                      attachmentModeOut: nil) as? Data,
+           data.count >= MemoryLayout<matrix_float3x3>.size {
+            let k = data.withUnsafeBytes { $0.load(as: matrix_float3x3.self) }
+            focal = Double(k.columns.0.x)
+            centerX = Double(k.columns.2.x)
+            centerY = Double(k.columns.2.y)
+        } else {
+            // ~69° horizontal FOV of the standard wide camera.
+            focal = 0.73 * bufferWidth
+            centerX = bufferWidth / 2
+            centerY = bufferHeight / 2
+        }
+
+        // Sensor -> upright is a 90° CW rotation then a uniform downscale.
+        let scale = Double(uprightSize.width) / bufferHeight
+        let uprightFocal = focal * scale
+        let uprightCenterX = (bufferHeight - centerY) * scale
+        let uprightCenterY = centerX * scale
+
+        let width = Double(uprightSize.width)
+        let height = Double(uprightSize.height)
+        return simd_double3x3(rows: [
+            simd_double3(uprightFocal / width, 0, uprightCenterX / width),
+            simd_double3(0, uprightFocal / height, uprightCenterY / height),
+            simd_double3(0, 0, 1)])
     }
 
     // Camera frames arrive in sensor (landscape) orientation; rotate upright
@@ -221,18 +284,35 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
 // conversion (layerPointConverted). That makes the overlay exact by
 // construction — videoGravity cropping, rotation and safe-area layout are
 // all accounted for by AVFoundation instead of hand-rolled aspect-fill math.
+//
+// A display link re-renders every screen frame: the quads from the last
+// XFeat anchor are shifted by the camera rotation the PoseProvider has
+// measured since that frame (H = K·R·K⁻¹), so the overlay tracks handheld
+// motion at 60 fps instead of stepping at alignment cadence.
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     var live: LiveScanEngine.Update?
+    var pose: PoseProvider?
 
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
 
+        var pose: PoseProvider?
+
         private var boxLayers: [Int: CAShapeLayer] = [:]
+        private var displayLink: CADisplayLink?
 
         var update: LiveScanEngine.Update? {
-            didSet { renderBoxes() }
+            didSet {
+                renderBoxes()
+                syncDisplayLink()
+            }
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            syncDisplayLink()
         }
 
         override func layoutSubviews() {
@@ -240,24 +320,58 @@ struct CameraPreviewView: UIViewRepresentable {
             renderBoxes()
         }
 
+        private func syncDisplayLink() {
+            let wanted = window != nil && !(update?.boxes.isEmpty ?? true)
+            if wanted && displayLink == nil {
+                let link = CADisplayLink(target: self, selector: #selector(tick))
+                link.add(to: .main, forMode: .common)
+                displayLink = link
+            } else if !wanted, let link = displayLink {
+                link.invalidate()
+                displayLink = nil
+            }
+        }
+
+        @objc private func tick() {
+            renderBoxes()
+        }
+
+        // Camera motion since the anchor frame as a 2D homography over the
+        // upright frame's normalized coordinates; identity-equivalent nil
+        // when no pose data is available.
+        private func propagationMatrix() -> simd_double3x3? {
+            guard let update, update.frameTimestamp > 0,
+                  let intrinsics = update.intrinsics,
+                  let rotation = pose?.cameraRotation(since: update.frameTimestamp,
+                                                      lookAhead: 0.02) else { return nil }
+            return intrinsics * rotation * intrinsics.inverse
+        }
+
         private func renderBoxes() {
             CATransaction.begin()
-            // A short bridge between alignment updates; long implicit
-            // animations would re-introduce visible lag.
-            CATransaction.setAnimationDuration(0.06)
+            CATransaction.setDisableActions(true)
 
+            let propagation = propagationMatrix()
             var seen = Set<Int>()
             for box in update?.boxes ?? [] {
                 seen.insert(box.id)
                 let shape = boxLayers[box.id] ?? makeBoxLayer(id: box.id)
                 let path = UIBezierPath()
                 for (index, corner) in box.quad.enumerated() {
+                    var point = corner
+                    if let propagation {
+                        let projected = propagation * simd_double3(Double(point.x), Double(point.y), 1)
+                        if abs(projected.z) > 1e-9 {
+                            point = CGPoint(x: projected.x / projected.z,
+                                            y: projected.y / projected.z)
+                        }
+                    }
                     // Upright-frame normalized -> capture-device space (the
                     // unrotated sensor picture): the upright frame is the
                     // sensor image rotated 90° CW, so invert that rotation.
-                    let device = CGPoint(x: corner.y, y: 1 - corner.x)
-                    let point = previewLayer.layerPointConverted(fromCaptureDevicePoint: device)
-                    index == 0 ? path.move(to: point) : path.addLine(to: point)
+                    let device = CGPoint(x: point.y, y: 1 - point.x)
+                    let converted = previewLayer.layerPointConverted(fromCaptureDevicePoint: device)
+                    index == 0 ? path.move(to: converted) : path.addLine(to: converted)
                 }
                 path.close()
                 let color: UIColor = box.verdict.map {
@@ -288,10 +402,12 @@ struct CameraPreviewView: UIViewRepresentable {
         let view = PreviewView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
+        view.pose = pose
         return view
     }
 
     func updateUIView(_ uiView: PreviewView, context: Context) {
+        uiView.pose = pose
         uiView.update = live
     }
 }

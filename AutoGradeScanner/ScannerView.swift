@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import ARKit
 
 // Screen 2 — full-bleed camera scanner.
 // Flow: aligning → detected (frame locks green, auto-captures) →
@@ -27,6 +28,14 @@ struct ScannerView: View {
     // viewfinder and verdicts accumulate as the camera pans across it.
     @State private var liveEngine: LiveScanEngine?
     @State private var liveUpdate: LiveScanEngine.Update?
+
+    // Experimental ARKit world-tracking backbone (Phase 3). When enabled and
+    // supported, ARKit owns the camera and pins the boxes in world space.
+    @AppStorage("scan.arBackbone") private var arBackbone = false
+
+    private var useARBackbone: Bool {
+        arBackbone && ARWorldTrackingConfiguration.isSupported && liveEngine != nil
+    }
 
     private var revealedCorrect: Int {
         answers.prefix(revealed).filter(\.isCorrect).count
@@ -61,8 +70,12 @@ struct ScannerView: View {
         .onAppear {
             camera.onCapture = { image in handleCapture(image) }
             if let template = model.selectedTemplate {
-                camera.checkPermissionAndStart()
                 startLiveSession(for: template)
+                // ARKit owns the camera in AR mode; starting the AVCapture
+                // session too would fight it for the device.
+                if !useARBackbone {
+                    camera.checkPermissionAndStart()
+                }
             }
         }
         .onDisappear {
@@ -105,8 +118,11 @@ struct ScannerView: View {
                     .padding(.bottom, 170)
                     .animation(.spring(duration: 0.28), value: revealed)
             }
+        } else if useARBackbone, let engine = liveEngine {
+            ARScanContainer(engine: engine, live: liveUpdate)
+                .ignoresSafeArea()
         } else if camera.isAuthorized {
-            CameraPreviewView(session: camera.session, live: liveUpdate)
+            CameraPreviewView(session: camera.session, live: liveUpdate, pose: camera.pose)
                 .ignoresSafeArea()
         } else {
             VStack(spacing: 14) {
@@ -456,8 +472,10 @@ struct ScannerView: View {
         engine.onUpdate = { update in liveUpdate = update }
         liveEngine = engine
         camera.autoCaptureEnabled = false
-        camera.onLiveFrame = { image in
-            Task { @MainActor in engine.submit(frame: image) }
+        camera.onLiveFrame = { image, timestamp, intrinsics in
+            Task { @MainActor in
+                engine.submit(frame: image, timestamp: timestamp, intrinsics: intrinsics)
+            }
         }
     }
 
