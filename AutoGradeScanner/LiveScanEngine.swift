@@ -32,6 +32,8 @@ final class LiveScanEngine {
         let isReady: Bool         // template features loaded
         let alignMillis: Double   // last alignment wall time (0 until first result)
         let inlierCount: Int      // last alignment inliers (0 when missed)
+        let frameTimestamp: TimeInterval      // capture time of the anchor frame (0 = none)
+        let intrinsics: simd_double3x3?       // upright-normalized K of the anchor frame
     }
 
     var onUpdate: ((Update) -> Void)?
@@ -54,6 +56,8 @@ final class LiveScanEngine {
     private var lastFrameSize = CGSize(width: 3, height: 4)
     private var lastAlignMillis: Double = 0
     private var lastInlierCount = 0
+    private var anchorTimestamp: TimeInterval = 0
+    private var anchorIntrinsics: simd_double3x3?
 
     private let minInliers: Int
     private let minRatio: Double
@@ -91,8 +95,11 @@ final class LiveScanEngine {
     var isReady: Bool { matcher != nil }
 
     // Entry point for camera frames; drops the frame when a previous one is
-    // still being aligned.
-    func submit(frame: UIImage) {
+    // still being aligned. Timestamp and intrinsics ride along so the overlay
+    // can propagate this anchor with camera motion measured after it.
+    func submit(frame: UIImage,
+                timestamp: TimeInterval = CACurrentMediaTime(),
+                intrinsics: simd_double3x3? = nil) {
         guard !busy, let matcher else { return }
         busy = true
         let hint = trackingHint
@@ -101,7 +108,8 @@ final class LiveScanEngine {
             let tracked = try? matcher.alignTracked(scan: frame, hint: hint)
             let millis = (CACurrentMediaTime() - started) * 1000
             await MainActor.run {
-                self?.integrate(frame: frame, tracked: tracked ?? nil, millis: millis)
+                self?.integrate(frame: frame, tracked: tracked ?? nil, millis: millis,
+                                timestamp: timestamp, intrinsics: intrinsics)
                 self?.busy = false
             }
         }
@@ -117,7 +125,8 @@ final class LiveScanEngine {
             try matcher.alignTracked(scan: frame, hint: hint)
         }.value
         integrate(frame: frame, tracked: tracked ?? nil,
-                  millis: (CACurrentMediaTime() - started) * 1000)
+                  millis: (CACurrentMediaTime() - started) * 1000,
+                  timestamp: CACurrentMediaTime(), intrinsics: nil)
         busy = false
     }
 
@@ -131,6 +140,8 @@ final class LiveScanEngine {
         lastFrame = nil
         lastAlignMillis = 0
         lastInlierCount = 0
+        anchorTimestamp = 0
+        anchorIntrinsics = nil
         publish()
     }
 
@@ -153,7 +164,9 @@ final class LiveScanEngine {
 
     private func integrate(frame: UIImage,
                            tracked: XFeatTemplateMatcher.TrackedAlignment?,
-                           millis: Double) {
+                           millis: Double,
+                           timestamp: TimeInterval,
+                           intrinsics: simd_double3x3?) {
         lastAlignMillis = millis
         guard let tracked else { return miss() }
         let h = tracked.homography
@@ -163,6 +176,8 @@ final class LiveScanEngine {
         lastInlierCount = h.inlierCount
         lastFrame = frame
         lastFrameSize = frame.size
+        anchorTimestamp = timestamp
+        anchorIntrinsics = intrinsics
 
         let support = h.sourceInlierBounds.insetBy(dx: -0.04, dy: -0.04)
         var nowQuads: [Int: [CGPoint]] = [:]
@@ -238,6 +253,8 @@ final class LiveScanEngine {
                          frameSize: lastFrameSize,
                          isReady: matcher != nil,
                          alignMillis: lastAlignMillis,
-                         inlierCount: lastInlierCount))
+                         inlierCount: lastInlierCount,
+                         frameTimestamp: anchorTimestamp,
+                         intrinsics: anchorIntrinsics))
     }
 }
