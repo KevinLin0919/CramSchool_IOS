@@ -350,14 +350,16 @@ struct CameraPreviewView: UIViewRepresentable {
             render()
         }
 
-        // Ease each displayed oriented rect toward its anchor target. Position
-        // and size use one rate; angle a slower one with a dead-zone, so a
-        // near-straight sheet settles upright and only a clear tilt rotates.
+        // Ease each displayed oriented rect toward its anchor target with an
+        // adaptive dead-zone low-pass. Successive XFeat anchors jitter the
+        // target ~1% of the frame even when the sheet is still (RANSAC
+        // sampling + feature noise); below that threshold we damp hard so a
+        // near-still sheet freezes, and ramp up to responsive tracking for
+        // genuine motion. Angle never tracks faster than position and has a
+        // wider dead-zone, so a roughly straight sheet reads as upright.
         private func step() {
             let boxes = update?.boxes ?? []
             var live = Set<Int>()
-            let kPose: CGFloat = 0.22
-            let kAngle: CGFloat = 0.12
             for box in boxes {
                 live.insert(box.id)
                 let target = Self.orientedRect(from: box.quad)
@@ -365,6 +367,8 @@ struct CameraPreviewView: UIViewRepresentable {
                     displayed[box.id] = target   // appear in place, no glide-in
                     continue
                 }
+                let d = hypot(target.cx - cur.cx, target.cy - cur.cy)
+                let kPose = min(0.45, 0.05 + max(0, d - 0.008) * 25)
                 cur.cx += (target.cx - cur.cx) * kPose
                 cur.cy += (target.cy - cur.cy) * kPose
                 cur.w  += (target.w  - cur.w)  * kPose
@@ -374,8 +378,8 @@ struct CameraPreviewView: UIViewRepresentable {
                 var da = target.angle - cur.angle
                 while da >  .pi / 2 { da -= .pi }
                 while da <= -.pi / 2 { da += .pi }
-                cur.angle += da * kAngle
-                if abs(cur.angle) < 0.07 { cur.angle *= 0.6 }   // ~4° dead-zone → upright
+                cur.angle += da * min(0.12, kPose)
+                if abs(cur.angle) < 0.10 { cur.angle *= 0.5 }   // ~5.7° dead-zone → upright
                 displayed[box.id] = cur
             }
             displayed = displayed.filter { live.contains($0.key) }
