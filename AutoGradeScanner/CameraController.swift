@@ -282,16 +282,20 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
 
 // MARK: - SwiftUI preview layer + live verdict boxes
 
-// The live boxes are drawn as CAShapeLayers inside the preview view itself,
-// and every corner goes through the preview layer's official coordinate
-// conversion (layerPointConverted). That makes the overlay exact by
-// construction — videoGravity cropping, rotation and safe-area layout are
-// all accounted for by AVFoundation instead of hand-rolled aspect-fill math.
+// Live boxes are drawn as CAShapeLayers inside the preview view, and every
+// corner goes through the preview layer's official coordinate conversion
+// (layerPointConverted) — videoGravity cropping, rotation and safe-area
+// layout are exact by construction, not hand-rolled aspect-fill math.
 //
-// A display link re-renders every screen frame: the quads from the last
-// XFeat anchor are shifted by the camera rotation the PoseProvider has
-// measured since that frame (H = K·R·K⁻¹), so the overlay tracks handheld
-// motion at 60 fps instead of stepping at alignment cadence.
+// Each answer box is reduced to an oriented rounded rectangle (center, size,
+// angle) — the projected quad's perspective shear is dropped, since at answer-
+// box scale that shear is mostly estimation noise and rendering it verbatim
+// read as twitching. A CADisplayLink glides the DISPLAYED oriented rect toward
+// the latest anchor's target every screen frame (a ~150 ms time constant), so
+// alignment updates arrive smoothly instead of snapping, and small rotations
+// are damped to upright. This is the "calm like the old overlay, accurate like
+// the new one" path; gyro propagation is off here (it pushed boxes the wrong
+// way under translation) and reserved for the ARKit backbone.
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     var live: LiveScanEngine.Update?
@@ -301,16 +305,19 @@ struct CameraPreviewView: UIViewRepresentable {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
 
-        var pose: PoseProvider?
+        var pose: PoseProvider?   // retained for the AR path; unused here
 
+        // An oriented rectangle in upright-frame normalized coordinates.
+        private struct ORect {
+            var cx: CGFloat, cy: CGFloat, w: CGFloat, h: CGFloat, angle: CGFloat
+        }
+
+        private var displayed: [Int: ORect] = [:]   // smoothed, glides toward target
         private var boxLayers: [Int: CAShapeLayer] = [:]
         private var displayLink: CADisplayLink?
 
         var update: LiveScanEngine.Update? {
-            didSet {
-                renderBoxes()
-                syncDisplayLink()
-            }
+            didSet { syncDisplayLink() }
         }
 
         override func didMoveToWindow() {
@@ -320,7 +327,7 @@ struct CameraPreviewView: UIViewRepresentable {
 
         override func layoutSubviews() {
             super.layoutSubviews()
-            renderBoxes()
+            render()
         }
 
         private func syncDisplayLink() {
@@ -332,63 +339,115 @@ struct CameraPreviewView: UIViewRepresentable {
             } else if !wanted, let link = displayLink {
                 link.invalidate()
                 displayLink = nil
+                displayed = [:]
+                boxLayers.values.forEach { $0.removeFromSuperlayer() }
+                boxLayers = [:]
             }
         }
 
         @objc private func tick() {
-            renderBoxes()
+            step()
+            render()
         }
 
-        // Camera motion since the anchor frame as a 2D homography over the
-        // upright frame's normalized coordinates; identity-equivalent nil
-        // when no pose data is available.
-        private func propagationMatrix() -> simd_double3x3? {
-            guard let update, update.frameTimestamp > 0,
-                  let intrinsics = update.intrinsics,
-                  let rotation = pose?.cameraRotation(since: update.frameTimestamp,
-                                                      lookAhead: 0.02) else { return nil }
-            return intrinsics * rotation * intrinsics.inverse
+        // Ease each displayed oriented rect toward its anchor target. Position
+        // and size use one rate; angle a slower one with a dead-zone, so a
+        // near-straight sheet settles upright and only a clear tilt rotates.
+        private func step() {
+            let boxes = update?.boxes ?? []
+            var live = Set<Int>()
+            let kPose: CGFloat = 0.22
+            let kAngle: CGFloat = 0.12
+            for box in boxes {
+                live.insert(box.id)
+                let target = Self.orientedRect(from: box.quad)
+                guard var cur = displayed[box.id] else {
+                    displayed[box.id] = target   // appear in place, no glide-in
+                    continue
+                }
+                cur.cx += (target.cx - cur.cx) * kPose
+                cur.cy += (target.cy - cur.cy) * kPose
+                cur.w  += (target.w  - cur.w)  * kPose
+                cur.h  += (target.h  - cur.h)  * kPose
+                // Rectangles look identical every 180°, so bring the angle
+                // delta into (-π/2, π/2] before easing.
+                var da = target.angle - cur.angle
+                while da >  .pi / 2 { da -= .pi }
+                while da <= -.pi / 2 { da += .pi }
+                cur.angle += da * kAngle
+                if abs(cur.angle) < 0.07 { cur.angle *= 0.6 }   // ~4° dead-zone → upright
+                displayed[box.id] = cur
+            }
+            displayed = displayed.filter { live.contains($0.key) }
         }
 
-        private func renderBoxes() {
+        // Best-fit oriented rectangle of a projected quad (tl, tr, br, bl),
+        // discarding perspective shear.
+        private static func orientedRect(from quad: [CGPoint]) -> ORect {
+            guard quad.count == 4 else { return ORect(cx: 0.5, cy: 0.5, w: 0, h: 0, angle: 0) }
+            let tl = quad[0], tr = quad[1], br = quad[2], bl = quad[3]
+            let cx = (tl.x + tr.x + br.x + bl.x) / 4
+            let cy = (tl.y + tr.y + br.y + bl.y) / 4
+            let topLen = hypot(tr.x - tl.x, tr.y - tl.y)
+            let botLen = hypot(br.x - bl.x, br.y - bl.y)
+            let leftLen = hypot(bl.x - tl.x, bl.y - tl.y)
+            let rightLen = hypot(br.x - tr.x, br.y - tr.y)
+            let topAngle = atan2(tr.y - tl.y, tr.x - tl.x)
+            let botAngle = atan2(br.y - bl.y, br.x - bl.x)
+            return ORect(cx: cx, cy: cy,
+                         w: (topLen + botLen) / 2,
+                         h: (leftLen + rightLen) / 2,
+                         angle: (topAngle + botAngle) / 2)
+        }
+
+        private func render() {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
 
-            let propagation = propagationMatrix()
+            let verdicts = Dictionary(uniqueKeysWithValues:
+                (update?.boxes ?? []).map { ($0.id, $0.verdict) })
             var seen = Set<Int>()
-            for box in update?.boxes ?? [] {
-                seen.insert(box.id)
-                let shape = boxLayers[box.id] ?? makeBoxLayer(id: box.id)
-                let path = UIBezierPath()
-                for (index, corner) in box.quad.enumerated() {
-                    var point = corner
-                    if let propagation {
-                        let projected = propagation * simd_double3(Double(point.x), Double(point.y), 1)
-                        if abs(projected.z) > 1e-9 {
-                            point = CGPoint(x: projected.x / projected.z,
-                                            y: projected.y / projected.z)
-                        }
-                    }
-                    // Upright-frame normalized -> capture-device space (the
-                    // unrotated sensor picture): the upright frame is the
-                    // sensor image rotated 90° CW, so invert that rotation.
-                    let device = CGPoint(x: point.y, y: 1 - point.x)
-                    let converted = previewLayer.layerPointConverted(fromCaptureDevicePoint: device)
-                    index == 0 ? path.move(to: converted) : path.addLine(to: converted)
-                }
-                path.close()
-                let color: UIColor = box.verdict.map {
-                    $0 ? UIColor(AG.ok) : UIColor(AG.bad)
-                } ?? .white
-                shape.path = path.cgPath
+            for (id, rect) in displayed {
+                seen.insert(id)
+                let shape = boxLayers[id] ?? makeBoxLayer(id: id)
+                shape.path = roundedPath(for: rect)
+                let verdict = verdicts[id] ?? nil
+                let color: UIColor = verdict.map { $0 ? UIColor(AG.ok) : UIColor(AG.bad) } ?? .white
                 shape.strokeColor = color.cgColor
-                shape.fillColor = color.withAlphaComponent(box.verdict == nil ? 0.05 : 0.15).cgColor
+                shape.fillColor = color.withAlphaComponent(verdict == nil ? 0.05 : 0.15).cgColor
             }
             for (id, stale) in boxLayers where !seen.contains(id) {
                 stale.removeFromSuperlayer()
                 boxLayers[id] = nil
             }
             CATransaction.commit()
+        }
+
+        // Map the oriented rect's corners into the preview layer, then draw a
+        // rounded rectangle through them. layerPointConverted for a uniform
+        // aspect-fill scale keeps the mapped corners a true rectangle.
+        private func roundedPath(for rect: ORect) -> CGPath {
+            let ux = CGPoint(x: cos(rect.angle), y: sin(rect.angle))
+            let uy = CGPoint(x: -sin(rect.angle), y: cos(rect.angle))
+            func corner(_ sx: CGFloat, _ sy: CGFloat) -> CGPoint {
+                let nx = rect.cx + sx * rect.w / 2 * ux.x + sy * rect.h / 2 * uy.x
+                let ny = rect.cy + sx * rect.w / 2 * ux.y + sy * rect.h / 2 * uy.y
+                // Upright-frame normalized -> capture-device space (upright is
+                // the sensor image rotated 90° CW, so invert that rotation).
+                return previewLayer.layerPointConverted(
+                    fromCaptureDevicePoint: CGPoint(x: ny, y: 1 - nx))
+            }
+            let p0 = corner(-1, -1), p1 = corner(1, -1), p2 = corner(1, 1)
+            let wLayer = hypot(p1.x - p0.x, p1.y - p0.y)
+            let hLayer = hypot(p2.x - p1.x, p2.y - p1.y)
+            let center = CGPoint(x: (p0.x + p2.x) / 2, y: (p0.y + p2.y) / 2)
+            let angleLayer = atan2(p1.y - p0.y, p1.x - p0.x)
+            let radius = min(wLayer, hLayer) * 0.22
+            let local = CGRect(x: -wLayer / 2, y: -hLayer / 2, width: wLayer, height: hLayer)
+            let path = UIBezierPath(roundedRect: local, cornerRadius: radius)
+            var transform = CGAffineTransform(translationX: center.x, y: center.y)
+                .rotated(by: angleLayer)
+            return path.cgPath.copy(using: &transform) ?? path.cgPath
         }
 
         private func makeBoxLayer(id: Int) -> CAShapeLayer {
