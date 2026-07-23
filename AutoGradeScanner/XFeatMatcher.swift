@@ -341,14 +341,16 @@ final class XFeatTemplateMatcher {
     }
 
     // Tracking-aware alignment. With a hint from the previous frame the
-    // hinted window is tried first, seeded with the previous full-template
-    // homography as a RANSAC-skipping prior; a solid result short-circuits
-    // the other windows, cutting the per-frame matching cost to a third.
+    // hinted window is tried first and, if it yields a solid solution, the
+    // other windows are skipped — cutting the per-frame matching cost to a
+    // third. Each anchor runs a fresh full RANSAC (no prior-refinement fast
+    // path): chaining least-squares refits of the previous solution let the
+    // estimate drift slowly, which showed up as boxes creeping/twitching.
     func alignTracked(scanFeatures: XFeatFeatures, minMatches: Int = 12,
                       hint: (windowIndex: Int, matrix: simd_double3x3)?) -> TrackedAlignment? {
         if let hint, entries.indices.contains(hint.windowIndex),
            let quick = candidate(at: hint.windowIndex, scanFeatures: scanFeatures,
-                                 minMatches: minMatches, priorFullTemplate: hint.matrix),
+                                 minMatches: minMatches, priorFullTemplate: nil),
            quick.homography.inlierCount >= 24 {
             return quick
         }
