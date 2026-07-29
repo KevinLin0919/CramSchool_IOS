@@ -50,6 +50,7 @@ enum AG {
     // instead of letting everything stretch edge to edge.
     enum Width {
         static let content: CGFloat = 640   // lists, forms, headers, cards
+        static let contentRegular: CGFloat = 860  // the same, given a tablet's width
         static let wide: CGFloat = 720      // results image column
         static let action: CGFloat = 440    // primary action buttons
         static let card: CGFloat = 520      // floating scanner cards
@@ -79,5 +80,22 @@ extension View {
     func centeredContent(_ maxWidth: CGFloat = AG.Width.content) -> some View {
         frame(maxWidth: maxWidth)
             .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
+// Whether the current window is wide enough to lay out as a tablet rather
+// than a scaled-up phone. Read from the size class, not the idiom, so an
+// iPad in a narrow Split View column correctly falls back to the phone
+// layout instead of trying to fit two columns into 320pt.
+struct RegularWidth<Content: View>: View {
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    let content: (Bool) -> Content
+
+    init(@ViewBuilder content: @escaping (Bool) -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content(sizeClass == .regular)
     }
 }

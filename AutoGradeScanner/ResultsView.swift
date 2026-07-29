@@ -32,46 +32,45 @@ struct ResultsView: View {
         .background(AG.bg2)
     }
 
+    // On a phone the breakdown is a bottom sheet drawn over the paper. A
+    // tablet has the width to show both at once, so the same breakdown
+    // becomes a permanent side column and stops covering the sheet it
+    // describes — read from the size class, so an iPad in a narrow Split
+    // View column still gets the phone layout.
     private func content(_ result: GradingResult) -> some View {
+        RegularWidth { isRegular in
+            if isRegular {
+                VStack(spacing: 0) {
+                    topNav(result, width: .infinity)
+                    HStack(spacing: 0) {
+                        VStack(spacing: 0) {
+                            paperScroll(result, bottomInset: 24)
+                            scanNextButton
+                                .padding(.vertical, 16)
+                        }
+                        Rectangle()
+                            .fill(AG.border2)
+                            .frame(width: 1)
+                            .ignoresSafeArea(edges: .bottom)
+                        BreakdownSheet(answers: result.answers,
+                                       focusQ: $focusQ,
+                                       expanded: $expanded,
+                                       layout: .sideColumn)
+                            .frame(width: 360)
+                    }
+                }
+                .background(AG.bg2)
+            } else {
+                phoneContent(result)
+            }
+        }
+    }
+
+    private func phoneContent(_ result: GradingResult) -> some View {
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
                 topNav(result)
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ScoreCardView(result: result)
-
-                        HStack {
-                            Text("學生答案卷")
-                                .font(.system(size: 12, weight: .semibold))
-                                .kerning(0.3)
-                                .foregroundStyle(AG.fg2)
-                            Spacer()
-                            HStack(spacing: 12) {
-                                legend(color: AG.ok, text: "正確 \(result.correctCount)")
-                                legend(color: AG.bad, text: "錯誤 \(result.incorrectCount)")
-                            }
-                        }
-                        .padding(.top, 16)
-                        .padding(.bottom, 8)
-
-                        GradedImageOverlay(image: result.image,
-                                           answers: result.answers,
-                                           focusedID: focusQ,
-                                           onTapBox: { id in
-                                               focusQ = (focusQ == id) ? nil : id
-                                           })
-                            .aspectRatio(result.image.size.width / max(result.image.size.height, 1),
-                                         contentMode: .fit)
-                            .background(Color(hex: 0xF3EEE3))
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                            .shadow(color: Color(hex: 0x0F1720, alpha: 0.12), radius: 8, y: 4)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 4)
-                    .padding(.bottom, 280)
-                    .centeredContent(AG.Width.wide)
-                }
+                paperScroll(result, bottomInset: 280)
             }
             .background(AG.bg2)
 
@@ -86,7 +85,45 @@ struct ResultsView: View {
         }
     }
 
-    private func topNav(_ result: GradingResult) -> some View {
+    private func paperScroll(_ result: GradingResult, bottomInset: CGFloat) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ScoreCardView(result: result)
+
+                HStack {
+                    Text("學生答案卷")
+                        .font(.system(size: 12, weight: .semibold))
+                        .kerning(0.3)
+                        .foregroundStyle(AG.fg2)
+                    Spacer()
+                    HStack(spacing: 12) {
+                        legend(color: AG.ok, text: "正確 \(result.correctCount)")
+                        legend(color: AG.bad, text: "錯誤 \(result.incorrectCount)")
+                    }
+                }
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+
+                GradedImageOverlay(image: result.image,
+                                   answers: result.answers,
+                                   focusedID: focusQ,
+                                   onTapBox: { id in
+                                       focusQ = (focusQ == id) ? nil : id
+                                   })
+                    .aspectRatio(result.image.size.width / max(result.image.size.height, 1),
+                                 contentMode: .fit)
+                    .background(Color(hex: 0xF3EEE3))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .shadow(color: Color(hex: 0x0F1720, alpha: 0.12), radius: 8, y: 4)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, bottomInset)
+            .centeredContent(AG.Width.wide)
+        }
+    }
+
+    private func topNav(_ result: GradingResult, width: CGFloat = AG.Width.wide) -> some View {
         HStack {
             Button {
                 model.screen = .scan
@@ -113,7 +150,7 @@ struct ResultsView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 44)
-        .centeredContent(AG.Width.wide)
+        .centeredContent(width)
     }
 
     private func shareText(_ result: GradingResult) -> String {
@@ -237,23 +274,32 @@ private struct BreakdownSheet: View {
     @Binding var focusQ: Int?
     @Binding var expanded: Bool
 
+    // A phone shows this as a draggable bottom sheet over the paper; a tablet
+    // has room to stand it up as a permanent column beside the paper, where
+    // there is nothing to collapse and nothing to cover.
+    enum Layout { case bottomSheet, sideColumn }
+    var layout: Layout = .bottomSheet
+
     private var incorrect: Int { answers.filter { !$0.isCorrect }.count }
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 5)
+    private var showsDetail: Bool { layout == .sideColumn || expanded }
 
     var body: some View {
         VStack(spacing: 0) {
-            Button {
-                withAnimation(.spring(duration: 0.28)) { expanded.toggle() }
-            } label: {
-                Capsule()
-                    .fill(AG.borderStrong)
-                    .frame(width: 36, height: 5)
-                    .padding(.top, 10)
-                    .padding(.bottom, 6)
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Rectangle())
+            if layout == .bottomSheet {
+                Button {
+                    withAnimation(.spring(duration: 0.28)) { expanded.toggle() }
+                } label: {
+                    Capsule()
+                        .fill(AG.borderStrong)
+                        .frame(width: 36, height: 5)
+                        .padding(.top, 10)
+                        .padding(.bottom, 6)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             HStack(alignment: .firstTextBaseline) {
                 Text("逐題明細")
@@ -265,6 +311,7 @@ private struct BreakdownSheet: View {
                     .foregroundStyle(AG.fg2)
             }
             .padding(.horizontal, 20)
+            .padding(.top, layout == .sideColumn ? 18 : 0)
             .padding(.bottom, 8)
             .centeredContent()
 
@@ -276,23 +323,42 @@ private struct BreakdownSheet: View {
                         }
                     }
 
-                    if expanded {
+                    if showsDetail {
                         ocrComparisonList
                             .padding(.top, 16)
                     }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
-                .padding(.bottom, 90)
+                .padding(.bottom, layout == .sideColumn ? 24 : 90)
                 .centeredContent()
             }
         }
-        .frame(maxHeight: expanded ? 470 : 225)
         .frame(maxWidth: .infinity)
         .background(AG.bg1)
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22))
-        .shadow(color: Color(hex: 0x0F1720, alpha: 0.10), radius: 12, y: -8)
-        .ignoresSafeArea(edges: .bottom)
+        .modifier(BreakdownChrome(layout: layout, expanded: expanded))
+    }
+
+    // The bottom sheet needs a height cap, a rounded lip and a shadow that
+    // lifts it off the paper. The side column is just a column: full height,
+    // square edge, separated by the divider next to it.
+    private struct BreakdownChrome: ViewModifier {
+        let layout: Layout
+        let expanded: Bool
+
+        func body(content: Content) -> some View {
+            switch layout {
+            case .sideColumn:
+                content.frame(maxHeight: .infinity)
+            case .bottomSheet:
+                content
+                    .frame(maxHeight: expanded ? 470 : 225)
+                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 22,
+                                                      topTrailingRadius: 22))
+                    .shadow(color: Color(hex: 0x0F1720, alpha: 0.10), radius: 12, y: -8)
+                    .ignoresSafeArea(edges: .bottom)
+            }
+        }
     }
 
     private func chip(_ answer: GradedAnswer) -> some View {

@@ -4,6 +4,7 @@ import SwiftUI
 // collapsible grade sections and the floating 開始掃描 button.
 struct TemplatesView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     @State private var query = ""
     @State private var openGrades: Set<String> = []
@@ -14,6 +15,12 @@ struct TemplatesView: View {
     @State private var renameText = ""
     @State private var deleteTarget: ExamTemplate?
     @State private var previewTarget: ExamTemplate?
+
+    // A 640pt column marooned in the middle of a 1024pt iPad reads as a
+    // blown-up phone; give the list real width once there is width to give.
+    private var contentWidth: CGFloat {
+        sizeClass == .regular ? AG.Width.contentRegular : AG.Width.content
+    }
 
     private var searching: Bool {
         !query.trimmingCharacters(in: .whitespaces).isEmpty
@@ -131,7 +138,7 @@ struct TemplatesView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
-        .centeredContent()
+        .centeredContent(contentWidth)
     }
 
     private var searchField: some View {
@@ -174,7 +181,7 @@ struct TemplatesView: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .padding(.bottom, 220)
-            .centeredContent()
+            .centeredContent(contentWidth)
         }
         .refreshable { await model.loadTemplates() }
     }
