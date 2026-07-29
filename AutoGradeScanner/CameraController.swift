@@ -290,8 +290,8 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
 // Each answer box is reduced to an oriented rounded rectangle (center, size,
 // angle) — the projected quad's perspective shear is dropped, since at answer-
 // box scale that shear is mostly estimation noise and rendering it verbatim
-// read as twitching. A CADisplayLink glides the DISPLAYED oriented rect toward
-// the latest anchor's target every screen frame (a ~150 ms time constant), so
+// read as twitching. A CADisplayLink drives the DISPLAYED oriented rect toward
+// the latest anchor's target every screen frame through a One-Euro filter, so
 // alignment updates arrive smoothly instead of snapping, and small rotations
 // are damped to upright. This is the "calm like the old overlay, accurate like
 // the new one" path; gyro propagation is off here (it pushed boxes the wrong
@@ -312,7 +312,64 @@ struct CameraPreviewView: UIViewRepresentable {
             var cx: CGFloat, cy: CGFloat, w: CGFloat, h: CGFloat, angle: CGFloat
         }
 
-        private var displayed: [Int: ORect] = [:]   // smoothed, glides toward target
+        // One-Euro filter: a low-pass whose cutoff rises with the signal's own
+        // speed, so it damps hard when the value is nearly still and opens up
+        // the moment it genuinely moves. Crucially it never stops moving
+        // toward the target — a fixed dead-zone froze the box until the error
+        // grew past the threshold and then jumped it forward in one step, and
+        // that hold-then-jump staircase is what read as twitching.
+        private struct OneEuro {
+            private let minCutoff: CGFloat   // Hz, the resting smoothness
+            private let beta: CGFloat        // how fast the cutoff opens with speed
+            private let dCutoff: CGFloat     // Hz, smoothing of the speed estimate
+            private var x: CGFloat
+            private var dx: CGFloat = 0
+
+            init(minCutoff: CGFloat, beta: CGFloat, dCutoff: CGFloat = 1, initial: CGFloat) {
+                self.minCutoff = minCutoff
+                self.beta = beta
+                self.dCutoff = dCutoff
+                self.x = initial
+            }
+
+            private func alpha(cutoff: CGFloat, dt: CGFloat) -> CGFloat {
+                let tau = 1 / (2 * .pi * cutoff)
+                return 1 / (1 + tau / dt)
+            }
+
+            mutating func filter(_ value: CGFloat, dt: CGFloat) -> CGFloat {
+                dx += alpha(cutoff: dCutoff, dt: dt) * ((value - x) / dt - dx)
+                x += alpha(cutoff: minCutoff + beta * abs(dx), dt: dt) * (value - x)
+                return x
+            }
+        }
+
+        // Per-box filter bank. Position may open up aggressively so a real pan
+        // stays glued; size and angle stay lazier, since their anchor noise is
+        // what reads as the box breathing and wobbling in place.
+        private struct BoxSmoother {
+            private var fcx, fcy, fw, fh, fangle: OneEuro
+            private(set) var value: ORect
+
+            init(start: ORect) {
+                value = start
+                fcx    = OneEuro(minCutoff: 1.0, beta: 15, initial: start.cx)
+                fcy    = OneEuro(minCutoff: 1.0, beta: 15, initial: start.cy)
+                fw     = OneEuro(minCutoff: 0.9, beta: 10, initial: start.w)
+                fh     = OneEuro(minCutoff: 0.9, beta: 10, initial: start.h)
+                fangle = OneEuro(minCutoff: 0.5, beta: 5,  initial: start.angle)
+            }
+
+            mutating func update(to target: ORect, dt: CGFloat) {
+                value = ORect(cx: fcx.filter(target.cx, dt: dt),
+                              cy: fcy.filter(target.cy, dt: dt),
+                              w:  fw.filter(target.w, dt: dt),
+                              h:  fh.filter(target.h, dt: dt),
+                              angle: fangle.filter(target.angle, dt: dt))
+            }
+        }
+
+        private var smoothers: [Int: BoxSmoother] = [:]   // filtered, per box id
         private var boxLayers: [Int: CAShapeLayer] = [:]
         private var displayLink: CADisplayLink?
 
@@ -333,56 +390,64 @@ struct CameraPreviewView: UIViewRepresentable {
         private func syncDisplayLink() {
             let wanted = window != nil && !(update?.boxes.isEmpty ?? true)
             if wanted && displayLink == nil {
-                let link = CADisplayLink(target: self, selector: #selector(tick))
+                let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
                 link.add(to: .main, forMode: .common)
                 displayLink = link
             } else if !wanted, let link = displayLink {
                 link.invalidate()
                 displayLink = nil
-                displayed = [:]
+                smoothers = [:]
                 boxLayers.values.forEach { $0.removeFromSuperlayer() }
                 boxLayers = [:]
             }
         }
 
-        @objc private func tick() {
-            step()
+        @objc private func tick(_ link: CADisplayLink) {
+            // Real frame duration, so the filters behave identically at 60 and
+            // 120 Hz. Clamped in case a stalled frame reports a huge interval.
+            let dt = min(max(link.targetTimestamp - link.timestamp, 1.0 / 240), 1.0 / 20)
+            step(dt: CGFloat(dt))
             render()
         }
 
-        // Ease each displayed oriented rect toward its anchor target with an
-        // adaptive dead-zone low-pass. Successive XFeat anchors jitter the
-        // target ~1% of the frame even when the sheet is still (RANSAC
-        // sampling + feature noise); below that threshold we damp hard so a
-        // near-still sheet freezes, and ramp up to responsive tracking for
-        // genuine motion. Angle never tracks faster than position and has a
-        // wider dead-zone, so a roughly straight sheet reads as upright.
-        private func step() {
+        // Drive each displayed oriented rect toward its anchor target through
+        // the One-Euro bank. Successive XFeat anchors jitter the target ~1% of
+        // the frame even when the sheet is still (RANSAC sampling + feature
+        // noise); the filter damps that at rest yet keeps closing on the target
+        // every frame, so a slowly drifting sheet is followed continuously
+        // instead of being held and snapped. Anchors arrive at ~15 Hz while
+        // this runs at display rate, which is exactly the gap that a held
+        // target would otherwise turn into visible steps.
+        private func step(dt: CGFloat) {
             let boxes = update?.boxes ?? []
             var live = Set<Int>()
             for box in boxes {
                 live.insert(box.id)
-                let target = Self.orientedRect(from: box.quad)
-                guard var cur = displayed[box.id] else {
-                    displayed[box.id] = target   // appear in place, no glide-in
-                    continue
+                var target = Self.orientedRect(from: box.quad)
+                if var smoother = smoothers[box.id] {
+                    // Rectangles look identical every 180°, so express the
+                    // target angle as the continuous one nearest the angle on
+                    // screen — the filter's state must not see a ±π/2 wrap.
+                    var da = target.angle - smoother.value.angle
+                    while da >  .pi / 2 { da -= .pi }
+                    while da <= -.pi / 2 { da += .pi }
+                    target.angle = smoother.value.angle + da
+                    target.angle = Self.uprighted(target.angle)
+                    smoother.update(to: target, dt: dt)
+                    smoothers[box.id] = smoother
+                } else {
+                    target.angle = Self.uprighted(target.angle)
+                    smoothers[box.id] = BoxSmoother(start: target)   // appear in place
                 }
-                let d = hypot(target.cx - cur.cx, target.cy - cur.cy)
-                let kPose = min(0.45, 0.05 + max(0, d - 0.008) * 25)
-                cur.cx += (target.cx - cur.cx) * kPose
-                cur.cy += (target.cy - cur.cy) * kPose
-                cur.w  += (target.w  - cur.w)  * kPose
-                cur.h  += (target.h  - cur.h)  * kPose
-                // Rectangles look identical every 180°, so bring the angle
-                // delta into (-π/2, π/2] before easing.
-                var da = target.angle - cur.angle
-                while da >  .pi / 2 { da -= .pi }
-                while da <= -.pi / 2 { da += .pi }
-                cur.angle += da * min(0.12, kPose)
-                if abs(cur.angle) < 0.10 { cur.angle *= 0.5 }   // ~5.7° dead-zone → upright
-                displayed[box.id] = cur
             }
-            displayed = displayed.filter { live.contains($0.key) }
+            smoothers = smoothers.filter { live.contains($0.key) }
+        }
+
+        // Pull a nearly straight sheet the rest of the way to upright. Applied
+        // to the target rather than the filter output, so it biases the input
+        // instead of fighting the filter's own state.
+        private static func uprighted(_ angle: CGFloat) -> CGFloat {
+            abs(angle) < 0.10 ? angle * 0.35 : angle   // ~5.7° → reads upright
         }
 
         // Best-fit oriented rectangle of a projected quad (tl, tr, br, bl),
@@ -411,10 +476,10 @@ struct CameraPreviewView: UIViewRepresentable {
             let verdicts = Dictionary(uniqueKeysWithValues:
                 (update?.boxes ?? []).map { ($0.id, $0.verdict) })
             var seen = Set<Int>()
-            for (id, rect) in displayed {
+            for (id, smoother) in smoothers {
                 seen.insert(id)
                 let shape = boxLayers[id] ?? makeBoxLayer(id: id)
-                shape.path = roundedPath(for: rect)
+                shape.path = roundedPath(for: smoother.value)
                 let verdict = verdicts[id] ?? nil
                 let color: UIColor = verdict.map { $0 ? UIColor(AG.ok) : UIColor(AG.bad) } ?? .white
                 shape.strokeColor = color.cgColor
