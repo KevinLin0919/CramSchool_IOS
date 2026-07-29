@@ -262,7 +262,7 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
                 // World-pinned: full 6-DOF compensation.
                 for (index, corner) in world.enumerated() {
                     let projected = camera.projectPoint(corner,
-                                                        orientation: .portrait,
+                                                        orientation: interfaceOrientation,
                                                         viewportSize: viewport)
                     guard projected.x.isFinite, projected.y.isFinite else {
                         complete = false
@@ -318,8 +318,16 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
 
     // MARK: - Frame conversion (same policy as CameraController)
 
+    // Whichever way the device is held; ARKit hands over the same sensor
+    // frame the capture path gets, so it needs the same rotation policy.
+    private var captureOrientation: CaptureOrientation { CaptureOrientation.current(for: self) }
+
+    private var interfaceOrientation: UIInterfaceOrientation {
+        window?.windowScene?.interfaceOrientation ?? .portrait
+    }
+
     private func uprightImage(from pixelBuffer: CVPixelBuffer) -> UIImage? {
-        var image = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
+        var image = CIImage(cvPixelBuffer: pixelBuffer).oriented(captureOrientation.cgOrientation)
         let width = image.extent.width
         if width > 1200 {
             let scale = 1200 / width
@@ -338,12 +346,17 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
         let centerX = Double(camera.intrinsics.columns.2.x)
         let centerY = Double(camera.intrinsics.columns.2.y)
 
-        let uprightWidth = min(1200, bufferHeight)
-        let uprightHeight = bufferWidth * (uprightWidth / bufferHeight)
-        let scale = uprightWidth / bufferHeight
+        let orientation = captureOrientation
+        let longSide = orientation.swapsAxes ? bufferHeight : bufferWidth
+        let shortSide = orientation.swapsAxes ? bufferWidth : bufferHeight
+        let uprightWidth = min(1200, longSide)
+        let uprightHeight = shortSide * (uprightWidth / longSide)
+        let scale = uprightWidth / longSide
+        let center = orientation.upright(point: CGPoint(x: centerX, y: centerY),
+                                         bufferSize: CGSize(width: bufferWidth, height: bufferHeight))
         let uprightFocal = focal * scale
-        let uprightCenterX = (bufferHeight - centerY) * scale
-        let uprightCenterY = centerX * scale
+        let uprightCenterX = Double(center.x) * scale
+        let uprightCenterY = Double(center.y) * scale
         return simd_double3x3(rows: [
             simd_double3(uprightFocal / uprightWidth, 0, uprightCenterX / uprightWidth),
             simd_double3(0, uprightFocal / uprightHeight, uprightCenterY / uprightHeight),

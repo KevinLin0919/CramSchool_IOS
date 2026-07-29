@@ -39,6 +39,24 @@ final class CameraController: NSObject, ObservableObject {
     private var stableCount = 0
     private var hasCaptured = false
 
+    // Sensor -> upright rotation for the analysis path. Only ever touched on
+    // videoQueue, the queue that reads it, so the preview's own copy on the
+    // main thread and this one never race.
+    private var captureOrientation: CaptureOrientation = .portrait
+
+    // Pushed in by the preview view, which is the thing that actually knows
+    // which window scene it is living in.
+    func setOrientation(_ orientation: CaptureOrientation) {
+        videoQueue.async { self.captureOrientation = orientation }
+        sessionQueue.async {
+            guard let connection = self.photoOutput.connection(with: .video) else { return }
+            let angle = orientation.videoRotationAngle
+            if connection.isVideoRotationAngleSupported(angle) {
+                connection.videoRotationAngle = angle
+            }
+        }
+    }
+
     // MARK: - Lifecycle
 
     func checkPermissionAndStart() {
@@ -167,26 +185,31 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         // (stationary device) the paper only moves when slid by hand, so
         // half the alignment cadence saves battery with no visible cost.
         let liveCadence = pose.isStationary ? 6 : 3
+        let orientation = captureOrientation
         if let onLiveFrame, frameIndex % liveCadence == 0,
-           let image = uprightImage(from: pixelBuffer) {
+           let image = uprightImage(from: pixelBuffer, orientation: orientation) {
             let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
             let intrinsics = uprightIntrinsics(sampleBuffer: sampleBuffer,
                                                pixelBuffer: pixelBuffer,
-                                               uprightSize: image.size)
+                                               uprightSize: image.size,
+                                               orientation: orientation)
             onLiveFrame(image, timestamp, intrinsics)
         }
 
         guard autoCaptureEnabled, !hasCaptured, frameIndex % 6 == 0 else { return }
 
         let request = VNDetectRectanglesRequest()
+        // Wide enough to accept both a portrait sheet (A4 ≈ 0.71) and a
+        // landscape one (≈ 1.41); the sheet keeps its own shape in the upright
+        // frame, so both can show up whichever way the device is held.
         request.minimumAspectRatio = 0.35
-        request.maximumAspectRatio = 1.0
+        request.maximumAspectRatio = 1.7
         request.minimumSize = 0.3
         request.minimumConfidence = 0.7
         request.maximumObservations = 1
 
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer,
-                                            orientation: .right,
+                                            orientation: orientation.cgOrientation,
                                             options: [:])
         try? handler.perform([request])
 
@@ -210,7 +233,8 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     // typical wide-camera focal length when delivery is unavailable.
     private func uprightIntrinsics(sampleBuffer: CMSampleBuffer,
                                    pixelBuffer: CVPixelBuffer,
-                                   uprightSize: CGSize) -> simd_double3x3? {
+                                   uprightSize: CGSize,
+                                   orientation: CaptureOrientation) -> simd_double3x3? {
         let bufferWidth = Double(CVPixelBufferGetWidth(pixelBuffer))
         let bufferHeight = Double(CVPixelBufferGetHeight(pixelBuffer))
         guard bufferWidth > 0, bufferHeight > 0,
@@ -235,11 +259,17 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             centerY = bufferHeight / 2
         }
 
-        // Sensor -> upright is a 90° CW rotation then a uniform downscale.
-        let scale = Double(uprightSize.width) / bufferHeight
+        // Sensor -> upright is the interface's rotation then a uniform
+        // downscale. A quarter turn swaps which buffer axis the upright
+        // width was measured along, so the scale factor follows suit.
+        let bufferSize = CGSize(width: bufferWidth, height: bufferHeight)
+        let uprightBufferWidth = orientation.swapsAxes ? bufferHeight : bufferWidth
+        let scale = Double(uprightSize.width) / uprightBufferWidth
+        let center = orientation.upright(point: CGPoint(x: centerX, y: centerY),
+                                         bufferSize: bufferSize)
         let uprightFocal = focal * scale
-        let uprightCenterX = (bufferHeight - centerY) * scale
-        let uprightCenterY = centerX * scale
+        let uprightCenterX = Double(center.x) * scale
+        let uprightCenterY = Double(center.y) * scale
 
         let width = Double(uprightSize.width)
         let height = Double(uprightSize.height)
@@ -252,8 +282,9 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     // Camera frames arrive in sensor (landscape) orientation; rotate upright
     // and downscale — XFeat shrinks to its model input anyway, and smaller
     // frames keep the per-frame conversion cheap.
-    private func uprightImage(from pixelBuffer: CVPixelBuffer) -> UIImage? {
-        var image = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
+    private func uprightImage(from pixelBuffer: CVPixelBuffer,
+                              orientation: CaptureOrientation) -> UIImage? {
+        var image = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation.cgOrientation)
         let width = image.extent.width
         if width > 1200 {
             let scale = 1200 / width
@@ -300,6 +331,7 @@ struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     var live: LiveScanEngine.Update?
     var pose: PoseProvider?
+    var onOrientationChange: ((CaptureOrientation) -> Void)?
 
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
@@ -377,14 +409,42 @@ struct CameraPreviewView: UIViewRepresentable {
             didSet { syncDisplayLink() }
         }
 
+        // Sensor -> upright rotation currently in force. The overlay's inverse
+        // mapping reads it here; the analysis pipeline gets its own copy via
+        // onOrientationChange, so both sides of the projection always agree.
+        private(set) var orientation: CaptureOrientation = .portrait
+        var onOrientationChange: ((CaptureOrientation) -> Void)?
+
         override func didMoveToWindow() {
             super.didMoveToWindow()
+            refreshOrientation()
             syncDisplayLink()
         }
 
         override func layoutSubviews() {
             super.layoutSubviews()
+            // Rotating the device resizes this view, so this is also the
+            // moment the interface orientation may have changed.
+            refreshOrientation()
             render()
+        }
+
+        private func refreshOrientation() {
+            // No window means we are being torn down, not turned.
+            guard window != nil else { return }
+            let next = CaptureOrientation.current(for: self)
+            let connection = previewLayer.connection
+            let angle = next.videoRotationAngle
+            if let connection, connection.isVideoRotationAngleSupported(angle),
+               connection.videoRotationAngle != angle {
+                connection.videoRotationAngle = angle
+            }
+            guard next != orientation else { return }
+            orientation = next
+            // Anchors captured before the turn describe the old frame, so drop
+            // them rather than briefly drawing boxes through the wrong map.
+            smoothers = [:]
+            onOrientationChange?(next)
         }
 
         private func syncDisplayLink() {
@@ -501,10 +561,11 @@ struct CameraPreviewView: UIViewRepresentable {
             func corner(_ sx: CGFloat, _ sy: CGFloat) -> CGPoint {
                 let nx = rect.cx + sx * rect.w / 2 * ux.x + sy * rect.h / 2 * uy.x
                 let ny = rect.cy + sx * rect.w / 2 * ux.y + sy * rect.h / 2 * uy.y
-                // Upright-frame normalized -> capture-device space (upright is
-                // the sensor image rotated 90° CW, so invert that rotation).
+                // Upright-frame normalized -> capture-device space, undoing
+                // whichever rotation produced the upright frame.
                 return previewLayer.layerPointConverted(
-                    fromCaptureDevicePoint: CGPoint(x: ny, y: 1 - nx))
+                    fromCaptureDevicePoint: orientation.devicePoint(
+                        fromUpright: CGPoint(x: nx, y: ny)))
             }
             let p0 = corner(-1, -1), p1 = corner(1, -1), p2 = corner(1, 1)
             let wLayer = hypot(p1.x - p0.x, p1.y - p0.y)
@@ -534,11 +595,13 @@ struct CameraPreviewView: UIViewRepresentable {
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
         view.pose = pose
+        view.onOrientationChange = onOrientationChange
         return view
     }
 
     func updateUIView(_ uiView: PreviewView, context: Context) {
         uiView.pose = pose
+        uiView.onOrientationChange = onOrientationChange
         uiView.update = live
     }
 }

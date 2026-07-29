@@ -122,7 +122,8 @@ struct ScannerView: View {
             ARScanContainer(engine: engine, live: liveUpdate)
                 .ignoresSafeArea()
         } else if camera.isAuthorized {
-            CameraPreviewView(session: camera.session, live: liveUpdate, pose: camera.pose)
+            CameraPreviewView(session: camera.session, live: liveUpdate, pose: camera.pose,
+                              onOrientationChange: { camera.setOrientation($0) })
                 .ignoresSafeArea()
         } else {
             VStack(spacing: 14) {
@@ -150,10 +151,18 @@ struct ScannerView: View {
 
     @ViewBuilder
     private func overlayContent(in geo: GeometryProxy) -> some View {
-        // Scale the guide frame with the screen so it stays generous on
-        // iPad instead of being pinned to a phone-sized 300pt box.
-        let frameWidth = min(geo.size.width - 80, geo.size.height * 0.5, 460)
-        let frameHeight = frameWidth * 400 / 290
+        // Scale the guide frame with the screen so it stays generous on iPad
+        // instead of being pinned to a phone-sized 300pt box, and lay it out
+        // along whichever axis the device is currently long in — a landscape
+        // window is guiding a landscape sheet.
+        let landscape = geo.size.width > geo.size.height
+        let sheetRatio: CGFloat = 400 / 290          // a sheet's long/short side
+        let frameHeight = landscape
+            ? min(geo.size.height - 80, geo.size.width * 0.5, 460)
+            : min(geo.size.width - 80, geo.size.height * 0.5, 460) * sheetRatio
+        let frameWidth = landscape
+            ? frameHeight * sheetRatio
+            : min(geo.size.width - 80, geo.size.height * 0.5, 460)
 
         VStack(spacing: 0) {
             topBar
