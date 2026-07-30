@@ -31,10 +31,21 @@ struct ScannerView: View {
 
     // Experimental ARKit world-tracking backbone (Phase 3). When enabled and
     // supported, ARKit owns the camera and pins the boxes in world space.
-    @AppStorage("scan.arBackbone") private var arBackbone = false
+    // The ARKit backbone is a parked experiment: it never picked up Plan
+    // B/C's rounded, One-Euro-smoothed rendering, so it still draws the old
+    // sharp quads and still twitches. A switch for it in Settings meant one
+    // tap could silently drop someone onto that old overlay — which is what
+    // happened in the field. The code stays compiled for later, but off
+    // outside DEBUG, and under a fresh key so a device that already enabled
+    // it comes back off rather than being stuck with no way to turn it off.
+    @AppStorage("scan.arBackbone.v2") private var arBackbone = false
 
     private var useARBackbone: Bool {
+        #if DEBUG
         arBackbone && ARWorldTrackingConfiguration.isSupported && liveEngine != nil
+        #else
+        false
+        #endif
     }
 
     private var revealedCorrect: Int {

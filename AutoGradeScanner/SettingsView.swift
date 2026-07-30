@@ -6,7 +6,6 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage(DemoData.modeKey) private var demoMode = true
-    @AppStorage("scan.arBackbone") private var arBackbone = false
     @AppStorage(ServerConfig.predictKey) private var predictBase = ServerConfig.defaultPredict
     @AppStorage(ServerConfig.ocrKey) private var ocrBase = ServerConfig.defaultOCR
     @AppStorage(ServerConfig.ocrGoogleKey) private var ocrGoogleBase = ServerConfig.defaultOCRGoogle
@@ -26,9 +25,8 @@ struct SettingsView: View {
             Form {
                 Section {
                     Toggle("示範模式（離線假資料）", isOn: $demoMode)
-                    Toggle("AR 追蹤引擎（實驗）", isOn: $arBackbone)
                 } footer: {
-                    Text("示範模式開啟後不連線伺服器，改用內建的範例考卷與批改結果，可離線展示。AR 追蹤引擎改用 ARKit 世界追蹤補償手機移動（旋轉＋平移），需支援 ARKit 的裝置；關閉時使用陀螺儀補償。")
+                    Text("示範模式開啟後不連線伺服器，改用內建的範例考卷與批改結果，可離線展示。")
                 }
 
                 Section {

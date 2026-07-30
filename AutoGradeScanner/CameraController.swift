@@ -327,6 +327,51 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
 // are damped to upright. This is the "calm like the old overlay, accurate like
 // the new one" path; gyro propagation is off here (it pushed boxes the wrong
 // way under translation) and reserved for the ARKit backbone.
+// Projective map from the unit square to a convex quad given as (tl, tr, br,
+// bl) — the images of (0,0), (1,0), (1,1), (0,1). Lets the overlay take one
+// smoothed sheet quad and place every box on it from its template
+// coordinates, so all boxes share the sheet's perspective instead of each
+// carrying an independent estimate of it.
+struct UnitQuad {
+    private let a, b, c, d, e, f, g, h: CGFloat
+
+    init?(quad: [CGPoint]) {
+        guard quad.count == 4 else { return nil }
+        let p0 = quad[0], p1 = quad[1], p2 = quad[2], p3 = quad[3]
+        let sx = p0.x - p1.x + p2.x - p3.x
+        let sy = p0.y - p1.y + p2.y - p3.y
+        if abs(sx) < 1e-9 && abs(sy) < 1e-9 {
+            g = 0; h = 0
+            a = p1.x - p0.x; b = p2.x - p1.x; c = p0.x
+            d = p1.y - p0.y; e = p2.y - p1.y; f = p0.y
+        } else {
+            let dx1 = p1.x - p2.x, dx2 = p3.x - p2.x
+            let dy1 = p1.y - p2.y, dy2 = p3.y - p2.y
+            let den = dx1 * dy2 - dx2 * dy1
+            guard abs(den) > 1e-12 else { return nil }
+            g = (sx * dy2 - dx2 * sy) / den
+            h = (dx1 * sy - sx * dy1) / den
+            a = p1.x - p0.x + g * p1.x
+            b = p3.x - p0.x + h * p3.x
+            c = p0.x
+            d = p1.y - p0.y + g * p1.y
+            e = p3.y - p0.y + h * p3.y
+            f = p0.y
+        }
+    }
+
+    func point(_ u: CGFloat, _ v: CGFloat) -> CGPoint {
+        let w = g * u + h * v + 1
+        guard abs(w) > 1e-9 else { return .zero }
+        return CGPoint(x: (a * u + b * v + c) / w, y: (d * u + e * v + f) / w)
+    }
+
+    func corners(of rect: CGRect) -> [CGPoint] {
+        [point(rect.minX, rect.minY), point(rect.maxX, rect.minY),
+         point(rect.maxX, rect.maxY), point(rect.minX, rect.maxY)]
+    }
+}
+
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     var live: LiveScanEngine.Update?
@@ -376,32 +421,44 @@ struct CameraPreviewView: UIViewRepresentable {
             }
         }
 
-        // Per-box filter bank. Position may open up aggressively so a real pan
-        // stays glued; size and angle stay lazier, since their anchor noise is
-        // what reads as the box breathing and wobbling in place.
-        private struct BoxSmoother {
-            private var fcx, fcy, fw, fh, fangle: OneEuro
-            private(set) var value: ORect
+        // Filter bank for the projected sheet's four corners. Alignment error
+        // is a rigid error of the whole sheet — measured on device footage the
+        // boxes move together with a coherence of 0.89, i.e. one wrong
+        // homography drags the entire constellation — so this is the level the
+        // smoothing belongs at. Filtering eight boxes separately smoothed the
+        // symptom while letting them drift apart; from one smoothed quad they
+        // stay rigid by construction.
+        private struct QuadSmoother {
+            private var fx: [OneEuro]
+            private var fy: [OneEuro]
+            private(set) var value: [CGPoint]
 
-            init(start: ORect) {
+            init(start: [CGPoint]) {
                 value = start
-                fcx    = OneEuro(minCutoff: 1.0, beta: 15, initial: start.cx)
-                fcy    = OneEuro(minCutoff: 1.0, beta: 15, initial: start.cy)
-                fw     = OneEuro(minCutoff: 0.9, beta: 10, initial: start.w)
-                fh     = OneEuro(minCutoff: 0.9, beta: 10, initial: start.h)
-                fangle = OneEuro(minCutoff: 0.5, beta: 5,  initial: start.angle)
+                fx = start.map { OneEuro(minCutoff: 0.8, beta: 12, initial: $0.x) }
+                fy = start.map { OneEuro(minCutoff: 0.8, beta: 12, initial: $0.y) }
             }
 
-            mutating func update(to target: ORect, dt: CGFloat) {
-                value = ORect(cx: fcx.filter(target.cx, dt: dt),
-                              cy: fcy.filter(target.cy, dt: dt),
-                              w:  fw.filter(target.w, dt: dt),
-                              h:  fh.filter(target.h, dt: dt),
-                              angle: fangle.filter(target.angle, dt: dt))
+            mutating func update(to target: [CGPoint], dt: CGFloat) {
+                guard target.count == value.count else { return }
+                for i in target.indices {
+                    value[i] = CGPoint(x: fx[i].filter(target[i].x, dt: dt),
+                                       y: fy[i].filter(target[i].y, dt: dt))
+                }
+            }
+
+            // How far this quad sits from another, as the mean corner offset.
+            func distance(to quad: [CGPoint]) -> CGFloat {
+                guard quad.count == value.count, !quad.isEmpty else { return 0 }
+                let total = zip(value, quad).reduce(CGFloat(0)) {
+                    $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y)
+                }
+                return total / CGFloat(quad.count)
             }
         }
 
-        private var smoothers: [Int: BoxSmoother] = [:]   // filtered, per box id
+        private var sheet: QuadSmoother?
+        private var rejectStreak = 0
         private var boxLayers: [Int: CAShapeLayer] = [:]
         private var displayLink: CADisplayLink?
 
@@ -443,7 +500,7 @@ struct CameraPreviewView: UIViewRepresentable {
             orientation = next
             // Anchors captured before the turn describe the old frame, so drop
             // them rather than briefly drawing boxes through the wrong map.
-            smoothers = [:]
+            sheet = nil
             onOrientationChange?(next)
         }
 
@@ -456,7 +513,8 @@ struct CameraPreviewView: UIViewRepresentable {
             } else if !wanted, let link = displayLink {
                 link.invalidate()
                 displayLink = nil
-                smoothers = [:]
+                sheet = nil
+                rejectStreak = 0
                 boxLayers.values.forEach { $0.removeFromSuperlayer() }
                 boxLayers = [:]
             }
@@ -479,28 +537,40 @@ struct CameraPreviewView: UIViewRepresentable {
         // this runs at display rate, which is exactly the gap that a held
         // target would otherwise turn into visible steps.
         private func step(dt: CGFloat) {
-            let boxes = update?.boxes ?? []
-            var live = Set<Int>()
-            for box in boxes {
-                live.insert(box.id)
-                var target = Self.orientedRect(from: box.quad)
-                if var smoother = smoothers[box.id] {
-                    // Rectangles look identical every 180°, so express the
-                    // target angle as the continuous one nearest the angle on
-                    // screen — the filter's state must not see a ±π/2 wrap.
-                    var da = target.angle - smoother.value.angle
-                    while da >  .pi / 2 { da -= .pi }
-                    while da <= -.pi / 2 { da += .pi }
-                    target.angle = smoother.value.angle + da
-                    target.angle = Self.uprighted(target.angle)
-                    smoother.update(to: target, dt: dt)
-                    smoothers[box.id] = smoother
-                } else {
-                    target.angle = Self.uprighted(target.angle)
-                    smoothers[box.id] = BoxSmoother(start: target)   // appear in place
-                }
+            guard let target = update?.sheetQuad, target.count == 4 else {
+                sheet = nil
+                return
             }
-            smoothers = smoothers.filter { live.contains($0.key) }
+            guard var current = sheet else {
+                sheet = QuadSmoother(start: target)   // appear in place
+                rejectStreak = 0
+                return
+            }
+
+            // Outlier anchors: a single bad RANSAC solution throws the whole
+            // sheet sideways and, being a fresh independent fit, the next one
+            // need not repeat the error. Smoothing cannot undo a target that
+            // is itself wrong, so an implausible jump is skipped outright —
+            // but only briefly, since genuine fast motion keeps producing
+            // large offsets and must not be locked out.
+            if current.distance(to: target) > 0.045, rejectStreak < 3 {
+                rejectStreak += 1
+                return
+            }
+            rejectStreak = 0
+            current.update(to: target, dt: dt)
+            sheet = current
+        }
+
+        // Every box re-derived from the one smoothed sheet quad, so they can
+        // never drift relative to one another.
+        private func displayedRects() -> [(id: Int, rect: ORect, verdict: Bool?)] {
+            guard let quad = sheet?.value,
+                  let map = UnitQuad(quad: quad) else { return [] }
+            return (update?.boxes ?? []).map { box in
+                (box.id, Self.orientedRect(from: map.corners(of: box.templateRect)),
+                 box.verdict)
+            }
         }
 
         // Pull a nearly straight sheet the rest of the way to upright. Applied
@@ -533,14 +603,11 @@ struct CameraPreviewView: UIViewRepresentable {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
 
-            let verdicts = Dictionary(uniqueKeysWithValues:
-                (update?.boxes ?? []).map { ($0.id, $0.verdict) })
             var seen = Set<Int>()
-            for (id, smoother) in smoothers {
+            for (id, rect, verdict) in displayedRects() {
                 seen.insert(id)
                 let shape = boxLayers[id] ?? makeBoxLayer(id: id)
-                shape.path = roundedPath(for: smoother.value)
-                let verdict = verdicts[id] ?? nil
+                shape.path = roundedPath(for: rect)
                 let color: UIColor = verdict.map { $0 ? UIColor(AG.ok) : UIColor(AG.bad) } ?? .white
                 shape.strokeColor = color.cgColor
                 shape.fillColor = color.withAlphaComponent(verdict == nil ? 0.05 : 0.15).cgColor

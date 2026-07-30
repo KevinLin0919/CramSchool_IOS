@@ -20,6 +20,7 @@ final class LiveScanEngine {
         let id: Int               // question index
         let quad: [CGPoint]       // projected corners (tl,tr,br,bl), normalized in the upright frame
         let rect: CGRect          // axis-aligned bounds of quad
+        let templateRect: CGRect  // the box on the master sheet, in template coordinates
         let verdict: Bool?        // nil while pending (not yet locked in)
     }
 
@@ -34,6 +35,11 @@ final class LiveScanEngine {
         let inlierCount: Int      // last alignment inliers (0 when missed)
         let frameTimestamp: TimeInterval      // capture time of the anchor frame (0 = none)
         let intrinsics: simd_double3x3?       // upright-normalized K of the anchor frame
+        // The whole master sheet projected through the anchor homography.
+        // Alignment error is a rigid error of THIS quad — every box inherits
+        // it coherently — so the overlay smooths this and re-derives the
+        // boxes from it, rather than smoothing eight boxes independently.
+        let sheetQuad: [CGPoint]?
     }
 
     var onUpdate: ((Update) -> Void)?
@@ -60,6 +66,7 @@ final class LiveScanEngine {
     private var lastInlierCount = 0
     private var anchorTimestamp: TimeInterval = 0
     private var anchorIntrinsics: simd_double3x3?
+    private var anchorSheetQuad: [CGPoint]?
 
     private let minInliers: Int
     private let minRatio: Double
@@ -146,6 +153,7 @@ final class LiveScanEngine {
         lastInlierCount = 0
         anchorTimestamp = 0
         anchorIntrinsics = nil
+        anchorSheetQuad = nil
         publish()
     }
 
@@ -182,6 +190,7 @@ final class LiveScanEngine {
         lastFrameSize = frame.size
         anchorTimestamp = timestamp
         anchorIntrinsics = intrinsics
+        anchorSheetQuad = h.projectedCorners(of: CGRect(x: 0, y: 0, width: 1, height: 1))
 
         // Support = where the paper was actually observed. The per-frame
         // inlier bounds are noisy at tracking cadence (subsets of ~1024
@@ -282,7 +291,7 @@ final class LiveScanEngine {
     private func publish(aligned: Bool = false) {
         let boxes = visibleQuads.keys.sorted().map { i in
             Box(id: i, quad: visibleQuads[i]!, rect: visibleRects[i] ?? .zero,
-                verdict: verdicts[i])
+                templateRect: bundled.boxes[i], verdict: verdicts[i])
         }
         onUpdate?(Update(boxes: boxes,
                          aligned: aligned && !boxes.isEmpty,
@@ -293,6 +302,7 @@ final class LiveScanEngine {
                          alignMillis: lastAlignMillis,
                          inlierCount: lastInlierCount,
                          frameTimestamp: anchorTimestamp,
-                         intrinsics: anchorIntrinsics))
+                         intrinsics: anchorIntrinsics,
+                         sheetQuad: anchorSheetQuad))
     }
 }

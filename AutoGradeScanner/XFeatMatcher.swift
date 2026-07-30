@@ -159,7 +159,28 @@ enum XFeatMatcher {
               let refined = solveHomography(indices: bestInliers, src: src, dst: dst) else {
             return nil
         }
-        return finalize(refined, src: src, dst: dst, thresholdSq: thresholdSq)
+        return finalize(tightened(refined, src: src, dst: dst, thresholdSq: thresholdSq),
+                        src: src, dst: dst, thresholdSq: thresholdSq)
+    }
+
+    // The RANSAC threshold has to stay loose enough to gather a quorum on a
+    // hard frame, which means the least-squares refit is pulled around by
+    // correspondences off by nearly the whole tolerance. Since consecutive
+    // anchors are independent fits, that slack shows up as the whole sheet
+    // sliding between them. So refit once more against only the tight core of
+    // the inlier set — the same solution, minus the noisiest evidence — and
+    // keep it only if that core is still substantial.
+    private static func tightened(_ h: simd_double3x3,
+                                  src: [simd_double2], dst: [simd_double2],
+                                  thresholdSq: Double) -> simd_double3x3 {
+        let tightSq = thresholdSq * 0.25          // half the reprojection radius
+        var core: [Int] = []
+        for i in 0..<src.count where reprojectionErrorSq(h, src[i], dst[i]) < tightSq {
+            core.append(i)
+        }
+        guard core.count >= 12,
+              let sharper = solveHomography(indices: core, src: src, dst: dst) else { return h }
+        return sharper
     }
 
     // Recounts inliers of the refined matrix and packages the result.
