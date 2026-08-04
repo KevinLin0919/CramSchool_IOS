@@ -6,6 +6,7 @@ struct AutoGradeScannerApp: App {
 
     init() {
         DemoSelfTest.runIfRequested()
+        RecognitionSelfTest.runIfRequested()
     }
 
     var body: some Scene {

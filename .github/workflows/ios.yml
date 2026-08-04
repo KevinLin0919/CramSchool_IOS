@@ -68,6 +68,16 @@ jobs:
           xcrun simctl launch --terminate-running-process --console-pty "$UDID" \
             com.cramschool.autogradescanner | tee live.log
           grep -q "SELFTEST LIVE final: 8 graded" live.log
+      - name: On-device recognition self-test
+        run: |
+          SIMCTL_CHILD_RECOGNITION_SELFTEST="$PWD/TestFixtures/digit_cnn_reference.json" \
+          xcrun simctl launch --terminate-running-process --console-pty "$UDID" \
+            com.cramschool.autogradescanner | tee recog.log
+          # The Core ML conversion happened on Linux, where it cannot be run —
+          # this is the first and only execution of those weights.
+          grep -q "RECOG PASS model.load" recog.log
+          grep -q "RECOG PASS model.matchesReference" recog.log
+          ! grep -q "RECOG FAIL" recog.log
       - name: Upload self-test output
         if: always()
         uses: actions/upload-artifact@v4
@@ -77,6 +87,7 @@ jobs:
             selftest_*.png
             still.log
             live.log
+            recog.log
 
   ipa:
     name: Build unsigned .ipa for sideloading
