@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage(DemoData.modeKey) private var demoMode = true
+    @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
     @AppStorage(ServerConfig.predictKey) private var predictBase = ServerConfig.defaultPredict
     @AppStorage(ServerConfig.ocrKey) private var ocrBase = ServerConfig.defaultOCR
     @AppStorage(ServerConfig.ocrGoogleKey) private var ocrGoogleBase = ServerConfig.defaultOCRGoogle
@@ -27,6 +28,14 @@ struct SettingsView: View {
                     Toggle("示範模式（離線假資料）", isOn: $demoMode)
                 } footer: {
                     Text("示範模式開啟後不連線伺服器，改用內建的範例考卷與批改結果，可離線展示。")
+                }
+
+                Section {
+                    Toggle("顯示辨識結果（診斷用）", isOn: $showsReading)
+                } footer: {
+                    Text("掃描時在紅框與黃框旁一併顯示裝置辨識到的答案（辨識→標準）。"
+                         + "紅框只寫標準答案時，分不出是學生寫錯還是辨識讀錯；開啟後就能分辨。"
+                         + "展示給他人看時建議關閉。")
                 }
 
                 Section {

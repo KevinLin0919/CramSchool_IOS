@@ -73,6 +73,56 @@ final class DemoData {
             ],
             // The demo student wrote Q4 and Q6 wrong.
             written: ["12", "5", "36", "9", "144", "1", "20", "9"]),
+
+        // A six-question multiple-choice sheet built for live recognition
+        // (scratchpad/gen_9007.py). Two things are deliberate. The answer cells
+        // are 10% of the page width — about 120px once a whole page is in a
+        // 1200px frame — because recognition was measured to collapse below
+        // ~64px, which is all a real exam's answer parentheses give you. And
+        // the questions are full sentences rather than the stubs a mock-up
+        // would use, because a sparse page is the hard case for feature
+        // alignment; this one carries 2154 keypoints against 9001's 2812.
+        //
+        // Student9007.png (shipped alongside the .ipa, not in the app) is the
+        // same sheet filled in with the real handwritten digits cropped from
+        // student_001.pdf — same student, same pen — so a scan of it exercises
+        // the whole path on genuine ink.
+        9007: BundledDemoTemplate(
+            imageName: "DemoMaster9007",
+            boxes: [
+                CGRect(x: 0.82500, y: 0.16786, width: 0.10000, height: 0.05357),
+                CGRect(x: 0.82500, y: 0.30000, width: 0.10000, height: 0.05357),
+                CGRect(x: 0.82500, y: 0.43214, width: 0.10000, height: 0.05357),
+                CGRect(x: 0.82500, y: 0.56429, width: 0.10000, height: 0.05357),
+                CGRect(x: 0.82500, y: 0.69643, width: 0.10000, height: 0.05357),
+                CGRect(x: 0.82500, y: 0.82857, width: 0.10000, height: 0.05357),
+            ],
+            // What the student wrote — Q4 and Q5 miss. Only used if a cell
+            // reads blank, which on this sheet means the scan never got close
+            // enough to see the ink.
+            written: ["2", "3", "1", "1", "2", "3"]),
+
+        // A real exam: 南一版6下國語段考複習卷 第7~9課, page 2 (scratchpad/
+        // gen_9006.py). The master is the teacher's copy with its red printed
+        // answers erased, which leaves precisely the sheet the student sat.
+        //
+        // Page 2 and not page 1 on purpose — page 1's three answers are all
+        // correct, so scanning it would show three green boxes and nothing
+        // else. This page's student missed two of three.
+        //
+        // WATCH THE SCALE. These cells are answer parentheses in vertical
+        // Chinese text: 21–26px wide once the whole page is in a 1200px frame,
+        // against the ~96px where recognition was measured to hold up. Filling
+        // the frame with roughly a quarter of the page is not a nicety here,
+        // it is the difference between reading the answer and not.
+        9006: BundledDemoTemplate(
+            imageName: "DemoMaster9006",
+            boxes: [
+                CGRect(x: 0.62816, y: 0.51825, width: 0.01714, height: 0.06887),
+                CGRect(x: 0.52303, y: 0.51855, width: 0.02196, height: 0.06892),
+                CGRect(x: 0.39415, y: 0.51893, width: 0.01748, height: 0.06895),
+            ],
+            written: ["1", "2", "3"]),
     ]
 
     // The bundled master-sheet image for a template, if it ships one. Used by
@@ -87,6 +137,12 @@ final class DemoData {
         Sample(id: 9001, examName: "國一數學第三次段考",
                answers: ["12", "5", "36", "8", "144", "7", "20", "9"],
                createdAt: "2026-07-08 10:30:00"),
+        Sample(id: 9007, examName: "六年級綜合測驗（選擇題）",
+               answers: ["2", "3", "1", "2", "4", "3"],
+               createdAt: "2026-08-05 09:00:00"),
+        Sample(id: 9006, examName: "6下國語段考複習卷（第7~9課）",
+               answers: ["3", "2", "1"],
+               createdAt: "2026-08-05 09:10:00"),
         Sample(id: 9002, examName: "國二英文期中複習卷",
                answers: ["B", "apple", "C", "run", "D", "A", "cat", "B"],
                createdAt: "2026-07-06 14:05:00"),

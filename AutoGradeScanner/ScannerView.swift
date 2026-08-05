@@ -39,6 +39,7 @@ struct ScannerView: View {
     // outside DEBUG, and under a fresh key so a device that already enabled
     // it comes back off rather than being stuck with no way to turn it off.
     @AppStorage("scan.arBackbone.v2") private var arBackbone = false
+    @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
 
     private var useARBackbone: Bool {
         #if DEBUG
@@ -134,6 +135,7 @@ struct ScannerView: View {
                 .ignoresSafeArea()
         } else if camera.isAuthorized {
             CameraPreviewView(session: camera.session, live: liveUpdate, pose: camera.pose,
+                              showsReading: showsReading,
                               onOrientationChange: { camera.setOrientation($0) })
                 .ignoresSafeArea()
         } else {

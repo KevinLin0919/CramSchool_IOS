@@ -54,12 +54,45 @@ enum AnswerKind {
 
 final class AnswerRecognizer {
 
+    /// How sure a single frame has to be before it is allowed to vote.
+    ///
+    /// These are not guesses. Run over the six real cells in TestFixtures, five
+    /// come back at 0.84–1.00 with the runner-up nowhere near them, while the
+    /// one cell whose reading flips between implementations sits at 0.53 with a
+    /// margin of 0.08 — the model already knows it is guessing there. Both
+    /// thresholds sit in that gap, so that cell is reported as unsure instead
+    /// of being marked right or wrong.
+    enum Confidence {
+        static let minSoftmax = 0.65
+        /// Lead over the runner-up. A digit can score a high softmax and still
+        /// be a coin flip between two classes; the margin is what catches that.
+        static let minMargin = 0.20
+        /// Topology has no runner-up to measure, so marks are judged on the
+        /// single number MarkRecognizer already reports — which is low exactly
+        /// when a circle was left too open to tell from a cross.
+        static let minMark = 0.5
+    }
+
     struct Reading {
         let text: String
         /// 0…1. Callers should collect several frames rather than act on a
         /// single low-confidence reading — see `AnswerAccumulator`.
         let confidence: Double
+        /// Lead over the second-best interpretation; 1 when there is no rival.
+        let margin: Double
         let kind: AnswerKind
+
+        /// Whether this frame is trustworthy enough to vote with. A reading
+        /// that fails this is still evidence that *something* is written — it
+        /// just isn't evidence of what.
+        var isConfident: Bool {
+            switch kind {
+            case .digits: return confidence >= Confidence.minSoftmax
+                              && margin >= Confidence.minMargin
+            case .mark: return confidence >= Confidence.minMark
+            case .unsupported: return false
+            }
+        }
     }
 
     /// nil when the model could not be loaded; digit cells then return nil
@@ -93,10 +126,12 @@ final class AnswerRecognizer {
         switch kind {
         case .mark:
             guard let result = MarkRecognizer.recognize(clean) else { return nil }
-            return Reading(text: result.mark.rawValue, confidence: result.confidence, kind: .mark)
+            return Reading(text: result.mark.rawValue, confidence: result.confidence,
+                           margin: result.confidence, kind: .mark)
         case .digits:
             guard let digits, let result = try? digits.recognize(clean) else { return nil }
-            return Reading(text: result.text, confidence: result.confidence, kind: .digits)
+            return Reading(text: result.text, confidence: result.confidence,
+                           margin: result.margin, kind: .digits)
         case .unsupported:
             return nil
         }
@@ -124,19 +159,41 @@ struct AnswerAccumulator {
 
     enum Tuning {
         /// Fewer samples than this and a single bad frame can still win.
-        static let minSamples = 3
+        /// Raised from 3 once the overlay started colouring boxes for real:
+        /// green has to mean right and red has to mean wrong, and the price of
+        /// that is waiting a frame or two longer.
+        static let minSamples = 4
         /// The leader must hold this share of the total confidence before the
         /// answer is treated as settled.
-        static let minLeaderShare = 0.6
+        static let minLeaderShare = 0.75
+        /// After this many confident-enough looks with no agreement, stop
+        /// waiting and report the cell as unreadable rather than leaving it
+        /// blank forever.
+        static let givesUpAfter = 8
     }
 
     private var votes: [String: Double] = [:]
     private(set) var samples = 0
+    /// Frames where something was clearly written but not confidently read.
+    private(set) var unsureSamples = 0
 
+    /// Only confident readings vote. An unconfident one still counts as a
+    /// sighting, so a cell nobody can read eventually gives up instead of
+    /// sitting uncoloured forever.
     mutating func add(_ reading: AnswerRecognizer.Reading) {
-        // Weighted by confidence, so an uncertain frame nudges rather than votes.
-        votes[reading.text, default: 0] += reading.confidence
         samples += 1
+        guard reading.isConfident else {
+            unsureSamples += 1
+            return
+        }
+        // Weighted by confidence, so a marginal frame nudges rather than votes.
+        votes[reading.text, default: 0] += reading.confidence
+    }
+
+    /// Seen plenty and still no agreement — the honest answer is "I can't read
+    /// this", which the overlay shows in yellow rather than guessing.
+    var hasGivenUp: Bool {
+        samples >= Tuning.givesUpAfter && !isSettled
     }
 
     /// The current leader, with its share of the accumulated confidence.
@@ -155,5 +212,6 @@ struct AnswerAccumulator {
     mutating func reset() {
         votes.removeAll()
         samples = 0
+        unsureSamples = 0
     }
 }

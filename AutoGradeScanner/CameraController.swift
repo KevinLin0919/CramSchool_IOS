@@ -373,9 +373,14 @@ struct UnitQuad {
 }
 
 struct CameraPreviewView: UIViewRepresentable {
+    /// Settings switch: annotate wrong/unsure boxes with what the model read as
+    /// well as what the answer should be.
+    static let showsReadingKey = "scan.showsReading"
+
     let session: AVCaptureSession
     var live: LiveScanEngine.Update?
     var pose: PoseProvider?
+    var showsReading = false
     var onOrientationChange: ((CaptureOrientation) -> Void)?
 
     final class PreviewView: UIView {
@@ -460,6 +465,12 @@ struct CameraPreviewView: UIViewRepresentable {
         private var sheet: QuadSmoother?
         private var rejectStreak = 0
         private var boxLayers: [Int: CAShapeLayer] = [:]
+        private var labelLayers: [Int: CATextLayer] = [:]
+        /// Diagnostic overlay: also show what the model read, not just what the
+        /// answer should be. Driven by a Settings switch rather than #if DEBUG,
+        /// because the sideloaded .ipa is a Release build and DEBUG code never
+        /// reaches the device.
+        var showsReading = false
         private var displayLink: CADisplayLink?
 
         var update: LiveScanEngine.Update? {
@@ -564,12 +575,11 @@ struct CameraPreviewView: UIViewRepresentable {
 
         // Every box re-derived from the one smoothed sheet quad, so they can
         // never drift relative to one another.
-        private func displayedRects() -> [(id: Int, rect: ORect, verdict: Bool?)] {
+        private func displayedRects() -> [(id: Int, rect: ORect, box: LiveScanEngine.Box)] {
             guard let quad = sheet?.value,
                   let map = UnitQuad(quad: quad) else { return [] }
             return (update?.boxes ?? []).map { box in
-                (box.id, Self.orientedRect(from: map.corners(of: box.templateRect)),
-                 box.verdict)
+                (box.id, Self.orientedRect(from: map.corners(of: box.templateRect)), box)
             }
         }
 
@@ -604,19 +614,67 @@ struct CameraPreviewView: UIViewRepresentable {
             CATransaction.setDisableActions(true)
 
             var seen = Set<Int>()
-            for (id, rect, verdict) in displayedRects() {
+            for (id, rect, box) in displayedRects() {
                 seen.insert(id)
                 let shape = boxLayers[id] ?? makeBoxLayer(id: id)
-                shape.path = roundedPath(for: rect)
-                let color: UIColor = verdict.map { $0 ? UIColor(AG.ok) : UIColor(AG.bad) } ?? .white
+                let path = roundedPath(for: rect)
+                shape.path = path
+                let color = Self.color(for: box.verdict)
                 shape.strokeColor = color.cgColor
-                shape.fillColor = color.withAlphaComponent(verdict == nil ? 0.05 : 0.15).cgColor
+                shape.fillColor = color.withAlphaComponent(box.verdict == nil ? 0.05 : 0.15).cgColor
+                updateLabel(id: id, box: box, boxPath: path, color: color)
             }
             for (id, stale) in boxLayers where !seen.contains(id) {
                 stale.removeFromSuperlayer()
                 boxLayers[id] = nil
+                labelLayers[id]?.removeFromSuperlayer()
+                labelLayers[id] = nil
             }
             CATransaction.commit()
+        }
+
+        private static func color(for verdict: LiveScanEngine.Verdict?) -> UIColor {
+            switch verdict {
+            case .correct: return UIColor(AG.ok)
+            case .wrong:   return UIColor(AG.bad)
+            case .unsure:  return UIColor(AG.warn)
+            case nil:      return .white
+            }
+        }
+
+        /// The expected answer, pinned just outside the box's top-left corner.
+        ///
+        /// Only wrong and unsure boxes get one. A green box would be labelled
+        /// with the answer the teacher already knows is there, so the label
+        /// would be pure noise — and leaving greens bare is what makes the
+        /// annotated cells the ones your eye goes to.
+        private func updateLabel(id: Int, box: LiveScanEngine.Box,
+                                 boxPath: CGPath, color: UIColor) {
+            let expected = box.expectedText.trimmingCharacters(in: .whitespaces)
+            guard box.verdict == .wrong || box.verdict == .unsure, !expected.isEmpty else {
+                labelLayers[id]?.removeFromSuperlayer()
+                labelLayers[id] = nil
+                return
+            }
+
+            var text = expected
+            if showsReading, let read = box.readText, !read.isEmpty, read != expected {
+                // Diagnostic mode: a red box alone cannot tell you whether the
+                // student was wrong or the model was. This can.
+                text = "\(read)→\(expected)"
+            }
+
+            let label = labelLayers[id] ?? makeLabelLayer(id: id)
+            label.string = NSAttributedString(string: text, attributes: [
+                .font: UIFont.systemFont(ofSize: 15, weight: .bold),
+                .foregroundColor: UIColor.white,
+            ])
+            let size = label.preferredFrameSize()
+            let padded = CGSize(width: size.width + 10, height: size.height + 4)
+            let corner = boxPath.boundingBox.origin
+            label.frame = CGRect(x: corner.x, y: corner.y - padded.height - 3,
+                                 width: padded.width, height: padded.height)
+            label.backgroundColor = color.withAlphaComponent(0.92).cgColor
         }
 
         // Map the oriented rect's corners into the preview layer, then draw a
@@ -655,6 +713,18 @@ struct CameraPreviewView: UIViewRepresentable {
             boxLayers[id] = shape
             return shape
         }
+
+        private func makeLabelLayer(id: Int) -> CATextLayer {
+            let text = CATextLayer()
+            text.contentsScale = UIScreen.main.scale
+            text.alignmentMode = .center
+            text.cornerRadius = 5
+            text.masksToBounds = true
+            // Labels ride above every box so a neighbouring box cannot cover one.
+            layer.addSublayer(text)
+            labelLayers[id] = text
+            return text
+        }
     }
 
     func makeUIView(context: Context) -> PreviewView {
@@ -669,6 +739,7 @@ struct CameraPreviewView: UIViewRepresentable {
     func updateUIView(_ uiView: PreviewView, context: Context) {
         uiView.pose = pose
         uiView.onOrientationChange = onOrientationChange
+        uiView.showsReading = showsReading
         uiView.update = live
     }
 }

@@ -16,12 +16,23 @@ import simd
 @MainActor
 final class LiveScanEngine {
 
+    /// Three outcomes, not two. Marking a cell wrong because the model could
+    /// not read it blames the student for our failure, so "couldn't read" is
+    /// its own state — the overlay shows it in yellow and the teacher decides.
+    enum Verdict {
+        case correct
+        case wrong
+        case unsure
+    }
+
     struct Box: Identifiable {
         let id: Int               // question index
         let quad: [CGPoint]       // projected corners (tl,tr,br,bl), normalized in the upright frame
         let rect: CGRect          // axis-aligned bounds of quad
         let templateRect: CGRect  // the box on the master sheet, in template coordinates
-        let verdict: Bool?        // nil while pending (not yet locked in)
+        let verdict: Verdict?     // nil while pending (not yet decided)
+        let expectedText: String  // the template's answer, shown on wrong/unsure boxes
+        let readText: String?     // what the model actually read, for the debug overlay
     }
 
     struct Update {
@@ -53,7 +64,7 @@ final class LiveScanEngine {
     private var buildFailed = false
     private var busy = false
     private var missStreak = 0
-    private var verdicts: [Int: Bool] = [:]      // question -> correct, locked in
+    private var verdicts: [Int: Verdict] = [:]   // question -> outcome, locked in
     private var seenStreak: [Int: Int] = [:]     // consecutive aligned sightings
     private var visibleQuads: [Int: [CGPoint]] = [:]
     private var visibleRects: [Int: CGRect] = [:]
@@ -180,7 +191,7 @@ final class LiveScanEngine {
             let recognized = recognizedText[i]
                 ?? (i < bundled.written.count ? bundled.written[i] : exp)
             return GradedAnswer(id: i, expected: exp, recognized: recognized,
-                                isCorrect: verdicts[i] ?? false,
+                                isCorrect: verdicts[i] == .correct,
                                 rect: visibleRects[i])
         }
         return GradingResult(image: image, answers: answers,
@@ -283,6 +294,12 @@ final class LiveScanEngine {
                     accumulators[i] = votes
                     if votes.isSettled, let best = votes.best {
                         lockIn(i, recognized: best.text, expected: exp)
+                    } else if votes.hasGivenUp {
+                        // Plenty of clear looks, still no agreement. Saying so
+                        // is better than picking the loudest guess and marking
+                        // a student wrong on it.
+                        recognizedText[i] = votes.best?.text
+                        verdicts[i] = .unsure
                     }
                     continue
                 }
@@ -309,6 +326,7 @@ final class LiveScanEngine {
     private func lockIn(_ index: Int, recognized: String, expected: String) {
         recognizedText[index] = recognized
         verdicts[index] = AnswerKind.canonical(recognized) == AnswerKind.canonical(expected)
+            ? .correct : .wrong
     }
 
     private func miss() {
@@ -349,7 +367,9 @@ final class LiveScanEngine {
     private func publish(aligned: Bool = false) {
         let boxes = visibleQuads.keys.sorted().map { i in
             Box(id: i, quad: visibleQuads[i]!, rect: visibleRects[i] ?? .zero,
-                templateRect: bundled.boxes[i], verdict: verdicts[i])
+                templateRect: bundled.boxes[i], verdict: verdicts[i],
+                expectedText: i < expected.count ? expected[i] : "",
+                readText: recognizedText[i])
         }
         onUpdate?(Update(boxes: boxes,
                          aligned: aligned && !boxes.isEmpty,

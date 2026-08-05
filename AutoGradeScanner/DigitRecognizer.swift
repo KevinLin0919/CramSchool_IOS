@@ -31,6 +31,15 @@ final class DigitRecognizer {
         /// All ten, kept so callers can accumulate evidence across frames
         /// instead of re-deciding from scratch each time.
         let probabilities: [Double]
+
+        /// Lead over the runner-up. A digit can carry a respectable softmax and
+        /// still be a coin flip between two classes — which is exactly how the
+        /// one misread cell in the real fixtures behaves (0.53 top, 0.45
+        /// second). Softmax alone would wave that through.
+        var margin: Double {
+            let sorted = probabilities.sorted(by: >)
+            return sorted.count >= 2 ? sorted[0] - sorted[1] : sorted.first ?? 0
+        }
     }
 
     struct Result {
@@ -38,6 +47,9 @@ final class DigitRecognizer {
         let text: String
         /// The weakest digit in the string — one bad character is a wrong answer.
         let confidence: Double
+        /// Likewise the narrowest margin: the string is only as sure as its
+        /// shakiest character.
+        let margin: Double
         let digits: [DigitReading]
     }
 
@@ -85,6 +97,7 @@ final class DigitRecognizer {
 
         return Result(text: readings.map { String($0.digit) }.joined(),
                       confidence: readings.map(\.confidence).min() ?? 0,
+                      margin: readings.map(\.margin).min() ?? 0,
                       digits: readings)
     }
 
