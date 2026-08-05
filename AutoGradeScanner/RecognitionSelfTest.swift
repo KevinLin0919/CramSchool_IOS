@@ -90,6 +90,22 @@ enum RecognitionSelfTest {
             }
         }
 
+        // MARK: printed-mark removal
+
+        // The regression that caught this: an empty answer box is a closed
+        // rectangle, which is as wide as it is tall, so the elongation rule
+        // that catches rules and parentheses never fired — and the live scan
+        // read every blank cell on the demo sheet as a confident "7".
+        check("cell.emptyBoxIsBlank",
+              Shapes.framedBox(withDigit: false).withoutPrintedMarks().isBlank,
+              "a printed box with nothing in it must read as blank")
+        check("cell.boxedDigitSurvives",
+              !Shapes.framedBox(withDigit: true).withoutPrintedMarks().isBlank,
+              "erasing the border must not take the answer with it")
+        check("cell.filledBubbleSurvives",
+              !Shapes.filledBubble().withoutPrintedMarks().isBlank,
+              "a filled bubble spans the cell and touches every edge, but is an answer")
+
         // MARK: real handwriting
 
         // The only real data in the suite: six answers cropped from an actual
@@ -237,6 +253,45 @@ enum RecognitionSelfTest {
                     let dx = Double(x) + 0.5 - centre, dy = Double(y) + 0.5 - centre
                     guard max(abs(dx), abs(dy)) <= ringRadius else { continue }
                     if abs(dx - dy) <= 2 || abs(dx + dy) <= 2 {
+                        values[y * size + x] = ink
+                    }
+                }
+            }
+            return CellPatch(width: size, height: size, intensity: values)
+        }
+
+        /// An empty printed answer box, optionally with a digit inside it.
+        static func framedBox(withDigit: Bool) -> CellPatch {
+            var values = [Double](repeating: paper, count: size * size)
+            let inset = 3, thickness = 2
+            for y in inset..<(size - inset) {
+                for x in inset..<(size - inset) {
+                    let onEdge = y < inset + thickness || y >= size - inset - thickness
+                        || x < inset + thickness || x >= size - inset - thickness
+                    if onEdge { values[y * size + x] = ink }
+                }
+            }
+            if withDigit {
+                // A bar and a hook — enough ink to survive, nowhere near the border.
+                for y in 20..<44 {
+                    for x in 28..<34 { values[y * size + x] = ink }
+                }
+                for x in 22..<34 {
+                    for y in 20..<24 { values[y * size + x] = ink }
+                }
+            }
+            return CellPatch(width: size, height: size, intensity: values)
+        }
+
+        /// A solid mark filling the cell — spans every edge like a box border
+        /// does, but is an answer, so it must survive.
+        static func filledBubble() -> CellPatch {
+            let centre = Double(size) / 2
+            var values = [Double](repeating: paper, count: size * size)
+            for y in 0..<size {
+                for x in 0..<size {
+                    let dx = Double(x) + 0.5 - centre, dy = Double(y) + 0.5 - centre
+                    if (dx * dx + dy * dy).squareRoot() <= Double(size) * 0.42 {
                         values[y * size + x] = ink
                     }
                 }

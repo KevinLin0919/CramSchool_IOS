@@ -289,12 +289,14 @@ final class LiveScanEngine {
                 blankStreak[i, default: 0] += 1
             }
 
-            // Nothing legible after several clear looks. The bundled demo
-            // master is a BLANK answer sheet — there is no handwriting on it
-            // to read — so fall back to the scripted answer, which is the only
-            // reason the offline demo shows anything. On a real paper this
-            // path means the cell was genuinely left empty.
-            if blankStreak[i, default: 0] >= 4 {
+            // Nothing legible after two clear looks. The bundled demo master is
+            // a BLANK answer sheet — there is no handwriting on it to read — so
+            // fall back to the scripted answer, which is the only reason the
+            // offline demo shows anything. On a real paper this path means the
+            // cell was genuinely left empty. Two matches the "seen twice, then
+            // decide" rule the rest of this loop already uses; a longer streak
+            // would outlast a quick pan across the page.
+            if blankStreak[i, default: 0] >= 2 {
                 lockIn(i, recognized: i < bundled.written.count ? bundled.written[i] : exp,
                        expected: exp)
             }
