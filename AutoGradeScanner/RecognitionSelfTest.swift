@@ -36,6 +36,17 @@ enum RecognitionSelfTest {
         let cases: [Case]
     }
 
+    private struct RealCells: Decodable {
+        struct Cell: Decodable {
+            let label: String
+            let truth: String
+            let width: Int
+            let height: Int
+            let intensity: [Double]
+        }
+        let cells: [Cell]
+    }
+
     @MainActor
     private static func run(referencePath: String) {
         var passed = 0, total = 0
@@ -77,6 +88,40 @@ enum RecognitionSelfTest {
             } else {
                 check("model.matchesReference", false, "cannot read \(referencePath)")
             }
+        }
+
+        // MARK: real handwriting
+
+        // The only real data in the suite: six answers cropped from an actual
+        // student's paper. Everything else here is synthetic and proves the
+        // code does what it was told; this proves the code reads real ink.
+        // It is deliberately asserted at 5/6 rather than 6/6 — with a sample
+        // this small, demanding perfection would turn any harmless tuning
+        // change into a red build.
+        let realPath = (referencePath as NSString).deletingLastPathComponent
+            + "/real_cells.json"
+        if let recognizer,
+           let data = FileManager.default.contents(atPath: realPath),
+           let real = try? JSONDecoder().decode(RealCells.self, from: data) {
+            var rawHits = 0, cleanHits = 0
+            var detail: [String] = []
+            for cell in real.cells {
+                let patch = CellPatch(width: cell.width, height: cell.height,
+                                      intensity: cell.intensity)
+                let raw = (try? recognizer.recognize(patch))?.text
+                let clean = (try? recognizer.recognize(patch.withoutPrintedMarks()))?.text
+                if raw == cell.truth { rawHits += 1 }
+                if clean == cell.truth { cleanHits += 1 }
+                detail.append("\(cell.label):\(cell.truth)→\(clean ?? "-")\(clean == cell.truth ? "" : "✗")")
+            }
+            print("RECOG INFO real.rawCell = \(rawHits)/\(real.cells.count) "
+                  + "(printed marks left in — this is what a bare crop scores)")
+            check("real.printedMarksRemoved", cleanHits >= 5,
+                  "\(cleanHits)/\(real.cells.count)  " + detail.joined(separator: " "))
+            check("real.filterHelps", cleanHits > rawHits,
+                  "\(rawHits) → \(cleanHits) once the box border is erased")
+        } else {
+            check("real.printedMarksRemoved", false, "cannot read \(realPath)")
         }
 
         // MARK: topology

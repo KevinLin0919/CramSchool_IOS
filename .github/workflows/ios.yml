@@ -77,6 +77,11 @@ jobs:
           # this is the first and only execution of those weights.
           grep -q "RECOG PASS model.load" recog.log
           grep -q "RECOG PASS model.matchesReference" recog.log
+          # The only real handwriting we have. Erasing the printed box border
+          # is what makes these readable at all, so guard both the score and
+          # the fact that the filter is still doing something.
+          grep -q "RECOG PASS real.printedMarksRemoved" recog.log
+          grep -q "RECOG PASS real.filterHelps" recog.log
           ! grep -q "RECOG FAIL" recog.log
       - name: Upload self-test output
         if: always()

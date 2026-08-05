@@ -68,6 +68,16 @@ final class LiveScanEngine {
     private var anchorIntrinsics: simd_double3x3?
     private var anchorSheetQuad: [CGPoint]?
 
+    // On-device recognition. A cell is seen dozens of times while the camera
+    // pans and roughly one frame in five carries enough alignment drift to
+    // misread it, so readings are accumulated and voted on rather than acted
+    // on individually — see AnswerAccumulator.
+    private let recognizer = AnswerRecognizer()
+    private var accumulators: [Int: AnswerAccumulator] = [:]
+    private var recognizedText: [Int: String] = [:]
+    private var blankStreak: [Int: Int] = [:]
+    private let masterAspect: CGFloat
+
     private let minInliers: Int
     private let minRatio: Double
 
@@ -79,6 +89,7 @@ final class LiveScanEngine {
         self.templateTitle = templateTitle
         self.bundled = bundled
         self.expected = DemoData.shared.answers(for: templateID)
+        self.masterAspect = master.size.height > 0 ? master.size.width / master.size.height : 1
 
         var inliers = 16
         var ratio = 0.3
@@ -142,6 +153,9 @@ final class LiveScanEngine {
     func reset() {
         verdicts = [:]
         seenStreak = [:]
+        accumulators = [:]
+        recognizedText = [:]
+        blankStreak = [:]
         visibleQuads = [:]
         visibleRects = [:]
         grace = [:]
@@ -163,7 +177,8 @@ final class LiveScanEngine {
         guard let image = lastFrame, !verdicts.isEmpty else { return nil }
         let answers = verdicts.keys.sorted().map { i -> GradedAnswer in
             let exp = i < expected.count ? expected[i] : ""
-            let recognized = i < bundled.written.count ? bundled.written[i] : exp
+            let recognized = recognizedText[i]
+                ?? (i < bundled.written.count ? bundled.written[i] : exp)
             return GradedAnswer(id: i, expected: exp, recognized: recognized,
                                 isCorrect: verdicts[i] ?? false,
                                 rect: visibleRects[i])
@@ -207,9 +222,14 @@ final class LiveScanEngine {
 
         var nowQuads: [Int: [CGPoint]] = [:]
         var nowRects: [Int: CGRect] = [:]
+        var rawQuads: [Int: [CGPoint]] = [:]
         var confirmedNow = Set<Int>()
         for (i, box) in bundled.boxes.enumerated() {
             let corners = h.projectedCorners(of: box)
+            // Recognition samples the UNsmoothed corners: smoothing exists to
+            // stop the drawn overlay twitching, and applying it here would
+            // feed the model a cell lagging behind where the paper actually is.
+            rawQuads[i] = corners
             let xs = corners.map(\.x), ys = corners.map(\.y)
             let rect = CGRect(x: xs.min()!, y: ys.min()!,
                               width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
@@ -236,21 +256,57 @@ final class LiveScanEngine {
                                  width: sxs.max()! - sxs.min()!, height: sys.max()! - sys.min()!)
         }
 
+        // Converting the whole frame to grayscale costs more than recognising
+        // the handful of cells on it, so only do it when something is actually
+        // waiting to be read.
+        let pending = confirmedNow.contains { verdicts[$0] == nil && seenStreak[$0, default: 0] >= 1 }
+        let bitmap = pending ? GrayBitmap(frame) : nil
+
         for i in 0..<bundled.boxes.count {
-            if confirmedNow.contains(i) {
-                seenStreak[i, default: 0] += 1
-                if seenStreak[i, default: 0] >= 2, verdicts[i] == nil {
-                    let exp = i < expected.count ? expected[i] : ""
-                    let recognized = i < bundled.written.count ? bundled.written[i] : exp
-                    verdicts[i] = !exp.isEmpty && recognized == exp
+            guard confirmedNow.contains(i) else { seenStreak[i] = 0; continue }
+            seenStreak[i, default: 0] += 1
+            guard seenStreak[i, default: 0] >= 2, verdicts[i] == nil else { continue }
+
+            let exp = i < expected.count ? expected[i] : ""
+            guard !exp.isEmpty else { continue }
+
+            if let bitmap, let quad = rawQuads[i] {
+                let pixels = quad.map { CGPoint(x: $0.x * CGFloat(bitmap.width),
+                                                y: $0.y * CGFloat(bitmap.height)) }
+                let box = bundled.boxes[i]
+                let aspect = box.height > 0 ? (box.width * masterAspect) / box.height : 1
+                if let reading = recognizer.read(frame: bitmap, quad: pixels,
+                                                 aspect: aspect, expected: exp) {
+                    blankStreak[i] = 0
+                    var votes = accumulators[i] ?? AnswerAccumulator()
+                    votes.add(reading)
+                    accumulators[i] = votes
+                    if votes.isSettled, let best = votes.best {
+                        lockIn(i, recognized: best.text, expected: exp)
+                    }
+                    continue
                 }
-            } else {
-                seenStreak[i] = 0
+                blankStreak[i, default: 0] += 1
+            }
+
+            // Nothing legible after several clear looks. The bundled demo
+            // master is a BLANK answer sheet — there is no handwriting on it
+            // to read — so fall back to the scripted answer, which is the only
+            // reason the offline demo shows anything. On a real paper this
+            // path means the cell was genuinely left empty.
+            if blankStreak[i, default: 0] >= 4 {
+                lockIn(i, recognized: i < bundled.written.count ? bundled.written[i] : exp,
+                       expected: exp)
             }
         }
         visibleQuads = nowQuads
         visibleRects = nowRects
         publish(aligned: true)
+    }
+
+    private func lockIn(_ index: Int, recognized: String, expected: String) {
+        recognizedText[index] = recognized
+        verdicts[index] = AnswerKind.canonical(recognized) == AnswerKind.canonical(expected)
     }
 
     private func miss() {

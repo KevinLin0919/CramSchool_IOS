@@ -25,24 +25,30 @@ enum AnswerKind {
 
     private static let circleForms: Set<String> = ["O", "o", "○", "◯", "圈"]
     private static let crossForms: Set<String> = ["X", "x", "×", "✗", "叉"]
+    /// Taiwanese papers set multiple-choice options as ①②③④ but students write
+    /// a bare 1234, so the two sides never match until these are folded.
+    private static let circledDigits: [Character: Character] = [
+        "⓪": "0", "①": "1", "②": "2", "③": "3", "④": "4",
+        "⑤": "5", "⑥": "6", "⑦": "7", "⑧": "8", "⑨": "9",
+    ]
 
     static func infer(expected: String) -> AnswerKind {
-        let trimmed = expected.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = canonical(expected)
         guard !trimmed.isEmpty else { return .unsupported }
-        if circleForms.contains(trimmed) || crossForms.contains(trimmed) { return .mark }
+        if trimmed == Mark.circle.rawValue || trimmed == Mark.cross.rawValue { return .mark }
         // ASCII only: Character.isNumber also accepts things like "½".
         if trimmed.allSatisfy({ $0.isASCII && $0.isNumber }) { return .digits }
         return .unsupported
     }
 
-    /// Folds the many ways a template can spell a circle or a cross onto the
-    /// single form `Mark` produces, so comparison stays an exact string match.
+    /// Folds the many ways a template can spell an answer onto the single form
+    /// the recognisers produce — circle/cross variants, and circled digits.
     /// Apply it to both sides before comparing.
     static func canonical(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if circleForms.contains(trimmed) { return Mark.circle.rawValue }
         if crossForms.contains(trimmed) { return Mark.cross.rawValue }
-        return trimmed
+        return String(trimmed.map { circledDigits[$0] ?? $0 })
     }
 }
 
@@ -75,12 +81,21 @@ final class AnswerRecognizer {
     /// that could not be formed — all of which mean "no answer from this
     /// frame", not "wrong".
     func read(_ patch: CellPatch, expected: String) -> Reading? {
-        switch AnswerKind.infer(expected: expected) {
+        let kind = AnswerKind.infer(expected: expected)
+        guard kind != .unsupported else { return nil }
+
+        // Strip the box border / parentheses before anything looks at the ink.
+        // Both recognisers are otherwise reading printed strokes as part of the
+        // answer, which is by far the largest error source measured on real
+        // papers — see CellPatch.withoutPrintedMarks.
+        let clean = patch.withoutPrintedMarks()
+
+        switch kind {
         case .mark:
-            guard let result = MarkRecognizer.recognize(patch) else { return nil }
+            guard let result = MarkRecognizer.recognize(clean) else { return nil }
             return Reading(text: result.mark.rawValue, confidence: result.confidence, kind: .mark)
         case .digits:
-            guard let digits, let result = try? digits.recognize(patch) else { return nil }
+            guard let digits, let result = try? digits.recognize(clean) else { return nil }
             return Reading(text: result.text, confidence: result.confidence, kind: .digits)
         case .unsupported:
             return nil

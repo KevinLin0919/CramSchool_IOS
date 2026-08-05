@@ -25,3 +25,7 @@ build/
 *.dSYM.zip
 *.dSYM
 Recordings/
+
+# Copyrighted exam papers — source material for building fixtures, never published.
+# The repo is public; the papers carry 有著作權·侵害必究.
+*.pdf
