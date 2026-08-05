@@ -293,9 +293,15 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
             path.close()
             seen.insert(box.id)
             let shape = boxLayers[box.id] ?? makeBoxLayer(id: box.id)
-            let color: UIColor = box.verdict.map {
-                $0 ? UIColor(AG.ok) : UIColor(AG.bad)
-            } ?? .white
+            // Same three states as the main overlay; this path is parked but
+            // still has to compile.
+            let color: UIColor
+            switch box.verdict {
+            case .correct: color = UIColor(AG.ok)
+            case .wrong:   color = UIColor(AG.bad)
+            case .unsure:  color = UIColor(AG.warn)
+            case nil:      color = .white
+            }
             shape.path = path.cgPath
             shape.strokeColor = color.cgColor
             shape.fillColor = color.withAlphaComponent(box.verdict == nil ? 0.05 : 0.15).cgColor
