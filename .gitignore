@@ -29,3 +29,8 @@ Recordings/
 # Copyrighted exam papers — source material for building fixtures, never published.
 # The repo is public; the papers carry 有著作權·侵害必究.
 *.pdf
+
+# Copyrighted exam material — the master image IS the exam page, so it counts
+# the same as the PDFs above. Kept locally so demo template 9006 still builds
+# on this machine; must not reach the public repo.
+AutoGradeScanner/DemoMaster9006.png
