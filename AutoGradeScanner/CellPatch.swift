@@ -123,7 +123,16 @@ struct CellPatch {
         static let printedVerticalSpan = 0.7
         /// …and sits against an edge, because that is where the answer box's
         /// own border lives.
-        static let printedEdgeBand = 0.18
+        ///
+        /// This has to be narrow. A "2" written in the local style ends in a
+        /// long flat base, which is every bit as wide-and-flat as a ruled line;
+        /// the only thing telling them apart is that the printed rule is at the
+        /// cell boundary and the digit's base is merely near it. At 0.18 a "2"
+        /// filling its box lost its base and read as a confident "7". Swept
+        /// against both the real fixtures and the generated 9007 sheet, 0.05
+        /// to 0.10 scores 6/6 on both; below that the parenthesis arcs start
+        /// surviving, above it digits start losing strokes.
+        static let printedEdgeBand = 0.08
         /// Specks below this share of the cell are paper texture or JPEG noise.
         static let minSpeckArea = 0.0015
 
