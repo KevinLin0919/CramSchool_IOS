@@ -24,7 +24,7 @@ final class CameraController: NSObject, ObservableObject {
     // them, its intrinsics mapped into the upright frame's normalized
     // coordinates. While set with autoCaptureEnabled = false, the scanner
     // grades the stream in place instead of waiting for a still capture.
-    var onLiveFrame: ((UIImage, TimeInterval, simd_double3x3?) -> Void)?
+    var onLiveFrame: ((UIImage, TimeInterval, simd_double3x3?, CellPixelSource?) -> Void)?
     var autoCaptureEnabled = true
 
     private let photoOutput = AVCapturePhotoOutput()
@@ -193,7 +193,15 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
                                                pixelBuffer: pixelBuffer,
                                                uprightSize: image.size,
                                                orientation: orientation)
-            onLiveFrame(image, timestamp, intrinsics)
+            // Alignment gets the downscaled image; recognition gets the buffer
+            // itself, so it can read a cell at whatever the sensor captured
+            // rather than at the 1200px XFeat is capped to. Handing the buffer
+            // on retains it until the engine is done with the frame — one at a
+            // time, since frames arriving during an alignment are dropped.
+            let source = PixelBufferCellSource(buffer: pixelBuffer,
+                                               orientation: orientation,
+                                               context: ciContext)
+            onLiveFrame(image, timestamp, intrinsics, source)
         }
 
         guard autoCaptureEnabled, !hasCaptured, frameIndex % 6 == 0 else { return }

@@ -497,9 +497,10 @@ struct ScannerView: View {
         engine.onUpdate = { update in liveUpdate = update }
         liveEngine = engine
         camera.autoCaptureEnabled = false
-        camera.onLiveFrame = { image, timestamp, intrinsics in
+        camera.onLiveFrame = { image, timestamp, intrinsics, pixels in
             Task { @MainActor in
-                engine.submit(frame: image, timestamp: timestamp, intrinsics: intrinsics)
+                engine.submit(frame: image, timestamp: timestamp,
+                              intrinsics: intrinsics, pixels: pixels)
             }
         }
     }
@@ -512,6 +513,16 @@ struct ScannerView: View {
                     .foregroundStyle(Color(hex: 0x6FCF97))
                 Text("已對位・批改 \(live.gradedCount)/\(live.totalCount)" + debugSuffix(live))
                     .monospacedDigit()
+                if showsReading, live.cellPixels > 0 {
+                    // How many pixels the answer cell is actually worth. This
+                    // is the number that decides whether a digit is readable —
+                    // 128px reads real handwriting 6/6, 64px manages 3/6 — and
+                    // moving the camera is the only way to change it, so it
+                    // belongs on screen rather than in a log.
+                    Text("・格 \(live.cellPixels)px")
+                        .monospacedDigit()
+                        .foregroundStyle(Self.cellSizeTint(live.cellPixels))
+                }
             } else if !live.isReady {
                 ProgressView()
                     .tint(.white)
@@ -546,6 +557,15 @@ struct ScannerView: View {
             .clipShape(Capsule())
             .shadow(color: AG.brand.opacity(0.4), radius: 10, y: 6)
         }
+    }
+
+    /// Green once the cell carries enough pixels to be read reliably, amber in
+    /// the band where accuracy starts sliding, red where it will not work.
+    /// Thresholds are the measured ones, not guesses.
+    private static func cellSizeTint(_ pixels: Int) -> Color {
+        if pixels >= 96 { return Color(hex: 0x6FCF97) }
+        if pixels >= 64 { return Color(hex: 0xF2C94C) }
+        return Color(hex: 0xEB5757)
     }
 
     // Latency/inlier HUD, debug builds only — for calibrating on device.

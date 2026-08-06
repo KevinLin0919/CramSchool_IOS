@@ -82,6 +82,10 @@ jobs:
           # the fact that the filter is still doing something.
           grep -q "RECOG PASS real.printedMarksRemoved" recog.log
           grep -q "RECOG PASS real.filterHelps" recog.log
+          # Recognition reads cells out of the capture buffer, where CoreImage's
+          # origin is bottom-left and every quad here is top-left. A wrong flip
+          # would sample the mirror image and fail silently.
+          grep -q "RECOG PASS source.bufferPathAgrees" recog.log
           ! grep -q "RECOG FAIL" recog.log
       - name: Upload self-test output
         if: always()

@@ -51,6 +51,9 @@ final class LiveScanEngine {
         // it coherently — so the overlay smooths this and re-derives the
         // boxes from it, rather than smoothing eight boxes independently.
         let sheetQuad: [CGPoint]?
+        /// Long side in pixels of the last cell recognition actually saw.
+        /// 0 before anything has been read.
+        let cellPixels: Int
     }
 
     var onUpdate: ((Update) -> Void)?
@@ -88,6 +91,17 @@ final class LiveScanEngine {
     private var recognizedText: [Int: String] = [:]
     private var blankStreak: [Int: Int] = [:]
     private let masterAspect: CGFloat
+    /// Long side, in pixels, of the last cell handed to recognition. Surfaced
+    /// on screen because it is the number that decides whether an answer is
+    /// readable at all — measured on real handwriting, 128px scores 6/6 and
+    /// 64px scores 3/6 — and because framing is the only lever the person
+    /// holding the camera has over it.
+    private var lastCellPixels = 0
+
+    /// Cap on the crop rendered per cell. CellPatch samples to 128; rendering
+    /// past double that is work the model cannot use, so moving closer to the
+    /// paper stops costing anything here.
+    private static let cellRenderSide = 256
 
     private let minInliers: Int
     private let minRatio: Double
@@ -130,7 +144,8 @@ final class LiveScanEngine {
     // can propagate this anchor with camera motion measured after it.
     func submit(frame: UIImage,
                 timestamp: TimeInterval = CACurrentMediaTime(),
-                intrinsics: simd_double3x3? = nil) {
+                intrinsics: simd_double3x3? = nil,
+                pixels: CellPixelSource? = nil) {
         guard !busy, let matcher else { return }
         busy = true
         let hint = trackingHint
@@ -140,7 +155,7 @@ final class LiveScanEngine {
             let millis = (CACurrentMediaTime() - started) * 1000
             await MainActor.run {
                 self?.integrate(frame: frame, tracked: tracked ?? nil, millis: millis,
-                                timestamp: timestamp, intrinsics: intrinsics)
+                                timestamp: timestamp, intrinsics: intrinsics, pixels: pixels)
                 self?.busy = false
             }
         }
@@ -167,6 +182,7 @@ final class LiveScanEngine {
         accumulators = [:]
         recognizedText = [:]
         blankStreak = [:]
+        lastCellPixels = 0
         visibleQuads = [:]
         visibleRects = [:]
         grace = [:]
@@ -204,7 +220,8 @@ final class LiveScanEngine {
                            tracked: XFeatTemplateMatcher.TrackedAlignment?,
                            millis: Double,
                            timestamp: TimeInterval,
-                           intrinsics: simd_double3x3?) {
+                           intrinsics: simd_double3x3?,
+                           pixels: CellPixelSource? = nil) {
         lastAlignMillis = millis
         guard let tracked else { return miss() }
         let h = tracked.homography
@@ -267,11 +284,12 @@ final class LiveScanEngine {
                                  width: sxs.max()! - sxs.min()!, height: sys.max()! - sys.min()!)
         }
 
-        // Converting the whole frame to grayscale costs more than recognising
-        // the handful of cells on it, so only do it when something is actually
-        // waiting to be read.
+        // Recognition reads from the capture buffer at sensor resolution when
+        // one came with the frame, and from the downscaled alignment image
+        // otherwise. Building the fallback costs a full-frame grayscale pass,
+        // so it is only built when a cell is actually waiting to be read.
         let pending = confirmedNow.contains { verdicts[$0] == nil && seenStreak[$0, default: 0] >= 1 }
-        let bitmap = pending ? GrayBitmap(frame) : nil
+        let source: CellPixelSource? = pending ? (pixels ?? ImageCellSource(frame)) : nil
 
         for i in 0..<bundled.boxes.count {
             guard confirmedNow.contains(i) else { seenStreak[i] = 0; continue }
@@ -281,12 +299,12 @@ final class LiveScanEngine {
             let exp = i < expected.count ? expected[i] : ""
             guard !exp.isEmpty else { continue }
 
-            if let bitmap, let quad = rawQuads[i] {
-                let pixels = quad.map { CGPoint(x: $0.x * CGFloat(bitmap.width),
-                                                y: $0.y * CGFloat(bitmap.height)) }
+            if let source, let quad = rawQuads[i],
+               let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
+                lastCellPixels = Int(max(cut.bitmap.width, cut.bitmap.height))
                 let box = bundled.boxes[i]
                 let aspect = box.height > 0 ? (box.width * masterAspect) / box.height : 1
-                if let reading = recognizer.read(frame: bitmap, quad: pixels,
+                if let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
                                                  aspect: aspect, expected: exp) {
                     blankStreak[i] = 0
                     var votes = accumulators[i] ?? AnswerAccumulator()
@@ -381,6 +399,7 @@ final class LiveScanEngine {
                          inlierCount: lastInlierCount,
                          frameTimestamp: anchorTimestamp,
                          intrinsics: anchorIntrinsics,
-                         sheetQuad: anchorSheetQuad))
+                         sheetQuad: anchorSheetQuad,
+                         cellPixels: lastCellPixels))
     }
 }

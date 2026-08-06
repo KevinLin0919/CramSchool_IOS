@@ -90,6 +90,40 @@ enum RecognitionSelfTest {
             }
         }
 
+        // MARK: pixel sources
+
+        // The camera path reads cells straight out of the capture buffer, where
+        // CoreImage puts the origin bottom-left while every quad in this app is
+        // top-left. Getting that flip wrong would silently sample the mirror
+        // image of the answer, so the two sources are checked against each
+        // other on the same synthetic frame: the image path is the one that has
+        // always worked, and the buffer path has to agree with it.
+        let probe = Shapes.markedFrame(at: CGRect(x: 0.60, y: 0.15, width: 0.10, height: 0.12))
+        let quad = [CGPoint(x: 0.60, y: 0.15), CGPoint(x: 0.70, y: 0.15),
+                    CGPoint(x: 0.70, y: 0.27), CGPoint(x: 0.60, y: 0.27)]
+
+        func inkShare(_ source: CellPixelSource?) -> Double? {
+            guard let cut = source?.cell(quad: quad, maxSide: 128),
+                  let patch = CellPatch(bitmap: cut.bitmap, quad: cut.quad, aspect: 0.10 / 0.12)
+            else { return nil }
+            return patch.coverage
+        }
+
+        let viaImage = inkShare(ImageCellSource(probe))
+        check("source.imagePathFindsMark", (viaImage ?? 0) > 0.5,
+              String(format: "ink share %.2f (the whole cell is the mark)", viaImage ?? -1))
+
+        if let buffer = Shapes.pixelBuffer(from: probe) {
+            let viaBuffer = inkShare(PixelBufferCellSource(buffer: buffer,
+                                                           orientation: .landscapeRight,
+                                                           context: CIContext()))
+            check("source.bufferPathAgrees",
+                  (viaBuffer ?? 0) > 0.5 && abs((viaBuffer ?? 0) - (viaImage ?? 0)) < 0.25,
+                  String(format: "image %.2f vs buffer %.2f", viaImage ?? -1, viaBuffer ?? -1))
+        } else {
+            check("source.bufferPathAgrees", false, "could not build a test pixel buffer")
+        }
+
         // MARK: printed-mark removal
 
         // The regression that caught this: an empty answer box is a closed
@@ -258,6 +292,49 @@ enum RecognitionSelfTest {
                 }
             }
             return CellPatch(width: size, height: size, intensity: values)
+        }
+
+        /// A pale frame with one dark rectangle at a known normalized position,
+        /// deliberately off-centre and off-square so a flipped or transposed
+        /// mapping cannot accidentally land on it.
+        static func markedFrame(at rect: CGRect) -> UIImage {
+            let size = CGSize(width: 400, height: 300)
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+                UIColor(white: 0.95, alpha: 1).setFill()
+                ctx.fill(CGRect(origin: .zero, size: size))
+                UIColor(white: 0.1, alpha: 1).setFill()
+                ctx.fill(CGRect(x: rect.minX * size.width, y: rect.minY * size.height,
+                                width: rect.width * size.width, height: rect.height * size.height))
+            }
+        }
+
+        /// A BGRA pixel buffer holding `image`, standing in for a capture frame.
+        static func pixelBuffer(from image: UIImage) -> CVPixelBuffer? {
+            guard let cgImage = image.cgImage else { return nil }
+            let width = cgImage.width, height = cgImage.height
+            var buffer: CVPixelBuffer?
+            let attributes: [CFString: Any] = [
+                kCVPixelBufferCGImageCompatibilityKey: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            ]
+            guard CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                                      kCVPixelFormatType_32BGRA,
+                                      attributes as CFDictionary, &buffer) == kCVReturnSuccess,
+                  let buffer else { return nil }
+
+            CVPixelBufferLockBaseAddress(buffer, [])
+            defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+            guard let context = CGContext(
+                data: CVPixelBufferGetBaseAddress(buffer),
+                width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                    | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return buffer
         }
 
         /// An empty printed answer box, optionally with a digit inside it.
