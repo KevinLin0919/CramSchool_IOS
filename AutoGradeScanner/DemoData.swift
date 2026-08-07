@@ -102,27 +102,13 @@ final class DemoData {
             // enough to see the ink.
             written: ["2", "3", "1", "1", "2", "3"]),
 
-        // A real exam: 南一版6下國語段考複習卷 第7~9課, page 2 (scratchpad/
-        // gen_9006.py). The master is the teacher's copy with its red printed
-        // answers erased, which leaves precisely the sheet the student sat.
-        //
-        // Page 2 and not page 1 on purpose — page 1's three answers are all
-        // correct, so scanning it would show three green boxes and nothing
-        // else. This page's student missed two of three.
-        //
-        // WATCH THE SCALE. These cells are answer parentheses in vertical
-        // Chinese text: 21–26px wide once the whole page is in a 1200px frame,
-        // against the ~96px where recognition was measured to hold up. Filling
-        // the frame with roughly a quarter of the page is not a nicety here,
-        // it is the difference between reading the answer and not.
-        9006: BundledDemoTemplate(
-            imageName: "DemoMaster9006",
-            boxes: [
-                CGRect(x: 0.62816, y: 0.51825, width: 0.01714, height: 0.06887),
-                CGRect(x: 0.52303, y: 0.51855, width: 0.02196, height: 0.06892),
-                CGRect(x: 0.39415, y: 0.51893, width: 0.01748, height: 0.06895),
-            ],
-            written: ["1", "2", "3"]),
+        // A template built from a real 南一版 exam page lived here. Its master
+        // image is a page of copyrighted teaching material, so it cannot ship
+        // in a public repository, and a template whose master is missing looks
+        // real in the picker while silently falling back to fabricated grading
+        // — worse than not offering it. scratchpad/gen_9006.py rebuilds both
+        // the image and these coordinates from the source PDF if it is ever
+        // wanted again, for a private build.
     ]
 
     // The bundled master-sheet image for a template, if it ships one. Used by
@@ -140,9 +126,6 @@ final class DemoData {
         Sample(id: 9007, examName: "六年級綜合測驗（選擇題）",
                answers: ["2", "3", "1", "2", "4", "3"],
                createdAt: "2026-08-05 09:00:00"),
-        Sample(id: 9006, examName: "6下國語段考複習卷（第7~9課）",
-               answers: ["3", "2", "1"],
-               createdAt: "2026-08-05 09:10:00"),
         Sample(id: 9002, examName: "國二英文期中複習卷",
                answers: ["B", "apple", "C", "run", "D", "A", "cat", "B"],
                createdAt: "2026-07-06 14:05:00"),
