@@ -66,10 +66,11 @@ enum DemoSelfTest {
     // accumulate, then freeze and render the final result.
     @MainActor
     private static func runLive(paths: [String]) async {
-        guard let engine = LiveScanEngine(templateID: 9001, templateTitle: "自測") else {
-            print("SELFTEST LIVE: engine unavailable (demo mode off or template missing)")
+        guard let resolved = DemoData.resolved(id: 9001) else {
+            print("SELFTEST LIVE: bundled template 9001 unavailable")
             return
         }
+        let engine = LiveScanEngine(template: resolved)
         var latest: LiveScanEngine.Update?
         engine.onUpdate = { latest = $0 }
 

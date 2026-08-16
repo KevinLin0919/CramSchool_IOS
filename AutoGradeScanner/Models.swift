@@ -2,27 +2,53 @@ import Foundation
 import CoreGraphics
 import UIKit
 
-// Coordinate space used by the web frontend's labeling canvas.
-// Template bboxes stored on the backend are in this 800x600 space,
-// so we convert to/from it to stay compatible with the web app.
-enum WebCanvas {
-    static let width: Double = 800
-    static let height: Double = 600
-}
+// The 800x600 labeling-canvas space the web frontend used is gone along with
+// the service that stored it. Boxes are fractions of the page image now, which
+// needs no shared constant to interpret.
 
-// MARK: - Exam template (list item, GET /api/exam-templates)
+// MARK: - Exam template (the list model the UI works in)
 
-struct ExamTemplate: Identifiable, Decodable, Hashable {
+struct ExamTemplate: Identifiable, Hashable {
     let id: Int
     let examName: String
     let annotationCount: Int
     let createdAt: String
+    let updatedAt: String
 
-    enum CodingKeys: String, CodingKey {
-        case id
-        case examName = "exam_name"
-        case annotationCount = "annotation_count"
-        case createdAt = "created_at"
+    /// Real columns, when the row came from a server that has them.
+    ///
+    /// The token scan below survives as a fallback for bundled demo templates
+    /// and for rows imported before the columns existed. It is also the reason
+    /// the columns exist: scanning a free-text name classifies "高一數學" and
+    /// gives up on "數甲 L1", and every client re-deriving that guess meant
+    /// the same paper could file itself differently in two places.
+    let serverGrade: String?
+    let serverSubject: String?
+
+    init(id: Int,
+         examName: String,
+         annotationCount: Int,
+         createdAt: String,
+         updatedAt: String = "",
+         serverGrade: String? = nil,
+         serverSubject: String? = nil) {
+        self.id = id
+        self.examName = examName
+        self.annotationCount = annotationCount
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.serverGrade = serverGrade
+        self.serverSubject = serverSubject
+    }
+
+    init(dto: TemplateSummaryDTO) {
+        self.init(id: dto.id,
+                  examName: dto.examName,
+                  annotationCount: dto.annotationCount,
+                  createdAt: dto.createdAt,
+                  updatedAt: dto.updatedAt,
+                  serverGrade: dto.grade,
+                  serverSubject: dto.subject)
     }
 
     static let gradeOrder = ["國一", "國二", "國三", "高一", "高二", "高三", "其他"]
@@ -32,14 +58,14 @@ struct ExamTemplate: Identifiable, Decodable, Hashable {
     private static let subjectTokens = ["數學", "英文", "英語", "國文", "理化", "物理", "化學",
                                         "歷史", "地理", "生物", "自然", "社會", "公民"]
 
-    // The backend only stores a free-text exam_name; grade/subject are
-    // parsed out of it so the UI can group like the design.
     var grade: String {
-        Self.gradeTokens.first(where: { examName.contains($0) }) ?? "其他"
+        if let serverGrade, !serverGrade.isEmpty { return serverGrade }
+        return Self.gradeTokens.first(where: { examName.contains($0) }) ?? "其他"
     }
 
     var subject: String {
-        Self.subjectTokens.first(where: { examName.contains($0) }) ?? "一般"
+        if let serverSubject, !serverSubject.isEmpty { return serverSubject }
+        return Self.subjectTokens.first(where: { examName.contains($0) }) ?? "一般"
     }
 
     var displayName: String {
@@ -61,46 +87,11 @@ struct ExamTemplate: Identifiable, Decodable, Hashable {
     }
 }
 
-struct TemplateListResponse: Decodable {
-    let templates: [ExamTemplate]
-}
-
-// MARK: - Template detail (GET /api/exam-templates/:id)
-
-struct TemplateAnnotation: Decodable {
-    let className: String?
-    let bbox: [Double]   // [x, y, w, h] in 800x600 web-canvas space
-    let answer: String?
-
-    enum CodingKeys: String, CodingKey {
-        case className = "class"
-        case bbox
-        case answer
-    }
-}
-
-struct TemplatePage: Decodable {
-    let image: String?
-    let annotations: [TemplateAnnotation]
-}
-
-struct TemplateDetail: Decodable {
-    let id: Int
-    let examName: String
-    let pages: [TemplatePage]
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case examName = "exam_name"
-        case pages
-    }
-
-    var expectedAnswers: [String] {
-        pages.flatMap(\.annotations).map {
-            ($0.answer ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-}
+// The 800x600 "web canvas" bbox format that used to live here is gone with the
+// service that spoke it. Boxes now arrive as fractions of the page image
+// (`AnswerBoxDTO`), which is interpretable without also knowing the master's
+// aspect ratio — the old format was not, and every consumer had to re-derive
+// the same letterbox offsets to use it.
 
 // MARK: - OCR
 

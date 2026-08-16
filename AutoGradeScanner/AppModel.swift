@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 enum AppScreen {
@@ -16,8 +17,33 @@ final class AppModel: ObservableObject {
     @Published var templatesError: String?
     @Published var selectedTemplateID: Int?
 
+    /// Set when the server rejects our credential. Drives the enrolment
+    /// prompt, so a revoked device says so once instead of failing every
+    /// screen in its own words.
+    @Published var needsEnrolment = false
+
     // Last grading result (results tab stays disabled until one exists)
     @Published var lastResult: GradingResult?
+
+    private var cancellables: Set<AnyCancellable> = []
+
+    init() {
+        NotificationCenter.default.publisher(for: APIClient.unauthorizedNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Credentials.clear()
+                self?.needsEnrolment = true
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: Credentials.didChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.needsEnrolment = false
+                Task { await self?.loadTemplates() }
+            }
+            .store(in: &cancellables)
+    }
 
     var selectedTemplate: ExamTemplate? {
         templates.first { $0.id == selectedTemplateID }
@@ -25,17 +51,29 @@ final class AppModel: ObservableObject {
 
     var hasResults: Bool { lastResult != nil }
 
+    var isDemo: Bool { DemoData.isEnabled }
+
+    // MARK: - Templates
+
     func loadTemplates() async {
         isLoadingTemplates = true
         templatesError = nil
-        do {
-            templates = try await APIClient.shared.listTemplates()
-            if let selected = selectedTemplateID,
-               !templates.contains(where: { $0.id == selected }) {
-                selectedTemplateID = nil
-            }
-        } catch {
-            templatesError = error.localizedDescription
+
+        if DemoData.isEnabled {
+            templates = DemoData.shared.templateList(search: nil)
+        } else {
+            // Show whatever synced earlier first, then refresh over it. A
+            // teacher opening the app on a dead network gets their templates,
+            // not a spinner followed by an error.
+            templates = TemplateStore.shared.templates
+            await TemplateStore.shared.refresh()
+            templates = TemplateStore.shared.templates
+            templatesError = TemplateStore.shared.syncError
+        }
+
+        if let selected = selectedTemplateID,
+           !templates.contains(where: { $0.id == selected }) {
+            selectedTemplateID = nil
         }
         isLoadingTemplates = false
     }
@@ -44,7 +82,11 @@ final class AppModel: ObservableObject {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         do {
-            try await APIClient.shared.renameTemplate(id: template.id, name: trimmed)
+            if DemoData.isEnabled {
+                DemoData.shared.rename(id: template.id, name: trimmed)
+            } else {
+                try await APIClient.shared.renameTemplate(id: template.id, name: trimmed)
+            }
             await loadTemplates()
         } catch {
             templatesError = error.localizedDescription
@@ -53,11 +95,28 @@ final class AppModel: ObservableObject {
 
     func deleteTemplate(_ template: ExamTemplate) async {
         do {
-            try await APIClient.shared.deleteTemplate(id: template.id)
+            if DemoData.isEnabled {
+                DemoData.shared.delete(id: template.id)
+            } else {
+                try await APIClient.shared.deleteTemplate(id: template.id)
+            }
             if selectedTemplateID == template.id { selectedTemplateID = nil }
             templates.removeAll { $0.id == template.id }
+            await loadTemplates()
         } catch {
             templatesError = error.localizedDescription
         }
+    }
+
+    // MARK: - Enrolment
+
+    func signOut() {
+        Credentials.clear()
+        // The answer keys came down with a credential that no longer exists;
+        // they should not outlive it on a shared device.
+        TemplateStore.shared.purge()
+        selectedTemplateID = nil
+        lastResult = nil
+        Task { await loadTemplates() }
     }
 }

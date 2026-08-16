@@ -238,39 +238,62 @@ struct NewTemplateView: View {
         stage = .saving
         errorMessage = nil
 
-        // Convert detected pixel bboxes into the web app's 800x600
-        // labeling-canvas space so templates stay cross-compatible.
-        let width = Double(image.size.width)
-        let height = Double(image.size.height)
-        let scale = min(WebCanvas.width / width, WebCanvas.height / height)
-        let offsetX = (WebCanvas.width - width * scale) / 2
-        let offsetY = (WebCanvas.height - height * scale) / 2
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
 
-        let annotations: [[String: Any]] = boxes.enumerated().map { index, box in
-            [
-                "class": "答案區",
-                "bbox": [
-                    box[0] * scale + offsetX,
-                    box[1] * scale + offsetY,
-                    (box[2] - box[0]) * scale,
-                    (box[3] - box[1]) * scale
-                ],
-                "answer": index < answers.count ? answers[index] : ""
-            ]
+        if DemoData.isEnabled {
+            DemoData.shared.create(name: trimmedName, answers: answers)
+            onSaved()
+            dismiss()
+            return
         }
 
-        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        // YOLO returns boxes in this photo's own pixel space, and the server
+        // stores fractions of that same image — so the conversion is a
+        // division. The 800x600 canvas this used to target needed letterbox
+        // offsets that only made sense if you also knew the aspect ratio.
+        let width = Double(image.size.width)
+        let height = Double(image.size.height)
+
         do {
-            try await APIClient.shared.createTemplate(
-                name: trimmedName,
-                imageBase64DataURL: "data:image/jpeg;base64,\(jpeg.base64EncodedString())",
-                pages: [["image": trimmedName, "annotations": annotations]]
-            )
+            let uploaded = try await APIClient.shared.uploadImage(jpeg, filename: "master.jpg")
+
+            let payloadBoxes = boxes.enumerated().map { index, box -> APIClient.NewBox in
+                let answer = index < answers.count
+                    ? answers[index].trimmingCharacters(in: .whitespaces)
+                    : ""
+                return APIClient.NewBox(question_no: index + 1,
+                                        x: box[0] / width,
+                                        y: box[1] / height,
+                                        w: (box[2] - box[0]) / width,
+                                        h: (box[3] - box[1]) / height,
+                                        answer: answer,
+                                        answer_type: Self.answerType(for: answer))
+            }
+
+            _ = try await APIClient.shared.createTemplate(
+                APIClient.NewTemplate(exam_name: trimmedName,
+                                      grade: nil,
+                                      subject: nil,
+                                      pages: [APIClient.NewPage(page_index: 0,
+                                                                image_id: uploaded.id,
+                                                                boxes: payloadBoxes)]))
+            await TemplateStore.shared.refresh()
             onSaved()
             dismiss()
         } catch {
             stage = .ready
             errorMessage = "儲存失敗：\(error.localizedDescription)"
+        }
+    }
+
+    /// Which recogniser a cell will need. Derived from the standard answer,
+    /// which is the same signal `AnswerKind.infer` uses at scan time, so the
+    /// stored type and the runtime routing cannot disagree.
+    private static func answerType(for answer: String) -> String {
+        switch AnswerKind.infer(expected: answer) {
+        case .digits: return "digit"
+        case .mark: return "mark"
+        case .unsupported: return "text"
         }
     }
 }

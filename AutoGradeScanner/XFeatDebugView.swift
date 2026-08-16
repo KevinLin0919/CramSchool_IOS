@@ -20,7 +20,7 @@ struct XFeatDebugView: View {
     @State private var templatesError: String?
     @State private var selectedTemplateName: String?
     @State private var templateImage: UIImage?
-    @State private var templateBoxes: [[Double]] = []   // [x,y,w,h] in 800x600 web-canvas space
+    @State private var templateBoxes: [CGRect] = []     // normalized within the master
     @State private var templatePickerItem: PhotosPickerItem?
     @State private var loadingTemplate = false
 
@@ -247,8 +247,9 @@ struct XFeatDebugView: View {
 
     private func loadTemplateList() async {
         do {
-            templates = try await APIClient.shared.listTemplates()
-            templatesError = nil
+            await TemplateStore.shared.refresh()
+            templates = TemplateStore.shared.templates
+            templatesError = TemplateStore.shared.syncError
         } catch {
             templatesError = error.localizedDescription
         }
@@ -259,16 +260,12 @@ struct XFeatDebugView: View {
         loadingTemplate = true
         defer { loadingTemplate = false }
         do {
-            guard let url = ServerConfig.templateImageURL(id: template.id) else {
-                throw APIError.badURL
-            }
-            async let imageData = URLSession.shared.data(from: url).0
-            async let detail = APIClient.shared.templateDetail(id: template.id)
-            guard let image = UIImage(data: try await imageData) else {
-                throw APIError.badPayload
-            }
-            templateImage = image.normalizedForUpload()
-            templateBoxes = try await detail.pages.flatMap { $0.annotations.map(\.bbox) }
+            // The store already holds the master and the boxes in the exact
+            // form the matcher wants, so this tool now exercises the same path
+            // the scanner does rather than a parallel one that could drift.
+            let resolved = try await TemplateStore.shared.resolve(id: template.id)
+            templateImage = resolved.master.normalizedForUpload()
+            templateBoxes = resolved.boxes
             selectedTemplateName = template.examName
             runState = .idle
         } catch {
@@ -350,7 +347,7 @@ private enum XFeatDebugRender {
     // error is visible instead of being hidden by axis-aligned bounding boxes.
     static func projectedBoxes(scan: UIImage,
                                homography: XFeatMatcher.Homography,
-                               boxes: [[Double]]) -> UIImage {
+                               boxes: [CGRect]) -> UIImage {
         let size = scan.size
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
@@ -385,13 +382,11 @@ private enum XFeatDebugRender {
                        color: UIColor(red: 0.32, green: 0.72, blue: 0.53, alpha: 1),
                        width: lineWidth, dashed: true)
 
-            for box in boxes where box.count >= 4 {
-                let x = box[0] / WebCanvas.width
-                let y = box[1] / WebCanvas.height
-                let w = box[2] / WebCanvas.width
-                let h = box[3] / WebCanvas.height
-                let corners = [CGPoint(x: x, y: y), CGPoint(x: x + w, y: y),
-                               CGPoint(x: x + w, y: y + h), CGPoint(x: x, y: y + h)].map(projected)
+            for box in boxes {
+                let corners = [CGPoint(x: box.minX, y: box.minY),
+                               CGPoint(x: box.maxX, y: box.minY),
+                               CGPoint(x: box.maxX, y: box.maxY),
+                               CGPoint(x: box.minX, y: box.maxY)].map(projected)
                 strokeQuad(corners, color: .systemYellow, width: lineWidth)
             }
         }

@@ -498,6 +498,7 @@ private struct TemplatePreviewSheet: View {
 
     @State private var answers: [String] = []
     @State private var loaded = false
+    @State private var master: UIImage?
 
     var body: some View {
         NavigationStack {
@@ -518,48 +519,36 @@ private struct TemplatePreviewSheet: View {
 
     @ViewBuilder
     private var content: some View {
-        if let image = DemoData.bundledImage(for: template.id) {
-            // Bundled demo template: show the real master sheet.
+        if let master {
+            // The master sheet as the scanner will see it — the same cached
+            // copy, so a preview that renders proves the template can also be
+            // graded offline.
             ScrollView {
-                Image(uiImage: image)
+                Image(uiImage: master)
                     .resizable()
                     .scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding(16)
             }
-        } else if DemoData.isEnabled {
-            // Offline demo: no image, so render the answer key as a card.
-            if loaded {
-                AnswerSheetSchematic(title: template.fullTitle,
-                                     subject: template.subject,
-                                     answers: answers)
-            } else {
-                ProgressView().tint(AG.brand)
-            }
+        } else if loaded {
+            // No master cached: show the answer key rather than an empty page.
+            AnswerSheetSchematic(title: template.fullTitle,
+                                 subject: template.subject,
+                                 answers: answers)
         } else {
-            // Real backend: prefer the stored sheet image, fall back to the
-            // schematic if it can't be fetched.
-            AsyncImage(url: ServerConfig.templateImageURL(id: template.id)) { phase in
-                switch phase {
-                case .success(let image):
-                    ScrollView {
-                        image.resizable().scaledToFit().padding(16)
-                    }
-                case .failure:
-                    AnswerSheetSchematic(title: template.fullTitle,
-                                         subject: template.subject,
-                                         answers: answers)
-                default:
-                    ProgressView().tint(AG.brand)
-                }
-            }
+            ProgressView().tint(AG.brand)
         }
     }
 
     private func load() async {
         guard !loaded else { return }
-        let detail = try? await APIClient.shared.templateDetail(id: template.id)
-        answers = detail?.expectedAnswers ?? []
+        // Resolving goes through the same cache the scanner uses, so this
+        // works with no network once the template has synced — and an
+        // AsyncImage could not have carried the bearer token anyway.
+        if let resolved = try? await TemplateStore.shared.resolve(id: template.id) {
+            master = resolved.master
+            answers = resolved.expected
+        }
         loaded = true
     }
 }

@@ -28,6 +28,10 @@ struct ScannerView: View {
     // viewfinder and verdicts accumulate as the camera pans across it.
     @State private var liveEngine: LiveScanEngine?
     @State private var liveUpdate: LiveScanEngine.Update?
+    /// Why live grading is unavailable, when it is. Shown rather than swallowed
+    /// so a missing master sheet does not look like a camera that just will not
+    /// lock on.
+    @State private var resolveError: String?
 
     // Experimental ARKit world-tracking backbone (Phase 3). When enabled and
     // supported, ARKit owns the camera and pins the boxes in world space.
@@ -230,9 +234,11 @@ struct ScannerView: View {
                         .padding(.bottom, 16)
                 }
 
-                Text(liveEngine != nil ? "・ 對到哪、改到哪，掃完按「完成」 ・" : bottomHint)
+                Text(liveHint)
                     .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(resolveError == nil ? .white.opacity(0.5) : Color(hex: 0xF2A0A0))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
                     .padding(.bottom, geo.safeAreaInsets.bottom + 24)
 
             case .done:
@@ -251,6 +257,11 @@ struct ScannerView: View {
             }
         }
         .animation(.spring(duration: 0.32), value: phase)
+    }
+
+    private var liveHint: String {
+        if let resolveError { return "無法載入模板：\(resolveError)　改用拍照批改" }
+        return liveEngine != nil ? "・ 對到哪、改到哪，掃完按「完成」 ・" : bottomHint
     }
 
     private var bottomHint: String {
@@ -491,16 +502,32 @@ struct ScannerView: View {
 
     // MARK: - Live grading session
 
+    // Resolving reads the cached master sheet and boxes off disk, so on a
+    // device that has synced this is fast and works with no network at all.
+    // It is async only because a template opened for the first time still has
+    // to be fetched once.
     private func startLiveSession(for template: ExamTemplate) {
-        guard let engine = LiveScanEngine(templateID: template.id,
-                                          templateTitle: template.fullTitle) else { return }
-        engine.onUpdate = { update in liveUpdate = update }
-        liveEngine = engine
-        camera.autoCaptureEnabled = false
-        camera.onLiveFrame = { image, timestamp, intrinsics, pixels in
-            Task { @MainActor in
-                engine.submit(frame: image, timestamp: timestamp,
-                              intrinsics: intrinsics, pixels: pixels)
+        Task { @MainActor in
+            do {
+                let resolved = try await TemplateStore.shared.resolve(id: template.id)
+                let engine = LiveScanEngine(template: resolved)
+                engine.onUpdate = { update in liveUpdate = update }
+                liveEngine = engine
+                resolveError = nil
+                camera.autoCaptureEnabled = false
+                camera.onLiveFrame = { image, timestamp, intrinsics, pixels in
+                    Task { @MainActor in
+                        engine.submit(frame: image, timestamp: timestamp,
+                                      intrinsics: intrinsics, pixels: pixels)
+                    }
+                }
+            } catch {
+                // Live grading needs the master sheet; without it the scanner
+                // keeps working through the one-shot capture path rather than
+                // presenting a dead camera.
+                liveEngine = nil
+                camera.autoCaptureEnabled = true
+                resolveError = error.localizedDescription
             }
         }
     }

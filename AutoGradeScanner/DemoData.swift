@@ -35,11 +35,20 @@ final class DemoData {
 
     static let modeKey = "demo.mode"
 
-    // Default ON: the key is unset on a fresh install, and a demo build
-    // should work offline out of the box.
+    // Demo mode is less a setting than the un-enrolled state.
+    //
+    // A device with no credential has no server it could talk to, so falling
+    // back to the bundled sheets is the only behaviour that is not an error
+    // message. That also settles App Review: a reviewer never enrols, so they
+    // open a complete, working, fully offline grading demo rather than a wall
+    // of connection failures — and a teacher who enrols once never returns
+    // here. The explicit toggle still wins when someone has set it, for
+    // demoing from an enrolled device.
     static var isEnabled: Bool {
-        if UserDefaults.standard.object(forKey: modeKey) == nil { return true }
-        return UserDefaults.standard.bool(forKey: modeKey)
+        if let override = UserDefaults.standard.object(forKey: modeKey) as? Bool {
+            return override
+        }
+        return !Credentials.isEnrolled
     }
 
     // MARK: - In-memory store (seeded with samples, mutable for the session)
@@ -152,39 +161,30 @@ final class DemoData {
         return all.filter { $0.examName.localizedCaseInsensitiveContains(search) }
     }
 
-    func templateDetail(id: Int) -> TemplateDetail {
-        lock.lock(); let sample = store.first { $0.id == id }; lock.unlock()
-        let answers = sample?.answers ?? []
+    /// A bundled template in the same shape a downloaded one arrives in.
+    ///
+    /// This is what lets the scan engine stop caring where a template came
+    /// from. Only the templates with a real master image can be resolved —
+    /// the fabricated grid samples have no sheet to align against, and
+    /// offering them for live scanning would look real while grading nothing.
+    static func resolved(id: Int) -> ResolvedTemplate? {
+        guard let bundled = bundledTemplates[id],
+              let master = UIImage(named: bundled.imageName) else { return nil }
 
-        // Bundled templates: convert their real normalized boxes into the
-        // 800x600 canvas space (aspect-fit centered) the UI expects.
-        if let bundled = DemoData.bundledTemplates[id],
-           let master = UIImage(named: bundled.imageName) {
-            let mW = Double(master.size.width), mH = Double(master.size.height)
-            let scale = min(WebCanvas.width / mW, WebCanvas.height / mH)
-            let offX = (WebCanvas.width - mW * scale) / 2
-            let offY = (WebCanvas.height - mH * scale) / 2
-            let annotations = bundled.boxes.enumerated().map { i, b in
-                TemplateAnnotation(className: "答案區",
-                                   bbox: [b.minX * mW * scale + offX,
-                                          b.minY * mH * scale + offY,
-                                          b.width * mW * scale,
-                                          b.height * mH * scale],
-                                   answer: i < answers.count ? answers[i] : "")
-            }
-            return TemplateDetail(id: id, examName: sample?.examName ?? "示範考卷",
-                                  pages: [TemplatePage(image: nil, annotations: annotations)])
+        let answers = shared.answers(for: id)
+        let questions = bundled.boxes.enumerated().map { index, box in
+            ResolvedTemplate.Question(number: index + 1,
+                                      box: box,
+                                      answer: index < answers.count ? answers[index] : "")
         }
+        let title = shared.templateList(search: nil).first { $0.id == id }?.fullTitle
+            ?? "示範考卷"
 
-        let boxes = DemoData.gridBoxes(count: answers.count,
-                                       width: WebCanvas.width, height: WebCanvas.height)
-        let annotations = zip(answers, boxes).map { answer, b in
-            TemplateAnnotation(className: "答案區",
-                               bbox: [b[0], b[1], b[2] - b[0], b[3] - b[1]],
-                               answer: answer)
-        }
-        return TemplateDetail(id: id, examName: sample?.examName ?? "示範考卷",
-                              pages: [TemplatePage(image: nil, annotations: annotations)])
+        return ResolvedTemplate(id: id,
+                                title: title,
+                                master: master,
+                                questions: questions,
+                                scriptedAnswers: bundled.written)
     }
 
     func answers(for id: Int) -> [String] {

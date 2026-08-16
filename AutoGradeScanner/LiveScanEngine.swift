@@ -58,10 +58,9 @@ final class LiveScanEngine {
 
     var onUpdate: ((Update) -> Void)?
 
-    private let templateID: Int
-    private let bundled: BundledDemoTemplate
+    private let template: ResolvedTemplate
+    private let boxes: [CGRect]
     private let expected: [String]
-    private let templateTitle: String
 
     private var matcher: XFeatTemplateMatcher?
     private var buildFailed = false
@@ -106,14 +105,16 @@ final class LiveScanEngine {
     private let minInliers: Int
     private let minRatio: Double
 
-    init?(templateID: Int, templateTitle: String) {
-        guard DemoData.isEnabled,
-              let bundled = DemoData.bundledTemplates[templateID],
-              let master = UIImage(named: bundled.imageName) else { return nil }
-        self.templateID = templateID
-        self.templateTitle = templateTitle
-        self.bundled = bundled
-        self.expected = DemoData.shared.answers(for: templateID)
+    /// Takes a resolved template and asks no questions about where it came
+    /// from. Reaching into DemoData here is what used to confine live grading
+    /// to 示範模式: with the toggle off the engine refused to build, the
+    /// scanner silently fell back to the one-shot server path, and a teacher
+    /// using a real template saw a different product from the one in the demo.
+    init(template: ResolvedTemplate) {
+        self.template = template
+        self.boxes = template.boxes
+        self.expected = template.expected
+        let master = template.master
         self.masterAspect = master.size.height > 0 ? master.size.width / master.size.height : 1
 
         var inliers = 16
@@ -204,14 +205,17 @@ final class LiveScanEngine {
         guard let image = lastFrame, !verdicts.isEmpty else { return nil }
         let answers = verdicts.keys.sorted().map { i -> GradedAnswer in
             let exp = i < expected.count ? expected[i] : ""
-            let recognized = recognizedText[i]
-                ?? (i < bundled.written.count ? bundled.written[i] : exp)
-            return GradedAnswer(id: i, expected: exp, recognized: recognized,
+            let recognized = recognizedText[i] ?? scriptedAnswer(i) ?? ""
+            // `id` carries the template's own question number, not this
+            // array's index, so a paper whose questions are not numbered 1..n
+            // still reports the number the teacher sees on the page.
+            let number = i < template.questions.count ? template.questions[i].number : i + 1
+            return GradedAnswer(id: number - 1, expected: exp, recognized: recognized,
                                 isCorrect: verdicts[i] == .correct,
                                 rect: visibleRects[i])
         }
         return GradingResult(image: image, answers: answers,
-                             templateTitle: templateTitle, date: Date())
+                             templateTitle: template.title, date: Date())
     }
 
     // MARK: - Frame integration
@@ -252,7 +256,7 @@ final class LiveScanEngine {
         var nowRects: [Int: CGRect] = [:]
         var rawQuads: [Int: [CGPoint]] = [:]
         var confirmedNow = Set<Int>()
-        for (i, box) in bundled.boxes.enumerated() {
+        for (i, box) in boxes.enumerated() {
             let corners = h.projectedCorners(of: box)
             // Recognition samples the UNsmoothed corners: smoothing exists to
             // stop the drawn overlay twitching, and applying it here would
@@ -291,7 +295,7 @@ final class LiveScanEngine {
         let pending = confirmedNow.contains { verdicts[$0] == nil && seenStreak[$0, default: 0] >= 1 }
         let source: CellPixelSource? = pending ? (pixels ?? ImageCellSource(frame)) : nil
 
-        for i in 0..<bundled.boxes.count {
+        for i in 0..<boxes.count {
             guard confirmedNow.contains(i) else { seenStreak[i] = 0; continue }
             seenStreak[i, default: 0] += 1
             guard seenStreak[i, default: 0] >= 2, verdicts[i] == nil else { continue }
@@ -302,7 +306,7 @@ final class LiveScanEngine {
             if let source, let quad = rawQuads[i],
                let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
                 lastCellPixels = Int(max(cut.bitmap.width, cut.bitmap.height))
-                let box = bundled.boxes[i]
+                let box = boxes[i]
                 let aspect = box.height > 0 ? (box.width * masterAspect) / box.height : 1
                 if let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
                                                  aspect: aspect, expected: exp) {
@@ -324,21 +328,34 @@ final class LiveScanEngine {
                 blankStreak[i, default: 0] += 1
             }
 
-            // Nothing legible after two clear looks. The bundled demo master is
-            // a BLANK answer sheet — there is no handwriting on it to read — so
-            // fall back to the scripted answer, which is the only reason the
-            // offline demo shows anything. On a real paper this path means the
-            // cell was genuinely left empty. Two matches the "seen twice, then
-            // decide" rule the rest of this loop already uses; a longer streak
-            // would outlast a quick pan across the page.
+            // Nothing legible after two clear looks. Two matches the "seen
+            // twice, then decide" rule the rest of this loop already uses; a
+            // longer streak would outlast a quick pan across the page.
             if blankStreak[i, default: 0] >= 2 {
-                lockIn(i, recognized: i < bundled.written.count ? bundled.written[i] : exp,
-                       expected: exp)
+                if let scripted = scriptedAnswer(i) {
+                    // Demo only: the bundled master is a blank answer sheet
+                    // with no ink on it at all, so the script is the only
+                    // reason the offline demo shows anything.
+                    lockIn(i, recognized: scripted, expected: exp)
+                } else {
+                    // A real paper. Either the student left the cell empty or
+                    // the scan never got a clean look at it, and nothing on
+                    // this side of the camera can tell those apart — so it
+                    // goes to the teacher rather than being marked wrong
+                    // against the student.
+                    verdicts[i] = .unsure
+                }
             }
         }
         visibleQuads = nowQuads
         visibleRects = nowRects
         publish(aligned: true)
+    }
+
+    /// The demo script for a cell, when this template carries one.
+    private func scriptedAnswer(_ index: Int) -> String? {
+        guard let scripted = template.scriptedAnswers, index < scripted.count else { return nil }
+        return scripted[index]
     }
 
     private func lockIn(_ index: Int, recognized: String, expected: String) {
@@ -385,14 +402,14 @@ final class LiveScanEngine {
     private func publish(aligned: Bool = false) {
         let boxes = visibleQuads.keys.sorted().map { i in
             Box(id: i, quad: visibleQuads[i]!, rect: visibleRects[i] ?? .zero,
-                templateRect: bundled.boxes[i], verdict: verdicts[i],
+                templateRect: boxes[i], verdict: verdicts[i],
                 expectedText: i < expected.count ? expected[i] : "",
                 readText: recognizedText[i])
         }
         onUpdate?(Update(boxes: boxes,
                          aligned: aligned && !boxes.isEmpty,
                          gradedCount: verdicts.count,
-                         totalCount: bundled.boxes.count,
+                         totalCount: boxes.count,
                          frameSize: lastFrameSize,
                          isReady: matcher != nil,
                          alignMillis: lastAlignMillis,
