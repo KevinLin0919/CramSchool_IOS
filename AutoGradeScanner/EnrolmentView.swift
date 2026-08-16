@@ -14,16 +14,16 @@ struct EnrolmentView: View {
 
     @State private var inviteCode = ""
     @State private var deviceName = UIDevice.current.name
-    @State private var state: State = .idle
+    @State private var status: Status = .idle
 
-    private enum State: Equatable {
+    private enum Status: Equatable {
         case idle
         case working
         case failed(String)
     }
 
     private var canSubmit: Bool {
-        state != .working
+        status != .working
             && !apiBase.trimmingCharacters(in: .whitespaces).isEmpty
             && inviteCode.trimmingCharacters(in: .whitespaces).count >= 6
     }
@@ -56,7 +56,7 @@ struct EnrolmentView: View {
                          + "裝置名稱會顯示在管理員的裝置清單裡，方便日後單獨撤銷。")
                 }
 
-                if case .failed(let message) = state {
+                if case .failed(let message) = status {
                     Section {
                         Label(message, systemImage: "exclamationmark.triangle")
                             .font(.system(size: 14))
@@ -72,7 +72,7 @@ struct EnrolmentView: View {
                             Text("註冊這台裝置")
                                 .fontWeight(.semibold)
                             Spacer()
-                            if state == .working { ProgressView() }
+                            if status == .working { ProgressView() }
                         }
                     }
                     .disabled(!canSubmit)
@@ -85,16 +85,16 @@ struct EnrolmentView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
-                        .disabled(state == .working)
+                        .disabled(status == .working)
                 }
             }
-            .interactiveDismissDisabled(state == .working)
+            .interactiveDismissDisabled(status == .working)
         }
     }
 
     @MainActor
     private func enrol() async {
-        state = .working
+        status = .working
         // Trim before storing: a trailing slash or a stray space pasted along
         // with the address turns every later request into a confusing 404.
         apiBase = apiBase.trimmingCharacters(in: .whitespaces)
@@ -107,7 +107,7 @@ struct EnrolmentView: View {
             guard Credentials.store(token: response.token,
                                     teacherID: response.teacherID,
                                     teacherName: response.teacherName) else {
-                state = .failed("無法將授權寫入鑰匙圈，請重試")
+                status = .failed("無法將授權寫入鑰匙圈，請重試")
                 return
             }
             // Enrolling is what turns demo mode off, so clear any explicit
@@ -116,7 +116,7 @@ struct EnrolmentView: View {
             UserDefaults.standard.removeObject(forKey: DemoData.modeKey)
             dismiss()
         } catch {
-            state = .failed(error.localizedDescription)
+            status = .failed(error.localizedDescription)
         }
     }
 }

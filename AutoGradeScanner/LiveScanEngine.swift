@@ -400,14 +400,14 @@ final class LiveScanEngine {
     }
 
     private func publish(aligned: Bool = false) {
-        let boxes = visibleQuads.keys.sorted().map { i in
+        let visible = visibleQuads.keys.sorted().map { i in
             Box(id: i, quad: visibleQuads[i]!, rect: visibleRects[i] ?? .zero,
                 templateRect: boxes[i], verdict: verdicts[i],
                 expectedText: i < expected.count ? expected[i] : "",
                 readText: recognizedText[i])
         }
-        onUpdate?(Update(boxes: boxes,
-                         aligned: aligned && !boxes.isEmpty,
+        onUpdate?(Update(boxes: visible,
+                         aligned: aligned && !visible.isEmpty,
                          gradedCount: verdicts.count,
                          totalCount: boxes.count,
                          frameSize: lastFrameSize,
