@@ -157,11 +157,19 @@ struct ResultsView: View {
     }
 
     private func shareText(_ result: GradingResult) -> String {
-        let wrong = result.answers.filter { !$0.isCorrect }
+        let wrong = result.answers.filter { $0.effectiveVerdict == .wrong }
             .map { "Q\($0.questionNumber)" }
             .joined(separator: "、")
-        var text = "\(result.templateTitle) 批改結果：\(result.correctCount)/\(result.total)（\(result.percent)%）\(result.passed ? "通過" : "未通過")"
-        if !wrong.isEmpty { text += "\n錯誤題目：\(wrong)" }
+        let unsure = result.answers.filter { $0.effectiveVerdict == .unsure }
+            .map { "Q\($0.questionNumber)" }
+            .joined(separator: "、")
+
+        // Counts, not a score. This text leaves the app — it gets pasted into
+        // a message a parent may read — so it must not carry a number that
+        // looks like a grade and is not one.
+        var text = "\(result.templateTitle) 批改結果：答對 \(result.correctCount)/\(result.total) 題"
+        if !wrong.isEmpty { text += "\n答錯：\(wrong)" }
+        if !unsure.isEmpty { text += "\n待確認：\(unsure)" }
         return text
     }
 
@@ -214,51 +222,56 @@ private struct ScoreCardView: View {
                         .foregroundStyle(AG.fg1)
                 }
                 Spacer()
-                HStack(spacing: 4) {
-                    Image(systemName: result.passed ? "checkmark" : "xmark")
-                        .font(.system(size: 10, weight: .heavy))
-                    Text(result.passed ? "通過" : "未通過")
-                        .font(.system(size: 12, weight: .bold))
+                if result.needsReviewCount > 0 {
+                    // The one thing on this card that asks for an action.
+                    HStack(spacing: 4) {
+                        Image(systemName: "questionmark")
+                            .font(.system(size: 10, weight: .heavy))
+                        Text("\(result.needsReviewCount) 格待確認")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .foregroundStyle(AG.warn)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 5)
+                    .background(AG.warnBg)
+                    .clipShape(Capsule())
                 }
-                .foregroundStyle(result.passed ? AG.brand : AG.bad)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 5)
-                .background(result.passed ? AG.brand.opacity(0.09) : AG.badBg)
-                .clipShape(Capsule())
             }
             .padding(.bottom, 12)
 
+            // Answered-correctly out of graded. Not a score: the questions are
+            // not worth the same marks, and this app has no way to know what
+            // they are worth.
             HStack(alignment: .bottom) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("\(result.correctCount)")
                         .font(.system(size: 64, weight: .bold))
-                        .foregroundStyle(result.passed ? AG.brand : AG.bad)
+                        .foregroundStyle(AG.fg1)
                     Text("/\(result.total)")
                         .font(.system(size: 32, weight: .semibold))
                         .foregroundStyle(AG.fg3)
                 }
+                .alignmentGuide(.bottom) { $0[.lastTextBaseline] }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text("\(result.percent)%")
-                        .font(.system(size: 28, weight: .bold))
-                        .foregroundStyle(AG.fg1)
-                    Text("得分率")
-                        .font(.system(size: 11))
-                        .foregroundStyle(AG.fg2)
-                }
-                .padding(.bottom, 6)
+                Text("答對題數")
+                    .font(.system(size: 11))
+                    .foregroundStyle(AG.fg2)
+                    .padding(.bottom, 10)
             }
 
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(AG.bg2)
-                    Capsule()
-                        .fill(result.passed ? AG.brand : AG.bad)
-                        .frame(width: geo.size.width * CGFloat(result.percent) / 100)
+            breakdownBar
+                .frame(height: 6)
+                .padding(.top, 14)
+
+            HStack(spacing: 14) {
+                tally(color: AG.ok, label: "對", count: result.correctCount)
+                tally(color: AG.bad, label: "錯", count: result.incorrectCount)
+                if result.needsReviewCount > 0 {
+                    tally(color: AG.warn, label: "待確認", count: result.needsReviewCount)
                 }
+                Spacer()
             }
-            .frame(height: 6)
-            .padding(.top, 14)
+            .padding(.top, 10)
         }
         .padding(.horizontal, 18)
         .padding(.top, 18)
@@ -267,6 +280,41 @@ private struct ScoreCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(AG.border2, lineWidth: 1))
         .shadow(color: Color(hex: 0x0F1720, alpha: 0.06), radius: 7, y: 4)
+    }
+
+    /// Proportions of the three verdicts. Honest because it is a count of
+    /// questions, which is what it looks like — unlike a progress bar filled
+    /// to a percentage, which reads as a mark out of a hundred.
+    private var breakdownBar: some View {
+        GeometryReader { geo in
+            let total = CGFloat(max(result.total, 1))
+            HStack(spacing: 1) {
+                segment(AG.ok, count: result.correctCount, width: geo.size.width, total: total)
+                segment(AG.bad, count: result.incorrectCount, width: geo.size.width, total: total)
+                segment(AG.warn, count: result.needsReviewCount, width: geo.size.width, total: total)
+                Spacer(minLength: 0)
+            }
+        }
+        .clipShape(Capsule())
+        .background(Capsule().fill(AG.bg2))
+    }
+
+    @ViewBuilder
+    private func segment(_ color: Color, count: Int, width: CGFloat, total: CGFloat) -> some View {
+        if count > 0 {
+            Rectangle()
+                .fill(color)
+                .frame(width: max(0, width * CGFloat(count) / total - 1))
+        }
+    }
+
+    private func tally(color: Color, label: String, count: Int) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text("\(label) \(count)")
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .foregroundStyle(AG.fg2)
+        }
     }
 }
 

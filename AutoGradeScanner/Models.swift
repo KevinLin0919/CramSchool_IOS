@@ -199,8 +199,16 @@ struct GradingResult {
     var correctCount: Int { answers.filter { $0.effectiveVerdict == .correct }.count }
     var unsureCount: Int { answers.filter { $0.effectiveVerdict == .unsure }.count }
     var incorrectCount: Int { answers.filter { $0.effectiveVerdict == .wrong }.count }
-    var percent: Int { total > 0 ? Int((Double(correctCount) / Double(total) * 100).rounded()) : 0 }
-    var passed: Bool { percent >= 60 }
+    // Deliberately no percentage and no pass/fail.
+    //
+    // Questions are not worth the same marks, so correct-count over total is
+    // not the score — presenting it as one would be confidently wrong rather
+    // than roughly right, and a teacher or parent reading it has no way to
+    // tell. Where the pass mark sits is the school's call and varies by
+    // subject; an app that decides 60% is inventing a judgement it has no
+    // basis for. What this can honestly report is how many questions landed
+    // in each of the three states.
+    var needsReviewCount: Int { unsureCount }
 }
 
 // MARK: - Image helpers
