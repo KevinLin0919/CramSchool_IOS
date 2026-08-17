@@ -547,15 +547,18 @@ struct ScannerView: View {
                     // moving the camera is the only way to change it, so it
                     // belongs on screen rather than in a log.
                     Text("・格 \(live.cellPixels)px")
-                        .foregroundStyle(live.cellPixels >= 96
-                                         ? Color(hex: 0x6FCF97) : Color(hex: 0xF2C14E))
-                    if live.framePixels > 0 {
-                        Text("・畫面 \(live.framePixels)px")
-                            .foregroundStyle(live.framePixels >= 2000
-                                             ? .white.opacity(0.7) : Color(hex: 0xF2A0A0))
-                    }
                         .monospacedDigit()
                         .foregroundStyle(Self.cellSizeTint(live.cellPixels))
+
+                    // The buffer the cell was cropped from. A small cell with
+                    // a 4K frame means stand closer; a small cell with a
+                    // ~1080px frame means this device cannot do better, and
+                    // moving will not help.
+                    if live.framePixels > 0 {
+                        Text("・畫面 \(live.framePixels)px")
+                            .monospacedDigit()
+                            .foregroundStyle(Self.frameSizeTint(live.framePixels))
+                    }
                 }
             } else if !live.isReady {
                 ProgressView()
@@ -600,6 +603,13 @@ struct ScannerView: View {
         if pixels >= 96 { return Color(hex: 0x6FCF97) }
         if pixels >= 64 { return Color(hex: 0xF2C94C) }
         return Color(hex: 0xEB5757)
+    }
+
+    /// ~2000px is where a 4K buffer starts; below it the device fell back to
+    /// the preview-sized one and every cell on it is capped no matter how the
+    /// paper is framed.
+    private static func frameSizeTint(_ pixels: Int) -> Color {
+        pixels >= 2000 ? .white.opacity(0.7) : Color(hex: 0xF2C94C)
     }
 
     // Latency/inlier HUD, debug builds only — for calibrating on device.
