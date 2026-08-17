@@ -547,6 +547,13 @@ struct ScannerView: View {
                     // moving the camera is the only way to change it, so it
                     // belongs on screen rather than in a log.
                     Text("・格 \(live.cellPixels)px")
+                        .foregroundStyle(live.cellPixels >= 96
+                                         ? Color(hex: 0x6FCF97) : Color(hex: 0xF2C14E))
+                    if live.framePixels > 0 {
+                        Text("・畫面 \(live.framePixels)px")
+                            .foregroundStyle(live.framePixels >= 2000
+                                             ? .white.opacity(0.7) : Color(hex: 0xF2A0A0))
+                    }
                         .monospacedDigit()
                         .foregroundStyle(Self.cellSizeTint(live.cellPixels))
                 }

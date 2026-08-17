@@ -51,6 +51,10 @@ final class LiveScanEngine {
         /// Long side in pixels of the last cell recognition actually saw.
         /// 0 before anything has been read.
         let cellPixels: Int
+        /// Long side of the capture buffer those cells were cropped from.
+        /// Around 1080 means the device fell back from 4K, which caps every
+        /// cell on it regardless of how the paper is framed.
+        let framePixels: Int
     }
 
     var onUpdate: ((Update) -> Void)?
@@ -110,6 +114,7 @@ final class LiveScanEngine {
     /// 64px scores 3/6 — and because framing is the only lever the person
     /// holding the camera has over it.
     private var lastCellPixels = 0
+    private var lastFramePixels = 0
 
     /// Cap on the crop rendered per cell. CellPatch samples to 128; rendering
     /// past double that is work the model cannot use, so moving closer to the
@@ -198,6 +203,7 @@ final class LiveScanEngine {
         recognizedText = [:]
         blankStreak = [:]
         lastCellPixels = 0
+        lastFramePixels = 0
         visibleQuads = [:]
         visibleRects = [:]
         grace = [:]
@@ -319,6 +325,9 @@ final class LiveScanEngine {
         // so it is only built when a cell is actually waiting to be read.
         let pending = confirmedNow.contains { verdicts[$0] == nil && seenStreak[$0, default: 0] >= 1 }
         let source: CellPixelSource? = pending ? (pixels ?? ImageCellSource(frame)) : nil
+        if let source {
+            lastFramePixels = Int(max(source.frameSize.width, source.frameSize.height))
+        }
 
         for i in 0..<boxes.count {
             guard confirmedNow.contains(i) else { seenStreak[i] = 0; continue }
@@ -466,6 +475,7 @@ final class LiveScanEngine {
                          frameTimestamp: anchorTimestamp,
                          intrinsics: anchorIntrinsics,
                          sheetQuad: anchorSheetQuad,
-                         cellPixels: lastCellPixels))
+                         cellPixels: lastCellPixels,
+                         framePixels: lastFramePixels))
     }
 }

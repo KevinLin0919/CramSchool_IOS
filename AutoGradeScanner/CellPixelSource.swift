@@ -17,6 +17,15 @@ import UIKit
 // used to run on every frame.
 
 protocol CellPixelSource {
+    /// Size of the upright frame these cells are cropped from.
+    ///
+    /// Surfaced because it is the ceiling on everything downstream: a device
+    /// that cannot deliver 4K hands over a ~1080px-wide buffer whatever the
+    /// framing, and no amount of moving the camera fixes that. Knowing which
+    /// it is turns "the answers read badly on this iPad" from a mystery into
+    /// a number.
+    var frameSize: CGSize { get }
+
     /// Grayscale pixels covering one cell.
     ///
     /// - Parameters:
@@ -36,6 +45,11 @@ protocol CellPixelSource {
 /// full-resolution buffer is unavailable.
 final class ImageCellSource: CellPixelSource {
     private let bitmap: GrayBitmap?
+
+    var frameSize: CGSize {
+        guard let bitmap else { return .zero }
+        return CGSize(width: bitmap.width, height: bitmap.height)
+    }
 
     init(_ image: UIImage) {
         bitmap = GrayBitmap(image)
@@ -62,7 +76,6 @@ final class PixelBufferCellSource: CellPixelSource {
     private let orientation: CaptureOrientation
     private let context: CIContext
 
-    /// Size of the upright full-resolution frame, for diagnostics.
     let frameSize: CGSize
 
     init(buffer: CVPixelBuffer, orientation: CaptureOrientation, context: CIContext) {
