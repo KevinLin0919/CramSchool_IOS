@@ -273,7 +273,7 @@ final class DemoData {
             let exp = i < expected.count ? expected[i] : ""
             let recognized = i < bundled.written.count ? bundled.written[i] : exp
             graded.append(GradedAnswer(id: i, expected: exp, recognized: recognized,
-                                       isCorrect: !exp.isEmpty && recognized == exp,
+                                       verdict: !exp.isEmpty && recognized == exp ? .correct : .wrong,
                                        rect: rect))
         }
         guard !graded.isEmpty else { throw DemoGradingError.noVisibleBoxes }
@@ -295,7 +295,7 @@ final class DemoData {
             let b = boxes[i]
             let rect = CGRect(x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1])
             graded.append(GradedAnswer(id: i, expected: exp, recognized: recognized,
-                                       isCorrect: correct && !exp.isEmpty, rect: rect))
+                                       verdict: correct && !exp.isEmpty ? .correct : .wrong, rect: rect))
         }
         return GradingResult(image: image, answers: graded,
                              templateTitle: templateTitle, date: Date())

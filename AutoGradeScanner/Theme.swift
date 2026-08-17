@@ -44,6 +44,32 @@ enum AG {
     static let warn = Color(hex: 0xFF9500)
     static let warnBg = Color(hex: 0xFFF4D6)
 
+    // One place to map a verdict to how it looks, so a new state cannot be
+    // handled in four views and forgotten in a fifth.
+    static func color(for verdict: GradingVerdict) -> Color {
+        switch verdict {
+        case .correct: return ok
+        case .wrong: return bad
+        case .unsure: return warn
+        }
+    }
+
+    static func background(for verdict: GradingVerdict) -> Color {
+        switch verdict {
+        case .correct: return okBg
+        case .wrong: return badBg
+        case .unsure: return warnBg
+        }
+    }
+
+    static func glyph(for verdict: GradingVerdict) -> String {
+        switch verdict {
+        case .correct: return "checkmark"
+        case .wrong: return "xmark"
+        case .unsure: return "questionmark"
+        }
+    }
+
     // Readable content widths for the universal (iPhone + iPad) layout.
     // On iPhone the screen is narrower than these caps, so the modifier
     // below is a no-op; on iPad it constrains content and centers it

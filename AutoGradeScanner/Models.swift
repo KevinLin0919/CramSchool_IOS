@@ -118,25 +118,87 @@ struct OCRCandidate {
 
 // MARK: - Grading result
 
+/// Three outcomes, not two.
+///
+/// Marking a cell wrong because the model could not read it blames the student
+/// for our failure, so "couldn't read" is its own state. The scanner has always
+/// drawn it in yellow; carrying it through to the result is what lets the
+/// teacher see which answers still need a human.
+enum GradingVerdict {
+    case correct
+    case wrong
+    case unsure
+}
+
 struct GradedAnswer: Identifiable {
-    let id: Int              // 0-based index
+    let id: Int              // questionNumber - 1
     let expected: String
     let recognized: String
-    let isCorrect: Bool
+    let verdict: GradingVerdict
     let rect: CGRect?        // normalized (0...1) within the scanned image
 
+    /// What the teacher said it was, when they overrode us. Paired with the
+    /// cell crop this is a labelled handwriting sample — the highest-value
+    /// by-product of ordinary grading.
+    var teacherValue: String?
+
+    init(id: Int,
+         expected: String,
+         recognized: String,
+         verdict: GradingVerdict,
+         rect: CGRect?,
+         teacherValue: String? = nil) {
+        self.id = id
+        self.expected = expected
+        self.recognized = recognized
+        self.verdict = verdict
+        self.rect = rect
+        self.teacherValue = teacherValue
+    }
+
     var questionNumber: Int { id + 1 }
+
+    /// A teacher's correction outranks the model's reading.
+    var effectiveVerdict: GradingVerdict {
+        guard let teacherValue else { return verdict }
+        return AnswerKind.canonical(teacherValue) == AnswerKind.canonical(expected)
+            ? .correct : .wrong
+    }
+
+    /// The answer as it should be read now — the teacher's, if they gave one.
+    var effectiveAnswer: String { teacherValue ?? recognized }
+
+    var isCorrect: Bool { effectiveVerdict == .correct }
+    var needsReview: Bool { effectiveVerdict == .unsure }
 }
 
 struct GradingResult {
     let image: UIImage
-    let answers: [GradedAnswer]
+    var answers: [GradedAnswer]
     let templateTitle: String
     let date: Date
 
+    /// True when `image` shows the whole sheet, so every box could be placed
+    /// on it. False means the scan never framed the full page and the result
+    /// is drawn over whatever the camera last had in view.
+    let isFullPage: Bool
+
+    init(image: UIImage,
+         answers: [GradedAnswer],
+         templateTitle: String,
+         date: Date,
+         isFullPage: Bool = false) {
+        self.image = image
+        self.answers = answers
+        self.templateTitle = templateTitle
+        self.date = date
+        self.isFullPage = isFullPage
+    }
+
     var total: Int { answers.count }
-    var correctCount: Int { answers.filter(\.isCorrect).count }
-    var incorrectCount: Int { total - correctCount }
+    var correctCount: Int { answers.filter { $0.effectiveVerdict == .correct }.count }
+    var unsureCount: Int { answers.filter { $0.effectiveVerdict == .unsure }.count }
+    var incorrectCount: Int { answers.filter { $0.effectiveVerdict == .wrong }.count }
     var percent: Int { total > 0 ? Int((Double(correctCount) / Double(total) * 100).rounded()) : 0 }
     var passed: Bool { percent >= 60 }
 }

@@ -42,7 +42,9 @@ enum GradingEngine {
         for i in 0..<total {
             let exp = i < expected.count ? expected[i] : ""
             let recognized = i < ocr.count ? ocr[i].value(expected: exp) : ""
-            let isCorrect = !exp.isEmpty && !recognized.isEmpty && recognized == exp
+            let verdict: GradingVerdict = recognized.isEmpty
+                ? .unsure
+                : (!exp.isEmpty && recognized == exp ? .correct : .wrong)
 
             var rect: CGRect?
             if i < boxes.count, boxes[i].count >= 4, imageWidth > 0, imageHeight > 0 {
@@ -56,7 +58,7 @@ enum GradingEngine {
             answers.append(GradedAnswer(id: i,
                                         expected: exp,
                                         recognized: recognized,
-                                        isCorrect: isCorrect,
+                                        verdict: verdict,
                                         rect: rect))
         }
 

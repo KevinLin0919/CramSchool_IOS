@@ -16,14 +16,11 @@ import simd
 @MainActor
 final class LiveScanEngine {
 
-    /// Three outcomes, not two. Marking a cell wrong because the model could
-    /// not read it blames the student for our failure, so "couldn't read" is
-    /// its own state — the overlay shows it in yellow and the teacher decides.
-    enum Verdict {
-        case correct
-        case wrong
-        case unsure
-    }
+    /// The shared three-state verdict. Aliased rather than redeclared so the
+    /// state the overlay draws is literally the state the result carries —
+    /// it used to be flattened to a bool the moment 完成 was pressed, which
+    /// quietly threw the yellow "couldn't read" cells in with the wrong ones.
+    typealias Verdict = GradingVerdict
 
     struct Box: Identifiable {
         let id: Int               // question index
@@ -80,6 +77,23 @@ final class LiveScanEngine {
     private var anchorTimestamp: TimeInterval = 0
     private var anchorIntrinsics: simd_double3x3?
     private var anchorSheetQuad: [CGPoint]?
+
+    /// The best full-page look the camera got during this session.
+    ///
+    /// `finish()` used to hand back `lastFrame` — whatever happened to be in
+    /// view when the teacher pressed 完成, which is a close-up of wherever
+    /// they stopped. Questions outside it had no rect at all and drew no box,
+    /// so the result page showed a partial paper with most of the grading
+    /// missing. Keeping the best whole-sheet frame costs nothing: the guide
+    /// frame already asks for the full page, so one goes by before anyone
+    /// moves in to read the answers.
+    private var pageKeyframe: PageKeyframe?
+
+    private struct PageKeyframe {
+        let image: UIImage
+        let homography: XFeatMatcher.Homography
+        let score: Double
+    }
 
     // On-device recognition. A cell is seen dozens of times while the camera
     // pans and roughly one frame in five carries enough alignment drift to
@@ -196,13 +210,21 @@ final class LiveScanEngine {
         anchorTimestamp = 0
         anchorIntrinsics = nil
         anchorSheetQuad = nil
+        pageKeyframe = nil
         publish()
     }
 
     // Freeze the session into a GradingResult: every question graded so far,
     // with rects for the ones visible in the last aligned frame.
     func finish() -> GradingResult? {
-        guard let image = lastFrame, !verdicts.isEmpty else { return nil }
+        guard !verdicts.isEmpty else { return nil }
+
+        // Prefer the full-page keyframe. Its homography places *every* box on
+        // the sheet, not only the ones the camera happened to be looking at
+        // when 完成 was pressed.
+        let backdrop = pageKeyframe?.image ?? lastFrame
+        guard let backdrop else { return nil }
+
         let answers = verdicts.keys.sorted().map { i -> GradedAnswer in
             let exp = i < expected.count ? expected[i] : ""
             let recognized = recognizedText[i] ?? scriptedAnswer(i) ?? ""
@@ -210,12 +232,14 @@ final class LiveScanEngine {
             // array's index, so a paper whose questions are not numbered 1..n
             // still reports the number the teacher sees on the page.
             let number = i < template.questions.count ? template.questions[i].number : i + 1
+            let rect = pageKeyframe.map { $0.homography.project(boxes[i]) } ?? visibleRects[i]
             return GradedAnswer(id: number - 1, expected: exp, recognized: recognized,
-                                isCorrect: verdicts[i] == .correct,
-                                rect: visibleRects[i])
+                                verdict: verdicts[i] ?? .unsure,
+                                rect: rect)
         }
-        return GradingResult(image: image, answers: answers,
-                             templateTitle: template.title, date: Date())
+        return GradingResult(image: backdrop, answers: answers,
+                             templateTitle: template.title, date: Date(),
+                             isFullPage: pageKeyframe != nil)
     }
 
     // MARK: - Frame integration
@@ -238,6 +262,7 @@ final class LiveScanEngine {
         anchorTimestamp = timestamp
         anchorIntrinsics = intrinsics
         anchorSheetQuad = h.projectedCorners(of: CGRect(x: 0, y: 0, width: 1, height: 1))
+        considerKeyframe(frame: frame, homography: h)
 
         // Support = where the paper was actually observed. The per-frame
         // inlier bounds are noisy at tracking cadence (subsets of ~1024
@@ -356,6 +381,30 @@ final class LiveScanEngine {
     private func scriptedAnswer(_ index: Int) -> String? {
         guard let scripted = template.scriptedAnswers, index < scripted.count else { return nil }
         return scripted[index]
+    }
+
+    /// Keeps the frame that shows the most of the sheet, most sharply.
+    ///
+    /// Score is the fraction of the frame the paper fills times the inlier
+    /// count. Area favours getting close; inliers stand in for sharpness,
+    /// since a motion-blurred frame matches far fewer features — which is
+    /// cheaper than measuring blur directly and is already computed.
+    private func considerKeyframe(frame: UIImage, homography h: XFeatMatcher.Homography) {
+        guard let quad = anchorSheetQuad, quad.count == 4 else { return }
+        let xs = quad.map(\.x), ys = quad.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minY = ys.min(), let maxY = ys.max() else { return }
+
+        // The whole sheet has to be inside the frame with a margin. A page
+        // running off the edge is exactly the picture this is trying to avoid.
+        let margin: CGFloat = 0.01
+        guard minX >= margin, minY >= margin,
+              maxX <= 1 - margin, maxY <= 1 - margin else { return }
+
+        let area = Double((maxX - minX) * (maxY - minY))
+        let score = area * Double(h.inlierCount)
+        guard score > (pageKeyframe?.score ?? 0) else { return }
+        pageKeyframe = PageKeyframe(image: frame, homography: h, score: score)
     }
 
     private func lockIn(_ index: Int, recognized: String, expected: String) {

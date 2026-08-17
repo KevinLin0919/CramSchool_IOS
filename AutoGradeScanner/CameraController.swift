@@ -113,6 +113,25 @@ final class CameraController: NSObject, ObservableObject {
            session.canAddInput(input) {
             session.addInput(input)
         }
+
+        // The .photo preset gives the *photo* output full sensor resolution but
+        // hands the video data output a preview-sized buffer, around 1080px
+        // wide. An answer cell is roughly a tenth of the page, so it arrives at
+        // 48-70px — and measured on real handwriting, 64px reads 3/6 while 96px
+        // reads 6/6. What fails first is the printed-box filter: at that size
+        // the border is one or two pixels and the connected-component analysis
+        // that erases it stops being reliable.
+        //
+        // 4K doubles the linear resolution. Alignment is unaffected — it still
+        // runs on the 1200px downscale, since XFeat resizes to 832x608 anyway —
+        // and cells are cropped out of the buffer individually, so the extra
+        // pixels are only paid for where they are read.
+        //
+        // The preset must be set after the input is attached; a device that
+        // cannot do 4K keeps .photo rather than failing to configure.
+        if session.canSetSessionPreset(.hd4K3840x2160) {
+            session.sessionPreset = .hd4K3840x2160
+        }
         if session.canAddOutput(photoOutput) {
             session.addOutput(photoOutput)
         }

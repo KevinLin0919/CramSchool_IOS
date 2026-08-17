@@ -99,6 +99,9 @@ struct ResultsView: View {
                     HStack(spacing: 12) {
                         legend(color: AG.ok, text: "正確 \(result.correctCount)")
                         legend(color: AG.bad, text: "錯誤 \(result.incorrectCount)")
+                        if result.unsureCount > 0 {
+                            legend(color: AG.warn, text: "待確認 \(result.unsureCount)")
+                        }
                     }
                 }
                 .padding(.top, 16)
@@ -362,8 +365,8 @@ private struct BreakdownSheet: View {
     }
 
     private func chip(_ answer: GradedAnswer) -> some View {
-        let color = answer.isCorrect ? AG.ok : AG.bad
-        let bg = answer.isCorrect ? AG.okBg : AG.badBg
+        let color = AG.color(for: answer.effectiveVerdict)
+        let bg = AG.background(for: answer.effectiveVerdict)
         let isFocused = focusQ == answer.id
 
         return Button {
@@ -375,7 +378,7 @@ private struct BreakdownSheet: View {
                     .foregroundStyle(isFocused ? .white : color)
                 ZStack {
                     Circle().fill(isFocused ? .white : color)
-                    Image(systemName: answer.isCorrect ? "checkmark" : "xmark")
+                    Image(systemName: AG.glyph(for: answer.effectiveVerdict))
                         .font(.system(size: 10, weight: .heavy))
                         .foregroundStyle(isFocused ? color : .white)
                 }
@@ -434,7 +437,7 @@ private struct BreakdownSheet: View {
                         .foregroundStyle(AG.fg3)
                     Text(answer.recognized.isEmpty ? "—" : answer.recognized)
                         .font(.system(size: 15, weight: .semibold).monospaced())
-                        .foregroundStyle(answer.isCorrect ? AG.fg1 : AG.bad)
+                        .foregroundStyle(answer.isCorrect ? AG.fg1 : AG.color(for: answer.effectiveVerdict))
                         .strikethrough(!answer.isCorrect && !answer.recognized.isEmpty)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -450,8 +453,8 @@ private struct BreakdownSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 ZStack {
-                    Circle().fill(answer.isCorrect ? AG.ok : AG.bad)
-                    Image(systemName: answer.isCorrect ? "checkmark" : "xmark")
+                    Circle().fill(AG.color(for: answer.effectiveVerdict))
+                    Image(systemName: AG.glyph(for: answer.effectiveVerdict))
                         .font(.system(size: 11, weight: .heavy))
                         .foregroundStyle(.white)
                 }

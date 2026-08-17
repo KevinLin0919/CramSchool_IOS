@@ -20,7 +20,24 @@ struct AnswerBoxView: View {
     let answer: GradedAnswer
     var focused = false
 
-    private var color: Color { answer.isCorrect ? AG.ok : AG.bad }
+    // Three states, not two. An answer the model could not read is not the
+    // same as one the student got wrong, and flattening them here would undo
+    // the distinction the scanner spent the whole session maintaining.
+    private var color: Color {
+        switch answer.effectiveVerdict {
+        case .correct: return AG.ok
+        case .wrong: return AG.bad
+        case .unsure: return AG.warn
+        }
+    }
+
+    private var glyph: String {
+        switch answer.effectiveVerdict {
+        case .correct: return "checkmark"
+        case .wrong: return "xmark"
+        case .unsure: return "questionmark"
+        }
+    }
 
     var body: some View {
         RoundedRectangle(cornerRadius: 3)
@@ -32,7 +49,7 @@ struct AnswerBoxView: View {
             .overlay(alignment: .topTrailing) {
                 ZStack {
                     Circle().fill(color)
-                    Image(systemName: answer.isCorrect ? "checkmark" : "xmark")
+                    Image(systemName: glyph)
                         .font(.system(size: 9, weight: .heavy))
                         .foregroundStyle(.white)
                 }
