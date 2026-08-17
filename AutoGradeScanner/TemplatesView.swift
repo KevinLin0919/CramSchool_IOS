@@ -246,12 +246,22 @@ struct TemplatesView: View {
     private var gradeSections: some View {
         Group {
             sectionCaption("依年級瀏覽 · \(model.templates.count) 份考卷")
-            ForEach(ExamTemplate.gradeOrder, id: \.self) { grade in
-                let items = model.templates.filter { $0.grade == grade }
-                if !items.isEmpty {
-                    gradeSection(grade: grade, items: items)
-                }
+            // Sections are derived from what actually arrived, then ordered
+            // by gradeOrder. Iterating the fixed list instead made it an
+            // allow-list, and a grade outside it vanished silently while
+            // still being counted in the caption above.
+            ForEach(presentGrades, id: \.self) { grade in
+                gradeSection(grade: grade,
+                             items: model.templates.filter { $0.grade == grade })
             }
+        }
+    }
+
+    /// Every grade the loaded templates actually use, in display order.
+    private var presentGrades: [String] {
+        Array(Set(model.templates.map(\.grade))).sorted {
+            let (l, r) = (ExamTemplate.gradeRank($0), ExamTemplate.gradeRank($1))
+            return l == r ? $0 < $1 : l < r
         }
     }
 

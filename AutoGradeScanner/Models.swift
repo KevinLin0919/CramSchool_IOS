@@ -51,7 +51,19 @@ struct ExamTemplate: Identifiable, Hashable {
                   serverSubject: dto.subject)
     }
 
-    static let gradeOrder = ["國一", "國二", "國三", "高一", "高二", "高三", "其他"]
+    /// Preferred display order. This is a *sort key*, not the set of grades
+    /// that may exist — anything outside it still gets a section, ordered
+    /// after these. Treating it as an allow-list meant a template the server
+    /// labelled 小六 counted toward the total and then rendered nowhere.
+    static let gradeOrder = ["小一", "小二", "小三", "小四", "小五", "小六",
+                             "國一", "國二", "國三",
+                             "高一", "高二", "高三", "其他"]
+
+    /// Where this grade sorts. Unknown grades go to the end, alphabetically
+    /// among themselves, rather than being dropped.
+    static func gradeRank(_ grade: String) -> Int {
+        gradeOrder.firstIndex(of: grade) ?? gradeOrder.count
+    }
 
     private static let gradeTokens = ["國一", "國二", "國三", "高一", "高二", "高三",
                                       "小一", "小二", "小三", "小四", "小五", "小六"]
