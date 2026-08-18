@@ -325,8 +325,22 @@ final class LiveScanEngine {
         // so it is only built when a cell is actually waiting to be read.
         let pending = confirmedNow.contains { verdicts[$0] == nil && seenStreak[$0, default: 0] >= 1 }
         let source: CellPixelSource? = pending ? (pixels ?? ImageCellSource(frame)) : nil
-        if let source {
-            lastFramePixels = Int(max(source.frameSize.width, source.frameSize.height))
+
+        // Diagnostics update on every aligned frame, not only while a cell is
+        // waiting to be read. Their whole job is to tell the person holding
+        // the camera whether to move closer, and a figure frozen at whatever
+        // the last recognised cell happened to measure is advice about a
+        // moment that has already passed — it stops responding at exactly the
+        // point someone starts adjusting their framing.
+        //
+        // Deriving the cell size geometrically rather than from a rendered
+        // crop is what makes that affordable: it is arithmetic on a quad we
+        // already projected, so it costs nothing on frames where no cell
+        // needs reading.
+        let framePixels = pixels?.frameSize ?? lastFrameSize
+        lastFramePixels = Int(max(framePixels.width, framePixels.height))
+        if let firstVisible = confirmedNow.sorted().first, let quad = rawQuads[firstVisible] {
+            lastCellPixels = Self.sampledSide(of: quad, in: framePixels)
         }
 
         for i in 0..<boxes.count {
@@ -339,7 +353,6 @@ final class LiveScanEngine {
 
             if let source, let quad = rawQuads[i],
                let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
-                lastCellPixels = Int(max(cut.bitmap.width, cut.bitmap.height))
                 let box = boxes[i]
                 let aspect = box.height > 0 ? (box.width * masterAspect) / box.height : 1
                 if let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
@@ -384,6 +397,23 @@ final class LiveScanEngine {
         visibleQuads = nowQuads
         visibleRects = nowRects
         publish(aligned: true)
+    }
+
+    /// What `CellPixelSource.cell` would hand back for this quad, without
+    /// rendering it — same 8% margin, same cap. Mirrors the renderer so the
+    /// number on screen is the number recognition would actually see.
+    private static func sampledSide(of quad: [CGPoint], in frame: CGSize) -> Int {
+        let xs = quad.map(\.x), ys = quad.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minY = ys.min(), let maxY = ys.max(),
+              frame.width > 1, frame.height > 1 else { return 0 }
+
+        let width = (maxX - minX) * frame.width
+        let height = (maxY - minY) * frame.height
+        guard width > 0, height > 0 else { return 0 }
+
+        let pad = max(2, min(width, height) * 0.08)
+        return Int(min(CGFloat(cellRenderSide), max(width, height) + 2 * pad))
     }
 
     /// The demo script for a cell, when this template carries one.
