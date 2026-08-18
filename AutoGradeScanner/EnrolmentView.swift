@@ -13,7 +13,7 @@ struct EnrolmentView: View {
     @AppStorage(ServerConfig.apiKey) private var apiBase = ServerConfig.defaultAPI
 
     @State private var inviteCode = ""
-    @State private var deviceName = UIDevice.current.name
+    @State private var deviceName = Self.defaultDeviceName()
     @State private var status: Status = .idle
 
     private enum Status: Equatable {
@@ -22,10 +22,26 @@ struct EnrolmentView: View {
         case failed(String)
     }
 
+    /// iOS 16 stopped handing `UIDevice.current.name` to apps without a
+    /// special entitlement: it returns the model, so every iPad in the school
+    /// enrols as "iPad". That defeats the field's only job — telling one
+    /// teacher's devices apart when one of them needs revoking — and a list of
+    /// identical names is how the wrong token gets killed.
+    ///
+    /// Stamping the enrolment date makes the default distinguishable without
+    /// asking anyone to type anything, and the field stays editable for
+    /// somebody who wants a real name.
+    private static func defaultDeviceName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d HH:mm"
+        return "\(UIDevice.current.model)・\(formatter.string(from: Date()))"
+    }
+
     private var canSubmit: Bool {
         status != .working
             && !apiBase.trimmingCharacters(in: .whitespaces).isEmpty
             && inviteCode.trimmingCharacters(in: .whitespaces).count >= 6
+            && !deviceName.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var body: some View {
@@ -52,8 +68,9 @@ struct EnrolmentView: View {
                 } header: {
                     Text("邀請碼")
                 } footer: {
-                    Text("向管理員索取，一組只能用一次。"
-                         + "裝置名稱會顯示在管理員的裝置清單裡，方便日後單獨撤銷。")
+                    Text("向管理員索取，一組只能用一次。\n"
+                         + "裝置名稱是這台裝置在管理員清單裡的識別，"
+                         + "遺失時要靠它撤銷正確的那一台——建議改成「王老師的 iPad」這種認得出來的名字。")
                 }
 
                 if case .failed(let message) = status {
