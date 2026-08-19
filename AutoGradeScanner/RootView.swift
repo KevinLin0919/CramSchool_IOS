@@ -29,13 +29,17 @@ struct RootView: View {
 
 private struct TabBarView: View {
     @EnvironmentObject private var model: AppModel
+    // Reads the stack directly rather than through AppModel: the tab should
+    // light up because a paper was actually filed, not because something
+    // remembered to mirror that fact.
+    @StateObject private var papers = GradingStore.shared
 
     var body: some View {
         HStack(spacing: 8) {
             tabButton(screen: .templates, icon: "folder", label: "考卷")
             scanButton
             tabButton(screen: .results, icon: "chart.bar", label: "結果",
-                      disabled: !model.hasResults)
+                      disabled: papers.papers.isEmpty)
         }
         .centeredContent(AG.Width.tabBar)
         .padding(.horizontal, 8)

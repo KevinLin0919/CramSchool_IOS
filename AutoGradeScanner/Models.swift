@@ -149,6 +149,12 @@ struct GradedAnswer: Identifiable {
     let verdict: GradingVerdict
     let rect: CGRect?        // normalized (0...1) within the scanned image
 
+    /// The same cell on the master sheet. The results page draws boxes on the
+    /// master rather than on a photograph: the master is already cached,
+    /// already rectified, and looks identical for every student, so reviewing
+    /// forty papers stops meaning re-orienting to forty camera angles.
+    let templateRect: CGRect?
+
     /// What the teacher said it was, when they overrode us. Paired with the
     /// cell crop this is a labelled handwriting sample — the highest-value
     /// by-product of ordinary grading.
@@ -159,12 +165,14 @@ struct GradedAnswer: Identifiable {
          recognized: String,
          verdict: GradingVerdict,
          rect: CGRect?,
+         templateRect: CGRect? = nil,
          teacherValue: String? = nil) {
         self.id = id
         self.expected = expected
         self.recognized = recognized
         self.verdict = verdict
         self.rect = rect
+        self.templateRect = templateRect
         self.teacherValue = teacherValue
     }
 

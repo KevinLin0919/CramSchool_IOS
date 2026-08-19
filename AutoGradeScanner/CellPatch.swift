@@ -45,6 +45,27 @@ struct GrayBitmap {
         pixels = buffer
     }
 
+    /// These pixels as an image, for keeping alongside a verdict.
+    ///
+    /// It matters that this is the bitmap recognition actually read rather
+    /// than a fresh crop of the frame: a teacher reviewing a verdict later is
+    /// then looking at exactly what the model looked at, so "the model was
+    /// wrong" and "the model was pointed at the wrong place" stay
+    /// distinguishable.
+    func makeImage() -> UIImage? {
+        var buffer = pixels
+        return buffer.withUnsafeMutableBytes { raw -> UIImage? in
+            guard let base = raw.baseAddress,
+                  let context = CGContext(data: base,
+                                          width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width,
+                                          space: CGColorSpaceCreateDeviceGray(),
+                                          bitmapInfo: CGImageAlphaInfo.none.rawValue),
+                  let cgImage = context.makeImage() else { return nil }
+            return UIImage(cgImage: cgImage)
+        }
+    }
+
     /// Bilinear sample in pixel coordinates, clamped at the edges. 0 = black, 1 = white.
     func sample(_ x: CGFloat, _ y: CGFloat) -> Double {
         let fx = min(max(Double(x) - 0.5, 0), Double(width - 1))

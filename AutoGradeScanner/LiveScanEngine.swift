@@ -107,6 +107,12 @@ final class LiveScanEngine {
     private var accumulators: [Int: AnswerAccumulator] = [:]
     private var recognizedText: [Int: String] = [:]
     private var blankStreak: [Int: Int] = [:]
+
+    /// The crop each question was last read from, kept so a teacher reviewing
+    /// a verdict sees what the model saw. Only the most recent one per
+    /// question is held — a cell is sampled dozens of times and keeping them
+    /// all would be memory spent on frames nobody will ever look at.
+    private var cellImages: [Int: UIImage] = [:]
     private let masterAspect: CGFloat
     /// Long side, in pixels, of the last cell handed to recognition. Surfaced
     /// on screen because it is the number that decides whether an answer is
@@ -202,6 +208,7 @@ final class LiveScanEngine {
         accumulators = [:]
         recognizedText = [:]
         blankStreak = [:]
+        cellImages = [:]
         lastCellPixels = 0
         lastFramePixels = 0
         visibleQuads = [:]
@@ -241,12 +248,28 @@ final class LiveScanEngine {
             let rect = pageKeyframe.map { $0.homography.project(boxes[i]) } ?? visibleRects[i]
             return GradedAnswer(id: number - 1, expected: exp, recognized: recognized,
                                 verdict: verdicts[i] ?? .unsure,
-                                rect: rect)
+                                rect: rect,
+                                templateRect: i < boxes.count ? boxes[i] : nil)
         }
         return GradingResult(image: backdrop, answers: answers,
                              templateTitle: template.title, date: Date(),
                              isFullPage: pageKeyframe != nil)
     }
+
+    /// The crops recognition read, keyed by question number (not array index),
+    /// to be filed alongside the verdicts.
+    func capturedCells() -> [Int: UIImage] {
+        var result: [Int: UIImage] = [:]
+        for (index, image) in cellImages {
+            let number = index < template.questions.count
+                ? template.questions[index].number : index + 1
+            result[number] = image
+        }
+        return result
+    }
+
+    /// Everything the session knows, in the form the store keeps it.
+    var templateIdentifier: Int { template.id }
 
     // MARK: - Frame integration
 
@@ -353,6 +376,7 @@ final class LiveScanEngine {
 
             if let source, let quad = rawQuads[i],
                let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
+                if verdicts[i] == nil { cellImages[i] = cut.bitmap.makeImage() }
                 let box = boxes[i]
                 let aspect = box.height > 0 ? (box.width * masterAspect) / box.height : 1
                 if let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,

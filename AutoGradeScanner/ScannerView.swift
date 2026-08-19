@@ -33,6 +33,13 @@ struct ScannerView: View {
     /// lock on.
     @State private var resolveError: String?
 
+    /// The paper just finished, waiting for the teacher to move on. The camera
+    /// keeps running behind the card: stopping and restarting it between
+    /// papers is what made grading a stack feel like leaving and re-entering
+    /// the app forty times.
+    @State private var completedPaper: StoredPaper?
+    @StateObject private var papers = GradingStore.shared
+
     // Experimental ARKit world-tracking backbone (Phase 3). When enabled and
     // supported, ARKit owns the camera and pins the boxes in world space.
     // The ARKit backbone is a parked experiment: it never picked up Plan
@@ -100,7 +107,18 @@ struct ScannerView: View {
             camera.autoCaptureEnabled = true
             liveEngine = nil
             liveUpdate = nil
+            completedPaper = nil
             camera.stop()
+        }
+        .onChange(of: liveUpdate?.gradedCount) { _, graded in
+            // Completion is a positive signal — every cell has an outcome —
+            // rather than the absence of one. "The paper left the frame" and
+            // "I am panning across it" look identical to the sensor, and at
+            // the range these cells need, the second happens constantly.
+            guard let graded, let live = liveUpdate,
+                  live.totalCount > 0, graded == live.totalCount,
+                  completedPaper == nil else { return }
+            finishLiveSession()
         }
         .onChange(of: camera.paperDetected) { _, detected in
             if detected && phase == .aligning {
@@ -187,7 +205,7 @@ struct ScannerView: View {
                 .padding(.top, geo.safeAreaInsets.top > 0 ? 8 : 16)
 
             if phase == .aligning || phase == .detected || phase == .grading {
-                Text("將考卷置於框內，即時辨識並批改答案")
+                Text("先把整張考卷放進框內對位，再靠近讓答案看得更清楚")
                     .font(.system(size: 14))
                     .foregroundStyle(.white.opacity(0.7))
                     .padding(.top, 14)
@@ -214,7 +232,16 @@ struct ScannerView: View {
 
             switch phase {
             case .aligning, .detected, .grading:
-                if let live = liveUpdate, liveEngine != nil, captured == nil {
+                if let completedPaper {
+                    // The paper is done; the camera is still running behind
+                    // this. Nothing else from the scanning chrome belongs here
+                    // — the only question left is whether to move on.
+                    completedCard(completedPaper)
+                        .centeredContent(AG.Width.card)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, geo.safeAreaInsets.bottom + 20)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if let live = liveUpdate, liveEngine != nil, captured == nil {
                     livePill(live)
                         .padding(.bottom, 14)
 
@@ -229,17 +256,20 @@ struct ScannerView: View {
                         .padding(.bottom, 18)
                 }
 
-                if phase == .aligning || phase == .detected {
+                if completedPaper == nil, phase == .aligning || phase == .detected {
                     utilitiesRow
                         .padding(.bottom, 16)
                 }
 
-                Text(liveHint)
-                    .font(.system(size: 12))
-                    .foregroundStyle(resolveError == nil ? .white.opacity(0.5) : Color(hex: 0xF2A0A0))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, geo.safeAreaInsets.bottom + 24)
+                if completedPaper == nil {
+                    Text(liveHint)
+                        .font(.system(size: 12))
+                        .foregroundStyle(resolveError == nil
+                                         ? .white.opacity(0.5) : Color(hex: 0xF2A0A0))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 28)
+                        .padding(.bottom, geo.safeAreaInsets.bottom + 24)
+                }
 
             case .done:
                 doneBar
@@ -261,7 +291,7 @@ struct ScannerView: View {
 
     private var liveHint: String {
         if let resolveError { return "無法載入模板：\(resolveError)　改用拍照批改" }
-        return liveEngine != nil ? "・ 對到哪、改到哪，掃完按「完成」 ・" : bottomHint
+        return liveEngine != nil ? "・ 靠近一點，答案格越大讀得越準 ・" : bottomHint
     }
 
     private var bottomHint: String {
@@ -320,6 +350,17 @@ struct ScannerView: View {
             }
 
             Spacer()
+
+            if !papers.papers.isEmpty {
+                Text("這疊 \(papers.papers.count)")
+                    .font(.system(size: 13, weight: .bold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.5))
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(.white.opacity(0.25), lineWidth: 1))
+            }
 
             if phase == .grading || phase == .done {
                 HStack(spacing: 5) {
@@ -578,6 +619,66 @@ struct ScannerView: View {
         .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
     }
 
+    // Slides over the running camera when a paper is done. Green passes in one
+    // tap; anything unresolved keeps the teacher here rather than letting the
+    // default action carry them past a paper that did not grade.
+    private func completedCard(_ paper: StoredPaper) -> some View {
+        let clean = paper.unsureCount == 0 && paper.total > 0
+        let tint = clean ? AG.ok : AG.warn
+
+        return VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: clean ? "checkmark.circle.fill" : "questionmark.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(tint)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(paper.correctCount)/\(paper.total) 正確")
+                        .font(.system(size: 16, weight: .bold).monospacedDigit())
+                        .foregroundStyle(.white)
+                    if !clean {
+                        Text("\(paper.unsureCount) 格待確認")
+                            .font(.system(size: 12))
+                            .foregroundStyle(AG.warn)
+                    }
+                }
+                Spacer()
+                Text("第 \(papers.papers.count) 張")
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+
+            HStack(spacing: 10) {
+                if !clean {
+                    Button {
+                        model.screen = .results
+                    } label: {
+                        Text("處理")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 42)
+                            .background(.white.opacity(0.16))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+                Button(action: nextPaper) {
+                    Text("下一張")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background(clean ? AG.brand : Color.white.opacity(0.16))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+        .padding(14)
+        .background(.black.opacity(0.72))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(tint.opacity(0.45), lineWidth: 1))
+        .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
+    }
+
     private func liveFinishButton(_ live: LiveScanEngine.Update) -> some View {
         Button(action: finishLiveSession) {
             HStack(spacing: 8) {
@@ -623,14 +724,27 @@ struct ScannerView: View {
         #endif
     }
 
+    // Ends the paper without ending the session: no camera stop, no frozen
+    // frame, no navigation. The result is filed immediately — the loop only
+    // stays safe because nothing waits on the teacher to look at it.
+    @MainActor
     private func finishLiveSession() {
         guard let engine = liveEngine, let result = engine.finish() else { return }
-        camera.stop()
-        captured = result.image
-        answers = result.answers
-        revealed = result.answers.count
+        let paper = GradingStore.record(from: result, templateID: engine.templateIdentifier)
+        papers.store(paper, cells: engine.capturedCells())
         model.lastResult = result
-        withAnimation { phase = .done }
+        withAnimation(.spring(duration: 0.3)) { completedPaper = paper }
+    }
+
+    /// Clears the finished paper and starts the next one. The teacher's tap is
+    /// the only signal here that is certain — detecting "the paper changed"
+    /// from the camera cannot separate a new sheet from a pan across the old
+    /// one, least of all at the close range these cells need.
+    @MainActor
+    private func nextPaper() {
+        completedPaper = nil
+        liveEngine?.reset()
+        camera.resetDetection()
     }
 
     // MARK: - Flow
@@ -670,6 +784,12 @@ struct ScannerView: View {
                 }
 
                 model.lastResult = result
+                // The one-shot path files too, so its results reach the same
+                // place the live loop's do. It has no cell crops to offer —
+                // it recognises server-side — which the results page renders
+                // as a missing crop rather than pretending otherwise.
+                papers.store(GradingStore.record(from: result, templateID: template.id),
+                             cells: [:])
                 try? await Task.sleep(nanoseconds: 450_000_000)
                 guard !Task.isCancelled else { return }
                 withAnimation { phase = .done }

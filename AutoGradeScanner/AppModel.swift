@@ -22,7 +22,9 @@ final class AppModel: ObservableObject {
     /// screen in its own words.
     @Published var needsEnrolment = false
 
-    // Last grading result (results tab stays disabled until one exists)
+    /// The session just finished, for the scanner's own one-shot flow.
+    /// The stack the results page shows lives in `GradingStore` — it survives
+    /// the app being killed, which this does not.
     @Published var lastResult: GradingResult?
 
     private var cancellables: Set<AnyCancellable> = []
@@ -48,8 +50,6 @@ final class AppModel: ObservableObject {
     var selectedTemplate: ExamTemplate? {
         templates.first { $0.id == selectedTemplateID }
     }
-
-    var hasResults: Bool { lastResult != nil }
 
     var isDemo: Bool { DemoData.isEnabled }
 
