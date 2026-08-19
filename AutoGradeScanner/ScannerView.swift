@@ -647,19 +647,23 @@ struct ScannerView: View {
                     .foregroundStyle(.white.opacity(0.6))
             }
 
+            // Both buttons are always present, because the tab bar is hidden
+            // on this screen: without a route to the results page here, a
+            // stack that grades cleanly can never be reached at all — the
+            // loop just offers another paper, forever.
             HStack(spacing: 10) {
-                if !clean {
-                    Button {
-                        model.screen = .results
-                    } label: {
-                        Text("處理")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 42)
-                            .background(.white.opacity(0.16))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
+                Button {
+                    model.screen = .results
+                } label: {
+                    Text(clean ? "完成這疊" : "處理")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(clean ? .white : AG.warn)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background(clean ? Color.white.opacity(0.16) : AG.warn.opacity(0.18))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10)
+                            .stroke(clean ? .clear : AG.warn.opacity(0.5), lineWidth: 1))
                 }
                 Button(action: nextPaper) {
                     Text("下一張")

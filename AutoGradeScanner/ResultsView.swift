@@ -287,22 +287,6 @@ struct ResultsView: View {
 
             Spacer()
 
-            // Paging is by position in the stack. Which student a paper
-            // belongs to is not recorded yet — the identity question is
-            // unanswered, and guessing at it would put a name on a record
-            // nobody verified.
-            HStack(spacing: 12) {
-                pagerButton("chevron.left", enabled: index > 0) { index -= 1 }
-                Text("第 \(index + 1) / \(papers.papers.count) 張")
-                    .font(.system(size: 14, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(AG.fg1)
-                pagerButton("chevron.right", enabled: index < papers.papers.count - 1) {
-                    index += 1
-                }
-            }
-
-            Spacer()
-
             Menu {
                 ShareLink(item: shareText(paper)) { Label("分享文字", systemImage: "square.and.arrow.up") }
                 Button("清除這一疊", role: .destructive) { showsClearConfirm = true }
@@ -314,6 +298,24 @@ struct ResultsView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 46)
+        // Centred as an overlay rather than between two Spacers: the left
+        // button carries an icon and two words, the right a single glyph, so
+        // spacers split the leftover space unevenly and push the counter off
+        // centre by the difference.
+        .overlay {
+            HStack(spacing: 12) {
+                pagerButton("chevron.left", enabled: index > 0) { index -= 1 }
+                // Paging is by position in the stack. Which student a paper
+                // belongs to is not recorded yet, and guessing would put a
+                // name on a record nobody verified.
+                Text("第 \(index + 1) / \(papers.papers.count) 張")
+                    .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(AG.fg1)
+                pagerButton("chevron.right", enabled: index < papers.papers.count - 1) {
+                    index += 1
+                }
+            }
+        }
         .background(AG.bg1)
         .overlay(alignment: .bottom) { AG.border1.frame(height: 0.5) }
         .confirmationDialog("清除這一疊批改結果？", isPresented: $showsClearConfirm,
