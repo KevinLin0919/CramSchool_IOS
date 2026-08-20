@@ -3,7 +3,7 @@
 補習班考卷批改系統的 iOS App。**批改完全在裝置上執行**——相機對到考卷，
 XFeat 把模板題框貼上去，MNIST CNN 與拓樸判斷讀出答案，全程不連伺服器。
 
-伺服器（[`CramSchool_API`](https://github.com/KevinLin0919/CramSchool_API)）只負責
+伺服器（[`CramSchool_Backend`](https://github.com/KevinLin0919/CramSchool_Backend)）只負責
 **存放與同步**：考卷模板、標準答案、母卷影像、批改結果。同步過一次之後，
 斷網照樣能改整疊考卷。
 
