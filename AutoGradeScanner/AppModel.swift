@@ -53,6 +53,22 @@ final class AppModel: ObservableObject {
 
     var isDemo: Bool { DemoData.isEnabled }
 
+    /// True until the device is either enrolled or the person has chosen to
+    /// look around with the bundled sheets. Landing straight on the template
+    /// list is how someone ends up grading a real paper against a sample.
+    var needsLogin: Bool {
+        !Credentials.isEnrolled
+            && UserDefaults.standard.object(forKey: DemoData.modeKey) == nil
+    }
+
+    /// Take the bundled sheets deliberately. Recorded rather than inferred so
+    /// the login screen does not reappear on every launch.
+    func enterDemo() {
+        UserDefaults.standard.set(true, forKey: DemoData.modeKey)
+        objectWillChange.send()
+        Task { await loadTemplates() }
+    }
+
     // MARK: - Templates
 
     func loadTemplates() async {
@@ -112,6 +128,10 @@ final class AppModel: ObservableObject {
 
     func signOut() {
         Credentials.clear()
+        // Also drop any explicit demo choice: a device with neither a
+        // credential nor that flag belongs on the login screen, and leaving
+        // the flag set to `false` would strand it with neither.
+        UserDefaults.standard.removeObject(forKey: DemoData.modeKey)
         // The answer keys came down with a credential that no longer exists;
         // they should not outlive it on a shared device.
         TemplateStore.shared.purge()

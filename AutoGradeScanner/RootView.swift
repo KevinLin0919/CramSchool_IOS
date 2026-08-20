@@ -7,6 +7,14 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        if model.needsLogin {
+            LoginView()
+        } else {
+            main
+        }
+    }
+
+    private var main: some View {
         ZStack(alignment: .bottom) {
             Group {
                 switch model.screen {

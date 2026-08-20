@@ -1,12 +1,13 @@
 import SwiftUI
 import UIKit
 
-// Device enrolment: server address + a single-use invite code, swapped for a
-// token that lives in the Keychain.
+// Enrolling a device with a single-use invite code.
 //
-// Teachers never type a password on a phone keyboard. An admin issues one code
-// per device with `cramctl teachers invite`, and the code is spent the moment
-// it is redeemed — an overheard one is worthless afterwards.
+// This is the path for a device being set up without a school account —
+// during testing, or when Microsoft is unreachable. An admin issues one code
+// per device with `cramctl teachers invite`; it is spent the moment it is
+// redeemed, so an overheard one is worthless afterwards. Teachers never type
+// a password on a phone keyboard.
 struct EnrolmentView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -27,10 +28,6 @@ struct EnrolmentView: View {
     /// enrols as "iPad". That defeats the field's only job — telling one
     /// teacher's devices apart when one of them needs revoking — and a list of
     /// identical names is how the wrong token gets killed.
-    ///
-    /// Stamping the enrolment date makes the default distinguishable without
-    /// asking anyone to type anything, and the field stays editable for
-    /// somebody who wants a real name.
     private static func defaultDeviceName() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "M/d HH:mm"
@@ -46,66 +43,111 @@ struct EnrolmentView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    TextField("https://主機.tailnet.ts.net", text: $apiBase)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(size: 14).monospaced())
-                } header: {
-                    Text("伺服器位址")
-                } footer: {
-                    Text("補習班的批改伺服器。裝置需先連上同一個 Tailscale 網路。")
-                }
-
-                Section {
-                    TextField("貼上邀請碼", text: $inviteCode)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(size: 14).monospaced())
-                    TextField("裝置名稱", text: $deviceName)
-                } header: {
-                    Text("邀請碼")
-                } footer: {
-                    Text("向管理員索取，一組只能用一次。\n"
-                         + "裝置名稱是這台裝置在管理員清單裡的識別，"
-                         + "遺失時要靠它撤銷正確的那一台——建議改成「王老師的 iPad」這種認得出來的名字。")
-                }
-
-                if case .failed(let message) = status {
-                    Section {
-                        Label(message, systemImage: "exclamationmark.triangle")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 26) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("輸入邀請碼")
+                            .font(.system(size: 28, weight: .bold))
+                            .foregroundStyle(AG.fg1)
+                        Text("向管理員索取，一組只能用一次。")
                             .font(.system(size: 14))
-                            .foregroundStyle(AG.bad)
+                            .foregroundStyle(AG.fg2)
                     }
-                }
+                    .padding(.top, 10)
 
-                Section {
+                    VStack(alignment: .leading, spacing: 18) {
+                        field("伺服器位址", text: $apiBase,
+                              placeholder: "http://主機:埠號", mono: true)
+
+                        field("邀請碼", text: $inviteCode,
+                              placeholder: "貼上邀請碼", mono: true,
+                              focused: inviteCode.isEmpty)
+
+                        field("裝置名稱", text: $deviceName,
+                              placeholder: "例：王老師的 iPad",
+                              note: "遺失時要靠它撤銷正確的那一台，建議改成認得出來的名字。")
+                    }
+
+                    if case .failed(let message) = status {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 15))
+                            Text(message)
+                                .font(.system(size: 14))
+                        }
+                        .foregroundStyle(AG.bad)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .background(AG.badBg)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+
                     Button {
                         Task { await enrol() }
                     } label: {
-                        HStack {
+                        HStack(spacing: 10) {
+                            if status == .working { ProgressView().tint(.white) }
                             Text("註冊這台裝置")
-                                .fontWeight(.semibold)
-                            Spacer()
-                            if status == .working { ProgressView() }
+                                .font(.system(size: 17, weight: .semibold))
                         }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background(canSubmit ? AG.brand : AG.fg4)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     .disabled(!canSubmit)
-                } footer: {
-                    Text("尚未註冊時，App 會使用內建的示範考卷離線運作。")
+                    .padding(.top, 4)
                 }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 40)
+                .centeredContent(AG.Width.content)
             }
-            .navigationTitle("裝置註冊")
+            .background(AG.bg2)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("返回") { dismiss() }
                         .disabled(status == .working)
                 }
             }
             .interactiveDismissDisabled(status == .working)
+        }
+    }
+
+    @ViewBuilder
+    private func field(_ label: String,
+                       text: Binding<String>,
+                       placeholder: String,
+                       mono: Bool = false,
+                       focused: Bool = false,
+                       note: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(label)
+                .font(.system(size: 12, weight: .semibold))
+                .kerning(0.3)
+                .foregroundStyle(AG.fg2)
+
+            TextField(placeholder, text: text)
+                .font(mono ? .system(size: 14).monospaced() : .system(size: 15))
+                .foregroundStyle(AG.fg1)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(mono ? .URL : .default)
+                .padding(.horizontal, 13)
+                .frame(height: 46)
+                .background(AG.bg1)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(focused ? AG.brand : AG.border2,
+                                lineWidth: focused ? 1.5 : 1))
+
+            if let note {
+                Text(note)
+                    .font(.system(size: 12))
+                    .foregroundStyle(AG.fg3)
+            }
         }
     }
 
@@ -128,8 +170,8 @@ struct EnrolmentView: View {
                 return
             }
             // Enrolling is what turns demo mode off, so clear any explicit
-            // override left over from a demo — otherwise the app stays on the
-            // bundled sheets and looks like the enrolment did nothing.
+            // override left over from someone tapping 先看示範 — otherwise the
+            // app stays on the bundled sheets and the enrolment looks inert.
             UserDefaults.standard.removeObject(forKey: DemoData.modeKey)
             dismiss()
         } catch {
