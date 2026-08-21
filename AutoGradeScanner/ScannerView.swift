@@ -260,11 +260,9 @@ struct ScannerView: View {
         }
     }
 
-
     private var topBar: some View {
         HStack(spacing: 10) {
             Button {
-                gradingTask?.cancel()
                 camera.stop()
                 model.screen = .templates
             } label: {
