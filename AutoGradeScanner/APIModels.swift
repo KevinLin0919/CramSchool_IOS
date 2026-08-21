@@ -23,10 +23,16 @@ struct TokenResponse: Decodable {
     let teacherName: String
     let role: String
 
+    /// When this authorisation dies on its own. Null for invite-code devices,
+    /// which is the reason revoking one actually matters — nothing else will
+    /// ever stop it.
+    let expiresAt: String?
+
     enum CodingKeys: String, CodingKey {
         case token, role
         case teacherID = "teacher_id"
         case teacherName = "teacher_name"
+        case expiresAt = "expires_at"
     }
 }
 

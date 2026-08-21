@@ -54,6 +54,10 @@ enum MicrosoftSignIn {
         let token: String
         let teacherID: Int
         let teacherName: String
+        /// ISO-8601. The backend expires Microsoft-issued device tokens on
+        /// purpose — an iPad that outlives the directory account it was issued
+        /// against would make central offboarding a fiction.
+        let expiresAt: String?
     }
 
     /// Identifiers from the tenant's app registration. Stored in UserDefaults

@@ -20,6 +20,11 @@ struct SettingsView: View {
     @State private var testState: TestState = .idle
     @State private var showingEnrolment = false
     @State private var showingSignOutConfirm = false
+    @State private var isSigningOut = false
+    /// Set when the server never confirmed the revocation. The credential is
+    /// gone from this device either way; what is left is a token nobody can
+    /// present but that the server still honours.
+    @State private var revokeWarning: String?
     @State private var enrolled = Credentials.isEnrolled
     @State private var method = Credentials.enrolmentMethod
     @StateObject private var papers = GradingStore.shared
@@ -38,7 +43,6 @@ struct SettingsView: View {
                 syncSection
                 diagnosticsSection
                 inferenceSection
-                developerSection
             }
             .navigationTitle("設定")
             .navigationBarTitleDisplayMode(.inline)
@@ -59,12 +63,20 @@ struct SettingsView: View {
                                 isPresented: $showingSignOutConfirm,
                                 titleVisibility: .visible) {
                 Button(signOutConfirmLabel, role: .destructive) {
-                    model.signOut()
-                    enrolled = false
-                    dismiss()
+                    Task { await signOut() }
                 }
             } message: {
                 Text(signOutMessage)
+            }
+            .alert("授權尚未在伺服器撤銷",
+                   isPresented: Binding(get: { revokeWarning != nil },
+                                        set: { if !$0 { revokeWarning = nil } })) {
+                Button("我知道了") {
+                    revokeWarning = nil
+                    dismiss()
+                }
+            } message: {
+                Text(revokeWarning ?? "")
             }
         }
     }
@@ -88,6 +100,9 @@ struct SettingsView: View {
                 LabeledContent("目前帳號", value: Credentials.teacherName ?? "已註冊")
                 LabeledContent("登入方式",
                                value: method == .microsoft ? "學校帳號" : "邀請碼")
+                if let expiry = expiryText {
+                    LabeledContent("授權到期", value: expiry)
+                }
                 // Red only for the invite path. Signing a Microsoft account
                 // out destroys nothing that cannot be fetched again, and
                 // painting it as destructive is how you teach people not to
@@ -95,6 +110,10 @@ struct SettingsView: View {
                 Button(signOutLabel,
                        role: method == .microsoft ? nil : ButtonRole.destructive) {
                     showingSignOutConfirm = true
+                }
+                .disabled(isSigningOut)
+                .overlay(alignment: .trailing) {
+                    if isSigningOut { ProgressView() }
                 }
             } else if model.isExplicitDemo {
                 LabeledContent("目前模式", value: "示範考卷")
@@ -119,6 +138,56 @@ struct SettingsView: View {
         } footer: {
             Text(deviceFooter)
         }
+    }
+
+    /// Only shown when there is one. An invite-code authorisation has no
+    /// expiry at all, and printing "永久" beside it would read as reassurance
+    /// rather than as the thing that makes revoking it matter.
+    private var expiryText: String? {
+        guard let raw = Credentials.expiresAt else { return nil }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let parsed = iso.date(from: raw) ?? {
+            let plain = ISO8601DateFormatter()
+            plain.formatOptions = [.withInternetDateTime]
+            return plain.date(from: raw)
+        }()
+        guard let parsed else { return String(raw.prefix(10)) }
+        let display = DateFormatter()
+        display.dateFormat = "yyyy/MM/dd"
+        return display.string(from: parsed)
+    }
+
+    /// Revoke first, clear second — the token is what authorises its own
+    /// revocation, so clearing it first would throw away the only means of
+    /// ever killing it server-side.
+    ///
+    /// The local sign-out happens either way. Refusing to sign out until the
+    /// network agrees would strand whoever is handing over a shared iPad in a
+    /// room with no Wi-Fi, and that is a worse failure than a token that
+    /// outlives its device: the second one an admin can still fix.
+    @MainActor
+    private func signOut() async {
+        // Read before signing out. `Credentials.clear()` posts didChange, which
+        // this view answers by re-reading `method` — and a cleared credential
+        // reads back as `.invite`, so a Microsoft teacher would be told their
+        // invite code needs revoking by an admin.
+        let wasMicrosoft = method == .microsoft
+
+        isSigningOut = true
+        var failed = false
+        do {
+            try await APIClient.shared.revokeThisDevice()
+        } catch {
+            failed = true
+        }
+        model.signOut()
+        isSigningOut = false
+
+        guard failed else { return dismiss() }
+        revokeWarning = wasMicrosoft
+            ? "已在這台裝置登出，但伺服器端的授權還沒撤銷。請聯絡管理員撤銷，或等待授權到期。"
+            : "已在這台裝置登出，但伺服器端的授權還沒撤銷。邀請碼的授權不會自動到期，請聯絡管理員撤銷。"
     }
 
     private var signOutLabel: String {
@@ -231,17 +300,6 @@ struct SettingsView: View {
             }
         } footer: {
             Text("只有「新增考卷」時才會用到。批改本身完全在裝置上執行，不需要這兩個服務。")
-        }
-    }
-
-    @ViewBuilder
-    private var developerSection: some View {
-        Section {
-            NavigationLink("XFeat 對位測試") { XFeatDebugView() }
-        } header: {
-            Text("開發者工具")
-        } footer: {
-            Text("驗證裝置端 XFeat 特徵對位：把模板題框投影到考卷照片、產生半透明疊圖。")
         }
     }
 

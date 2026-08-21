@@ -135,7 +135,8 @@ struct LoginView: View {
             guard Credentials.store(token: result.token,
                                     teacherID: result.teacherID,
                                     teacherName: result.teacherName,
-                                    method: .microsoft) else {
+                                    method: .microsoft,
+                                    expiresAt: result.expiresAt) else {
                 status = .failed("無法將授權寫入鑰匙圈，請重試")
                 return
             }

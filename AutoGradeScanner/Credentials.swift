@@ -35,6 +35,7 @@ enum Credentials {
     private static let teacherNameKey = "auth.teacherName"
     private static let teacherIDKey = "auth.teacherID"
     private static let methodKey = "auth.enrolmentMethod"
+    private static let expiresAtKey = "auth.expiresAt"
 
     /// Posted when enrolment starts or ends, so views showing enrolment state
     /// (and DemoData's default) refresh without polling the Keychain.
@@ -76,13 +77,22 @@ enum Credentials {
             .flatMap(EnrolmentMethod.init(rawValue:)) ?? .invite
     }
 
+    /// ISO-8601, as the server sent it, or nil for an authorisation that never
+    /// expires. Kept as the string because it is only ever displayed — the
+    /// server is the one that decides a token is dead, and it says so with a
+    /// 401 whatever this thinks.
+    static var expiresAt: String? {
+        UserDefaults.standard.string(forKey: expiresAtKey)
+    }
+
     // MARK: - Writing
 
     @discardableResult
     static func store(token: String,
                       teacherID: Int,
                       teacherName: String,
-                      method: EnrolmentMethod) -> Bool {
+                      method: EnrolmentMethod,
+                      expiresAt: String? = nil) -> Bool {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -108,6 +118,11 @@ enum Credentials {
         UserDefaults.standard.set(teacherName, forKey: teacherNameKey)
         UserDefaults.standard.set(teacherID, forKey: teacherIDKey)
         UserDefaults.standard.set(method.rawValue, forKey: methodKey)
+        if let expiresAt {
+            UserDefaults.standard.set(expiresAt, forKey: expiresAtKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: expiresAtKey)
+        }
         NotificationCenter.default.post(name: didChange, object: nil)
         return true
     }
@@ -122,6 +137,7 @@ enum Credentials {
         UserDefaults.standard.removeObject(forKey: teacherNameKey)
         UserDefaults.standard.removeObject(forKey: teacherIDKey)
         UserDefaults.standard.removeObject(forKey: methodKey)
+        UserDefaults.standard.removeObject(forKey: expiresAtKey)
         NotificationCenter.default.post(name: didChange, object: nil)
     }
 }

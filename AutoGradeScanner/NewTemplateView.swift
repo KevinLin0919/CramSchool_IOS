@@ -298,7 +298,7 @@ struct NewTemplateView: View {
     }
 }
 
-// MARK: - UIKit camera picker (master sheet photos; also used by XFeatDebugView)
+// MARK: - UIKit camera picker (master sheet photos)
 
 struct CameraPicker: UIViewControllerRepresentable {
     var onImage: (UIImage) -> Void

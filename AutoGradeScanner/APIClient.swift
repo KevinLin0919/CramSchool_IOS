@@ -145,6 +145,27 @@ final class APIClient {
         return try decode(TokenResponse.self, from: try await send(request))
     }
 
+    /// Signs this device out on the server, and only this device.
+    ///
+    /// Deliberately does not go through `send`. A 401 here means the token was
+    /// already dead, which is precisely the outcome being requested — treating
+    /// it as failure would make a retry after a flaky first attempt look like
+    /// something went wrong, and firing the "you have been signed out"
+    /// notification would race the local sign-out about to happen anyway.
+    ///
+    /// The short timeout is the point rather than an oversight: the caller
+    /// clears the credential either way, so a long wait buys nothing but a
+    /// teacher watching a spinner while handing over an iPad.
+    func revokeThisDevice() async throws {
+        var request = try makeRequest(path: "/auth/logout", method: "POST")
+        request.timeoutInterval = 8
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { return }
+        guard (200..<300).contains(http.statusCode) || http.statusCode == 401 else {
+            throw APIError.badStatus(http.statusCode)
+        }
+    }
+
     func me() async throws -> TeacherDTO {
         try decode(TeacherDTO.self, from: try await send(try makeRequest(path: "/api/v1/auth/me")))
     }

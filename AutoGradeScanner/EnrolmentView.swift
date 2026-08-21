@@ -166,7 +166,8 @@ struct EnrolmentView: View {
             guard Credentials.store(token: response.token,
                                     teacherID: response.teacherID,
                                     teacherName: response.teacherName,
-                                    method: .invite) else {
+                                    method: .invite,
+                                    expiresAt: response.expiresAt) else {
                 status = .failed("無法將授權寫入鑰匙圈，請重試")
                 return
             }

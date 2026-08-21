@@ -17,11 +17,6 @@ final class AppModel: ObservableObject {
     @Published var templatesError: String?
     @Published var selectedTemplateID: Int?
 
-    /// Set when the server rejects our credential. Drives the enrolment
-    /// prompt, so a revoked device says so once instead of failing every
-    /// screen in its own words.
-    @Published var needsEnrolment = false
-
     /// The session just finished, for the scanner's own one-shot flow.
     /// The stack the results page shows lives in `GradingStore` — it survives
     /// the app being killed, which this does not.
@@ -32,16 +27,17 @@ final class AppModel: ObservableObject {
     init() {
         NotificationCenter.default.publisher(for: APIClient.unauthorizedNotification)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
+            .sink { _ in
+                // Clearing the credential is what routes back to the login
+                // screen: `needsLogin` reads the Keychain, so there is no
+                // second flag to keep in step with it.
                 Credentials.clear()
-                self?.needsEnrolment = true
             }
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: Credentials.didChange)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.needsEnrolment = false
                 Task { await self?.loadTemplates() }
             }
             .store(in: &cancellables)
