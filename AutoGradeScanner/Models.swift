@@ -124,29 +124,6 @@ struct ExamTemplate: Identifiable, Hashable {
 // aspect ratio — the old format was not, and every consumer had to re-derive
 // the same letterbox offsets to use it.
 
-// MARK: - OCR
-
-// One OCR result for one answer box. The handwriting OCR service returns
-// {chinese, digit} candidates; the Google OCR service returns plain text.
-struct OCRCandidate {
-    var chinese: String = ""
-    var digit: String = ""
-    var text: String = ""
-
-    // Same selection rule as the web app: if the expected answer is all
-    // digits pick the digit candidate, otherwise the chinese one.
-    func value(expected: String) -> String {
-        if !chinese.isEmpty || !digit.isEmpty {
-            if expected.isEmpty {
-                return (chinese.isEmpty ? digit : chinese).trimmingCharacters(in: .whitespaces)
-            }
-            let isDigit = expected.range(of: #"^\d+$"#, options: .regularExpression) != nil
-            return (isDigit ? digit : chinese).trimmingCharacters(in: .whitespaces)
-        }
-        return text.trimmingCharacters(in: .whitespaces)
-    }
-}
-
 // MARK: - Grading result
 
 /// Three outcomes, not two.

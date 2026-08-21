@@ -16,20 +16,6 @@ struct BundledDemoTemplate {
     let written: [String]     // canned "recognized" student answers, one per box
 }
 
-enum DemoGradingError: LocalizedError {
-    case alignmentFailed
-    case noVisibleBoxes
-
-    var errorDescription: String? {
-        switch self {
-        case .alignmentFailed:
-            return "無法將照片對齊到考卷模板，請對準考卷後再試一次"
-        case .noVisibleBoxes:
-            return "照片中沒有完整的答案格，請調整取景範圍"
-        }
-    }
-}
-
 final class DemoData {
     static let shared = DemoData()
 
@@ -229,86 +215,6 @@ final class DemoData {
         return (0..<max(count, 0)).map { pool[$0 % pool.count] }
     }
 
-    // MARK: - Grading
-
-    // Bundled templates get the real pipeline: on-device XFeat alignment of
-    // the photo against the master sheet, template boxes projected through
-    // the homography, and per-box visibility filtering — only the
-    // handwriting "recognition" comes from the canned script. Other
-    // templates fall back to the fabricated grid.
-    func grade(image: UIImage, templateID: Int, templateTitle: String) async throws -> GradingResult {
-        guard let bundled = DemoData.bundledTemplates[templateID],
-              let master = UIImage(named: bundled.imageName) else {
-            return fabricatedGrade(image: image, templateID: templateID,
-                                   templateTitle: templateTitle)
-        }
-
-        let homography = try await Task.detached(priority: .userInitiated) {
-            try XFeatAligner.partialAlignmentHomography(template: master, scan: image)
-        }.value
-
-        // Quality gate: better to ask for a retake than to draw boxes off a
-        // bad alignment.
-        var minInliers = 16
-        var minRatio = 0.3
-        #if DEBUG
-        // Tunable from the scheme/simctl environment while calibrating.
-        let env = ProcessInfo.processInfo.environment
-        minInliers = env["DEMO_GATE_INLIERS"].flatMap(Int.init) ?? minInliers
-        minRatio = env["DEMO_GATE_RATIO"].flatMap(Double.init) ?? minRatio
-        #endif
-        guard let h = homography, h.inlierCount >= minInliers, h.inlierRatio >= minRatio else {
-            throw DemoGradingError.alignmentFailed
-        }
-
-        let expected = answers(for: templateID)
-        // Only grade where the paper was actually observed: a box must land
-        // inside the photo frame AND lie entirely within the region covered
-        // by inlier features ("拍到哪改到哪"). The frame check alone is not
-        // enough — the homography happily extrapolates boxes onto desk area
-        // beyond a cut paper edge, and a box whose bottom edge survived the
-        // cut can anchor inliers while its answer is out of frame.
-        let support = h.sourceInlierBounds.insetBy(dx: -0.04, dy: -0.04)
-        var graded: [GradedAnswer] = []
-        for (i, box) in bundled.boxes.enumerated() {
-            let rect = h.project(box)
-            guard rect.minX >= -0.02, rect.minY >= -0.02,
-                  rect.maxX <= 1.02, rect.maxY <= 1.02,
-                  support.contains(box) else { continue }
-            let exp = i < expected.count ? expected[i] : ""
-            let recognized = i < bundled.written.count ? bundled.written[i] : exp
-            graded.append(GradedAnswer(id: i, expected: exp, recognized: recognized,
-                                       verdict: !exp.isEmpty && recognized == exp ? .correct : .wrong,
-                                       rect: rect))
-        }
-        guard !graded.isEmpty else { throw DemoGradingError.noVisibleBoxes }
-        return GradingResult(image: image, answers: graded,
-                             templateTitle: templateTitle, date: Date())
-    }
-
-    // Fabricate a plausible graded result directly from the captured photo:
-    // lay the template's answers over a tidy grid and mark ~75% correct.
-    private func fabricatedGrade(image: UIImage, templateID: Int, templateTitle: String) -> GradingResult {
-        let expected = answers(for: templateID)
-        let count = expected.isEmpty ? 6 : expected.count
-        let boxes = DemoData.gridBoxes(count: count, width: 1, height: 1) // normalized 0...1
-        var graded: [GradedAnswer] = []
-        for i in 0..<count {
-            let exp = i < expected.count ? expected[i] : ""
-            let correct = i % 4 != 3            // every 4th wrong, deterministic
-            let recognized = correct ? exp : DemoData.wrongVariant(of: exp)
-            let b = boxes[i]
-            let rect = CGRect(x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1])
-            graded.append(GradedAnswer(id: i, expected: exp, recognized: recognized,
-                                       verdict: correct && !exp.isEmpty ? .correct : .wrong, rect: rect))
-        }
-        return GradingResult(image: image, answers: graded,
-                             templateTitle: templateTitle, date: Date())
-    }
-
-    // MARK: - Helpers
-
-    // A tidy 2-column grid of boxes as [x1, y1, x2, y2] in a width×height space.
     static func gridBoxes(count: Int, width: Double, height: Double) -> [[Double]] {
         guard count > 0 else { return [] }
         let cols = 2

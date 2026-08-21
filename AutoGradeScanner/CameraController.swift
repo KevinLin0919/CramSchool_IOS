@@ -1,11 +1,14 @@
 import AVFoundation
 import SwiftUI
-import Vision
 import simd
 
-// Camera session with automatic paper detection: Vision rectangle
-// detection runs on the video feed and, once a document-like rectangle
-// is stable for a few frames, a still photo is captured automatically.
+// Camera session feeding the live grading loop.
+//
+// Sampled video frames go out as upright images with their timestamps and
+// intrinsics, and the buffer itself rides along so a cell can be read at
+// sensor resolution. There is no photo output and no shutter: the Vision
+// rectangle pass that used to watch for a stable document and fire a still
+// capture went with the path that graded those stills on a server.
 final class CameraController: NSObject, ObservableObject {
     let session = AVCaptureSession()
 
@@ -14,20 +17,14 @@ final class CameraController: NSObject, ObservableObject {
     let pose: PoseProvider = GyroPoseProvider()
 
     @Published var isAuthorized = true
-    @Published var isTorchOn = false
-    @Published var paperDetected = false
 
-    var onCapture: ((UIImage) -> Void)?
-
-    // Live-grading tap: sampled video frames as upright UIImages, with the
+    // The only tap there is: sampled video frames as upright UIImages, with the
     // frame's capture timestamp (host clock) and, when the device delivers
     // them, its intrinsics mapped into the upright frame's normalized
-    // coordinates. While set with autoCaptureEnabled = false, the scanner
-    // grades the stream in place instead of waiting for a still capture.
+    // coordinates. The scanner grades the stream in place; nothing here waits
+    // for, or takes, a still photograph.
     var onLiveFrame: ((UIImage, TimeInterval, simd_double3x3?, CellPixelSource?) -> Void)?
-    var autoCaptureEnabled = true
 
-    private let photoOutput = AVCapturePhotoOutput()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "autograde.camera.session")
     private let videoQueue = DispatchQueue(label: "autograde.camera.video")
@@ -36,8 +33,6 @@ final class CameraController: NSObject, ObservableObject {
     private var configured = false
     private var currentPosition: AVCaptureDevice.Position = .back
     private var frameIndex = 0
-    private var stableCount = 0
-    private var hasCaptured = false
 
     // Sensor -> upright rotation for the analysis path. Only ever touched on
     // videoQueue, the queue that reads it, so the preview's own copy on the
@@ -48,13 +43,6 @@ final class CameraController: NSObject, ObservableObject {
     // which window scene it is living in.
     func setOrientation(_ orientation: CaptureOrientation) {
         videoQueue.async { self.captureOrientation = orientation }
-        sessionQueue.async {
-            guard let connection = self.photoOutput.connection(with: .video) else { return }
-            let angle = orientation.videoRotationAngle
-            if connection.isVideoRotationAngleSupported(angle) {
-                connection.videoRotationAngle = angle
-            }
-        }
     }
 
     // MARK: - Lifecycle
@@ -93,13 +81,6 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
-    func resetDetection() {
-        videoQueue.async {
-            self.stableCount = 0
-            self.hasCaptured = false
-        }
-        DispatchQueue.main.async { self.paperDetected = false }
-    }
 
     private func configureIfNeeded() {
         guard !configured else { return }
@@ -132,9 +113,6 @@ final class CameraController: NSObject, ObservableObject {
         if session.canSetSessionPreset(.hd4K3840x2160) {
             session.sessionPreset = .hd4K3840x2160
         }
-        if session.canAddOutput(photoOutput) {
-            session.addOutput(photoOutput)
-        }
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         videoOutput.alwaysDiscardsLateVideoFrames = true
         if session.canAddOutput(videoOutput) {
@@ -147,50 +125,9 @@ final class CameraController: NSObject, ObservableObject {
 
         session.commitConfiguration()
     }
-
-    // MARK: - Controls
-
-    func capturePhoto() {
-        sessionQueue.async {
-            guard self.session.isRunning else { return }
-            let settings = AVCapturePhotoSettings()
-            self.photoOutput.capturePhoto(with: settings, delegate: self)
-        }
-    }
-
-    func toggleTorch() {
-        sessionQueue.async {
-            guard let device = (self.session.inputs.first as? AVCaptureDeviceInput)?.device,
-                  device.hasTorch else { return }
-            do {
-                try device.lockForConfiguration()
-                let turnOn = device.torchMode != .on
-                device.torchMode = turnOn ? .on : .off
-                device.unlockForConfiguration()
-                DispatchQueue.main.async { self.isTorchOn = turnOn }
-            } catch {}
-        }
-    }
-
-    func flipCamera() {
-        sessionQueue.async {
-            self.session.beginConfiguration()
-            if let input = self.session.inputs.first as? AVCaptureDeviceInput {
-                self.session.removeInput(input)
-            }
-            self.currentPosition = self.currentPosition == .back ? .front : .back
-            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: self.currentPosition),
-               let input = try? AVCaptureDeviceInput(device: device),
-               self.session.canAddInput(input) {
-                self.session.addInput(input)
-            }
-            self.session.commitConfiguration()
-        }
-        resetDetection()
-    }
 }
 
-// MARK: - Rectangle detection on video frames
+// MARK: - Live frames
 
 extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput,
@@ -223,34 +160,6 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             onLiveFrame(image, timestamp, intrinsics, source)
         }
 
-        guard autoCaptureEnabled, !hasCaptured, frameIndex % 6 == 0 else { return }
-
-        let request = VNDetectRectanglesRequest()
-        // Wide enough to accept both a portrait sheet (A4 ≈ 0.71) and a
-        // landscape one (≈ 1.41); the sheet keeps its own shape in the upright
-        // frame, so both can show up whichever way the device is held.
-        request.minimumAspectRatio = 0.35
-        request.maximumAspectRatio = 1.7
-        request.minimumSize = 0.3
-        request.minimumConfidence = 0.7
-        request.maximumObservations = 1
-
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer,
-                                            orientation: orientation.cgOrientation,
-                                            options: [:])
-        try? handler.perform([request])
-
-        let found = !(request.results ?? []).isEmpty
-        stableCount = found ? stableCount + 1 : max(0, stableCount - 1)
-
-        let locked = stableCount >= 3
-        if locked != paperDetected {
-            DispatchQueue.main.async { self.paperDetected = locked }
-        }
-        if locked && !hasCaptured {
-            hasCaptured = true
-            capturePhoto()
-        }
     }
 
     // Camera intrinsics mapped into the upright analysis frame, expressed for
@@ -322,21 +231,6 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     }
 }
 
-// MARK: - Photo capture
-
-extension CameraController: AVCapturePhotoCaptureDelegate {
-    func photoOutput(_ output: AVCapturePhotoOutput,
-                     didFinishProcessingPhoto photo: AVCapturePhoto,
-                     error: Error?) {
-        guard error == nil,
-              let data = photo.fileDataRepresentation(),
-              let image = UIImage(data: data) else {
-            resetDetection()
-            return
-        }
-        DispatchQueue.main.async { self.onCapture?(image) }
-    }
-}
 
 // MARK: - SwiftUI preview layer + live verdict boxes
 

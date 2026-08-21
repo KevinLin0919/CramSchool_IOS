@@ -334,46 +334,6 @@ final class APIClient {
         }
     }
 
-    /// Handwriting OCR for the one-shot capture path.
-    ///
-    /// Live grading does not use this — it recognises on device. This is the
-    /// fallback taken when alignment never locks on, and it is the last thing
-    /// in the app that needs a server to *grade* rather than to store. Folding
-    /// it into the on-device pipeline would drop the dependency entirely.
-    func ocrStudent(imageBase64: String, boxes: [[Double]]) async throws -> [OCRCandidate] {
-        if DemoData.isEnabled {
-            return DemoData.shared.ocr(count: boxes.count).map {
-                var candidate = OCRCandidate()
-                candidate.text = $0
-                return candidate
-            }
-        }
-        let payload: [String: Any] = [
-            "image": imageBase64,
-            "annotations": boxes.map { ["class": "答案區", "bbox": $0] },
-        ]
-        let request = try inferenceRequest("\(ServerConfig.ocrBase)/ocr", body: payload)
-        let data = try await sendPlain(request)
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw APIError.badPayload
-        }
-        let results = (root["ocr_results"] as? [Any]) ?? (root["results"] as? [Any]) ?? []
-        return results.map { item in
-            var candidate = OCRCandidate()
-            if let dict = item as? [String: Any] {
-                candidate.chinese = (dict["chinese"] as? String) ?? ""
-                candidate.digit = dict["digit"].map { "\($0)" } ?? ""
-                if candidate.chinese.isEmpty && candidate.digit.isEmpty {
-                    candidate.text = (dict["text"] as? String)
-                        ?? (dict["answer"] as? String)
-                        ?? (dict["result"] as? String) ?? ""
-                }
-            } else if let text = item as? String {
-                candidate.text = text
-            }
-            return candidate
-        }
-    }
 
     /// Google OCR over the master sheet, to pre-fill the standard answers.
     func ocrMaster(imageBase64: String, boxes: [[Double]]) async throws -> [String] {

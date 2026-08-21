@@ -1,16 +1,22 @@
 import UIKit
 
-// DEBUG-only headless check of the demo grading pipeline, so the whole
-// photo → XFeat alignment → projected boxes → verdicts path can be verified
-// from the command line without driving the UI. Launch the simulator app with
+// DEBUG-only headless check of the live grading pipeline, so the whole
+// frames → XFeat alignment → projected boxes → recognition → verdicts path
+// can be verified from the command line without driving the UI. Launch the
+// simulator app with
 //
-//   SIMCTL_CHILD_DEMO_SELFTEST_SCAN=<scan png>  \
+//   SIMCTL_CHILD_DEMO_SELFTEST_LIVE=<scan png>,<scan png>,…  \
 //   SIMCTL_CHILD_DEMO_SELFTEST_OUT=<annotated output png>  \
 //   xcrun simctl launch --console-pty <udid> com.cramschool.autogradescanner
 //
 // (simctl strips the SIMCTL_CHILD_ prefix and forwards the variables to the
-// app). It grades the image against demo template 9001, prints one line per
-// visible question and exits.
+// app). It feeds the frames to demo template 9001 as if the camera had panned
+// across the paper, prints one line per question and exits.
+//
+// There used to be a second, single-image mode here. It ran the one-shot
+// grading path — which is gone — and it never exercised recognition at all:
+// the verdicts came from the template's canned answers. Everything it checked,
+// the live path checks for real.
 enum DemoSelfTest {
     static func runIfRequested() {
         #if DEBUG
@@ -21,46 +27,11 @@ enum DemoSelfTest {
                 fflush(stdout)
                 exit(0)
             }
-        } else if let scanPath = env["DEMO_SELFTEST_SCAN"] {
-            Task { @MainActor in
-                await run(scanPath: scanPath)
-                fflush(stdout)
-                exit(0)
-            }
         }
         #endif
     }
 
     #if DEBUG
-    @MainActor
-    private static func run(scanPath: String) async {
-        guard let scan = UIImage(contentsOfFile: scanPath) else {
-            print("SELFTEST: cannot load \(scanPath)")
-            return
-        }
-        do {
-            let result = try await GradingEngine.grade(image: scan,
-                                                       templateID: 9001,
-                                                       templateTitle: "自測")
-            print("SELFTEST: \(result.answers.count) visible boxes")
-            for a in result.answers {
-                let rect = a.rect.map {
-                    String(format: "(%.3f, %.3f, %.3f, %.3f)",
-                           $0.minX, $0.minY, $0.width, $0.height)
-                } ?? "nil"
-                print("SELFTEST: Q\(a.questionNumber) expected=\(a.expected) "
-                      + "recognized=\(a.recognized) correct=\(a.isCorrect) rect=\(rect)")
-            }
-            if let outPath = ProcessInfo.processInfo.environment["DEMO_SELFTEST_OUT"] {
-                let annotated = render(result)
-                try? annotated.pngData()?.write(to: URL(fileURLWithPath: outPath))
-                print("SELFTEST: wrote \(outPath)")
-            }
-        } catch {
-            print("SELFTEST: FAILED — \(error.localizedDescription)")
-        }
-    }
-
     // Live-session simulation: feed a sequence of frames (as if the camera
     // panned across the paper) into LiveScanEngine and report how verdicts
     // accumulate, then freeze and render the final result.

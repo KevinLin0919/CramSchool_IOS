@@ -50,16 +50,6 @@ jobs:
             -derivedDataPath build
       - name: Install app
         run: xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/AutoGradeScanner.app
-      - name: Still-photo grading self-test
-        run: |
-          SIMCTL_CHILD_DEMO_SELFTEST_SCAN="$PWD/TestFixtures/scan_full.jpg" \
-          SIMCTL_CHILD_DEMO_SELFTEST_OUT="$PWD/selftest_still.png" \
-          xcrun simctl launch --terminate-running-process --console-pty "$UDID" \
-            com.cramschool.autogradescanner | tee still.log
-          grep -q "SELFTEST: 8 visible boxes" still.log
-          grep -Eq "SELFTEST: Q1 .*correct=true" still.log
-          grep -Eq "SELFTEST: Q4 .*correct=false" still.log
-          grep -Eq "SELFTEST: Q6 .*correct=false" still.log
       - name: Live-scan self-test (partial views, pan across the page)
         run: |
           F="$PWD/TestFixtures"
@@ -68,6 +58,13 @@ jobs:
           xcrun simctl launch --terminate-running-process --console-pty "$UDID" \
             com.cramschool.autogradescanner | tee live.log
           grep -q "SELFTEST LIVE final: 8 graded" live.log
+          # Per-question assertions moved here from the still self-test, which
+          # graded against the template's canned answers and so could not fail
+          # on a recognition regression. These are real readings. Q1 is at the
+          # top of the sheet and Q7 near the bottom, so between them they cover
+          # both template windows the partial matcher uses.
+          grep -Eq "SELFTEST LIVE Q1 .*recognized=12 correct=true" live.log
+          grep -Eq "SELFTEST LIVE Q7 .*recognized=20 correct=true" live.log
       - name: On-device recognition self-test
         run: |
           SIMCTL_CHILD_RECOGNITION_SELFTEST="$PWD/TestFixtures/digit_cnn_reference.json" \
@@ -94,7 +91,6 @@ jobs:
           name: selftest-output
           path: |
             selftest_*.png
-            still.log
             live.log
             recog.log
 

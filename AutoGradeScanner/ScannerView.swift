@@ -2,25 +2,17 @@ import SwiftUI
 import ARKit
 
 // Screen 2 — full-bleed camera scanner.
-// Flow: aligning → detected (frame locks green, auto-captures) →
-// grading (YOLO + OCR, boxes pop in) → done (score card slides up).
-enum ScanPhase: Equatable {
-    case aligning
-    case detected
-    case grading
-    case done
-    case failed(String)
-}
+//
+// One flow only: the camera streams, XFeat aligns each frame against the
+// template, boxes fill in as they are read, and the teacher says when the
+// paper is done. The photograph-then-grade path that used to live beside it
+// is gone — it graded server-side and came back with no cell crops, so a
+// teacher reviewing a verdict had nothing to look at.
 
 struct ScannerView: View {
     @EnvironmentObject private var model: AppModel
     @StateObject private var camera = CameraController()
 
-    @State private var phase: ScanPhase = .aligning
-    @State private var captured: UIImage?
-    @State private var answers: [GradedAnswer] = []
-    @State private var revealed = 0
-    @State private var gradingTask: Task<Void, Never>?
 
     // Live grading (bundled demo templates): boxes track the paper in the
     // viewfinder and verdicts accumulate as the camera pans across it.
@@ -69,14 +61,6 @@ struct ScannerView: View {
         return "\(names)還有 \(leftBehind.remaining) 題沒批改"
     }
 
-    private var revealedCorrect: Int {
-        answers.prefix(revealed).filter(\.isCorrect).count
-    }
-
-    private var totalQuestions: Int {
-        answers.isEmpty ? (model.selectedTemplate?.annotationCount ?? 0) : answers.count
-    }
-
     var body: some View {
         GeometryReader { geo in
             ZStack {
@@ -100,13 +84,6 @@ struct ScannerView: View {
         }
         .background(Color.black)
         .onAppear {
-            camera.onCapture = { image in handleCapture(image) }
-            // Photographing a paper and having a server grade it is not what
-            // this app does any more: grading runs on device, off the live
-            // frames, and the one-shot path returned answers with no cell
-            // crops — so a teacher reviewing a verdict saw blanks where the
-            // evidence should be. The path is left compiled but unreachable.
-            camera.autoCaptureEnabled = false
             if let template = model.selectedTemplate {
                 startLiveSession(for: template)
                 // ARKit owns the camera in AR mode; starting the AVCapture
@@ -117,7 +94,6 @@ struct ScannerView: View {
             }
         }
         .onDisappear {
-            gradingTask?.cancel()
             camera.onLiveFrame = nil
             liveEngine = nil
             liveUpdate = nil
@@ -153,29 +129,13 @@ struct ScannerView: View {
         } message: {
             Text("現在完成的話，那些題目會記成未作答。")
         }
-        .onChange(of: camera.paperDetected) { _, detected in
-            if detected && phase == .aligning {
-                phase = .detected
-            }
-        }
     }
 
-    // MARK: - Backdrop (live camera or frozen capture)
+    // MARK: - Backdrop (live camera)
 
     @ViewBuilder
     private var backdrop: some View {
-        if let captured {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                GradedImageOverlay(image: captured,
-                                   answers: answers,
-                                   revealed: revealed)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 100)
-                    .padding(.bottom, 170)
-                    .animation(.spring(duration: 0.28), value: revealed)
-            }
-        } else if useARBackbone, let engine = liveEngine {
+        if useARBackbone, let engine = liveEngine {
             ARScanContainer(engine: engine, live: liveUpdate)
                 .ignoresSafeArea()
         } else if camera.isAuthorized {
@@ -227,14 +187,12 @@ struct ScannerView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, geo.safeAreaInsets.top > 0 ? 8 : 16)
 
-            if phase == .aligning || phase == .detected || phase == .grading {
-                Text("先把整張考卷放進框內對位，再靠近讓答案看得更清楚")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .padding(.top, 14)
-                    .padding(.horizontal, 32)
-                    .multilineTextAlignment(.center)
-            }
+            Text("先把整張考卷放進框內對位，再靠近讓答案看得更清楚")
+                .font(.system(size: 14))
+                .foregroundStyle(.white.opacity(0.7))
+                .padding(.top, 14)
+                .padding(.horizontal, 32)
+                .multilineTextAlignment(.center)
 
             Spacer()
         }
@@ -243,9 +201,8 @@ struct ScannerView: View {
         // over. Keyed on box presence (persistent through brief alignment
         // dropouts), not the per-frame aligned flag, so it doesn't strobe
         // back in on a single missed frame.
-        if captured == nil && camera.isAuthorized && (liveUpdate?.boxes.isEmpty ?? true) {
-            GuideFrameView(locked: phase != .aligning,
-                           sweeping: phase == .aligning)
+        if camera.isAuthorized && (liveUpdate?.boxes.isEmpty ?? true) {
+            GuideFrameView()
                 .frame(width: frameWidth, height: frameHeight)
                 .allowsHitTesting(false)
         }
@@ -253,71 +210,54 @@ struct ScannerView: View {
         VStack(spacing: 0) {
             Spacer()
 
-            switch phase {
-            case .aligning, .detected, .grading:
-                if let completedPaper {
-                    // The paper is done; the camera is still running behind
-                    // this. Nothing else from the scanning chrome belongs here
-                    // — the only question left is whether to move on.
-                    completedCard(completedPaper)
-                        .centeredContent(AG.Width.card)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, geo.safeAreaInsets.bottom + 20)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else if let live = liveUpdate, liveEngine != nil, captured == nil {
-                    livePill(live)
+            if let completedPaper {
+                // The paper is done; the camera is still running behind
+                // this. Nothing else from the scanning chrome belongs here
+                // — the only question left is whether to move on.
+                completedCard(completedPaper)
+                    .centeredContent(AG.Width.card)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, geo.safeAreaInsets.bottom + 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let live = liveUpdate, liveEngine != nil {
+                livePill(live)
+                    .padding(.bottom, 14)
+
+                if live.pages.count > 1 {
+                    pageStrip(live)
+                        .padding(.horizontal, 16)
                         .padding(.bottom, 14)
+                }
 
-                    if live.pages.count > 1 {
-                        pageStrip(live)
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 14)
-                    }
-
-                    if live.gradedCount > 0 {
-                        liveFinishButton(live)
-                            .padding(.bottom, geo.safeAreaInsets.bottom + 26)
-                    } else {
-                        Color.clear.frame(height: geo.safeAreaInsets.bottom + 26)
-                    }
-                } else {
-                    StatusPillView(phase: phase,
-                                   graded: revealed,
-                                   total: totalQuestions)
+                if live.gradedCount > 0 {
+                    liveFinishButton(live)
                         .padding(.bottom, geo.safeAreaInsets.bottom + 26)
+                } else {
+                    Color.clear.frame(height: geo.safeAreaInsets.bottom + 26)
                 }
-
-                // The standing hint is gone: it stood between the teacher and
-                // the paper for the entire session to say something they only
-                // needed once. What it also carried was the template-load
-                // failure, and that has to survive — without it a template
-                // that cannot load is a camera drawing no boxes and offering
-                // no explanation.
-                if completedPaper == nil, let resolveError {
-                    Text("無法載入這份考卷：\(resolveError)\n請回到考卷列表重新同步")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color(hex: 0xF2A0A0))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 28)
-                        .padding(.bottom, geo.safeAreaInsets.bottom + 24)
-                }
-
-            case .done:
-                doneBar
-                    .centeredContent(AG.Width.card)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, geo.safeAreaInsets.bottom + 16)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-
-            case .failed(let message):
-                failedCard(message)
-                    .centeredContent(AG.Width.card)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, geo.safeAreaInsets.bottom + 16)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                // Before the first aligned frame, or while a page's features
+                // are still being extracted.
+                StatusPillView()
+                    .padding(.bottom, geo.safeAreaInsets.bottom + 26)
             }
+
+            // The standing hint is gone: it stood between the teacher and
+            // the paper for the entire session to say something they only
+            // needed once. What it also carried was the template-load
+            // failure, and that has to survive — without it a template
+            // that cannot load is a camera drawing no boxes and offering
+            // no explanation.
+            if completedPaper == nil, let resolveError {
+                Text("無法載入這份考卷：\(resolveError)\n請回到考卷列表重新同步")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color(hex: 0xF2A0A0))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, geo.safeAreaInsets.bottom + 24)
+            }
+
         }
-        .animation(.spring(duration: 0.32), value: phase)
     }
 
 
@@ -383,119 +323,10 @@ struct ScannerView: View {
                     .overlay(Capsule().stroke(.white.opacity(0.25), lineWidth: 1))
             }
 
-            if phase == .grading || phase == .done {
-                HStack(spacing: 5) {
-                    Text("\(revealedCorrect)")
-                        .foregroundStyle(Color(hex: 0x6FCF97))
-                    Text("/").foregroundStyle(.white.opacity(0.5))
-                    Text("\(revealed)")
-                        .foregroundStyle(.white.opacity(0.8))
-                }
-                .font(.system(size: 13, weight: .bold).monospacedDigit())
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .background(.black.opacity(0.5))
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(AG.brand.opacity(0.55), lineWidth: 1))
-            }
         }
     }
 
 
-    // Slim controls after grading — the verdict boxes on the image are the
-    // result; scoring/judgement stays with the teacher.
-    private var doneBar: some View {
-        HStack(spacing: 10) {
-            Button {
-                model.screen = .results
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chart.bar")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text("查看明細")
-                        .font(.system(size: 15, weight: .semibold))
-                }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 46)
-                .background(.black.opacity(0.55))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.24), lineWidth: 1))
-            }
-
-            Button(action: rescan) {
-                HStack(spacing: 6) {
-                    Image(systemName: "viewfinder")
-                        .font(.system(size: 14, weight: .bold))
-                    Text("掃描下一張")
-                        .font(.system(size: 15, weight: .semibold))
-                }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 46)
-                .background(AG.brand)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .shadow(color: AG.brand.opacity(0.35), radius: 8, y: 6)
-            }
-        }
-    }
-
-    private func failedCard(_ message: String) -> some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(AG.badBg)
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(AG.bad)
-                }
-                .frame(width: 38, height: 38)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("批改失敗")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(AG.fg1)
-                    Text(message)
-                        .font(.system(size: 12))
-                        .foregroundStyle(AG.fg2)
-                        .lineLimit(2)
-                }
-                Spacer()
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    model.screen = .templates
-                } label: {
-                    Text("返回")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(AG.fg1)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 46)
-                        .background(AG.bg2)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AG.border2, lineWidth: 1))
-                }
-                Button(action: rescan) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("重新掃描")
-                            .font(.system(size: 15, weight: .semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(AG.brand)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-            }
-        }
-        .padding(16)
-        .background(.white.opacity(0.97))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .shadow(color: .black.opacity(0.4), radius: 22, y: 16)
-    }
 
     private var noTemplateOverlay: some View {
         VStack(spacing: 16) {
@@ -536,7 +367,6 @@ struct ScannerView: View {
                 engine.onUpdate = { update in liveUpdate = update }
                 liveEngine = engine
                 resolveError = nil
-                camera.autoCaptureEnabled = false
                 camera.onLiveFrame = { image, timestamp, intrinsics, pixels in
                     Task { @MainActor in
                         engine.submit(frame: image, timestamp: timestamp,
@@ -812,114 +642,45 @@ struct ScannerView: View {
     private func nextPaper() {
         completedPaper = nil
         liveEngine?.reset()
-        camera.resetDetection()
     }
 
-    // MARK: - Flow
-
-    private func handleCapture(_ image: UIImage) {
-        guard phase == .aligning || phase == .detected else { return }
-        camera.stop()
-        captured = image
-        phase = .grading
-        revealed = 0
-        answers = []
-        runGrading(image)
-    }
-
-    private func runGrading(_ image: UIImage) {
-        guard let template = model.selectedTemplate else {
-            phase = .failed("尚未選擇考卷模板")
-            return
-        }
-        gradingTask = Task { @MainActor in
-            do {
-                let result = try await GradingEngine.grade(image: image,
-                                                           templateID: template.id,
-                                                           templateTitle: template.fullTitle)
-                guard !Task.isCancelled else { return }
-                guard !result.answers.isEmpty else {
-                    phase = .failed("未偵測到答案區，請重新對齊考卷")
-                    return
-                }
-                answers = result.answers
-
-                // Reveal boxes one by one — the design's live-grading feel.
-                for i in 1...result.answers.count {
-                    guard !Task.isCancelled else { return }
-                    revealed = i
-                    try? await Task.sleep(nanoseconds: 140_000_000)
-                }
-
-                model.lastResult = result
-                // The one-shot path files too, so its results reach the same
-                // place the live loop's do. It has no cell crops to offer —
-                // it recognises server-side — which the results page renders
-                // as a missing crop rather than pretending otherwise.
-                papers.store(GradingStore.record(from: result, templateID: template.id),
-                             cells: [:])
-                try? await Task.sleep(nanoseconds: 450_000_000)
-                guard !Task.isCancelled else { return }
-                withAnimation { phase = .done }
-            } catch {
-                guard !Task.isCancelled else { return }
-                phase = .failed(error.localizedDescription)
-            }
-        }
-    }
-
-    private func rescan() {
-        gradingTask?.cancel()
-        captured = nil
-        answers = []
-        revealed = 0
-        phase = .aligning
-        liveEngine?.reset()
-        camera.resetDetection()
-        camera.checkPermissionAndStart()
-    }
 }
 
 // MARK: - Guide frame
 
 private struct GuideFrameView: View {
-    let locked: Bool
-    let sweeping: Bool
 
     @State private var sweepOffset: CGFloat = 0
     @State private var pulse = false
-
-    private var borderColor: Color {
-        locked ? AG.brand : .white.opacity(0.85)
-    }
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
                 RoundedRectangle(cornerRadius: 24)
-                    .stroke(borderColor, lineWidth: 2)
+                    .stroke(.white.opacity(0.85), lineWidth: 2)
                     .padding(-8)
-                    .opacity(locked ? 1 : (pulse ? 0.85 : 0.6))
-                    .shadow(color: locked ? AG.brand.opacity(0.5) : .white.opacity(0.25),
-                            radius: locked ? 20 : 8)
+                    .opacity(pulse ? 0.85 : 0.6)
+                    .shadow(color: .white.opacity(0.25), radius: 8)
 
-                // scanning sweep line
-                if sweeping {
-                    Rectangle()
-                        .fill(
-                            LinearGradient(colors: [.clear, AG.brand500, .clear],
-                                           startPoint: .leading, endPoint: .trailing)
-                        )
-                        .frame(height: 2)
-                        .shadow(color: AG.brand500, radius: 8)
-                        .offset(y: sweepOffset - geo.size.height / 2)
-                        .onAppear {
-                            sweepOffset = 0
-                            withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) {
-                                sweepOffset = geo.size.height
-                            }
+                // Scanning sweep. Always running now: the frame used to turn
+                // brand green and stop sweeping once Vision had locked onto a
+                // rectangle, which was the cue that a still capture was about
+                // to fire. Nothing captures a still any more, so the lock had
+                // nothing left to announce.
+                Rectangle()
+                    .fill(
+                        LinearGradient(colors: [.clear, AG.brand500, .clear],
+                                       startPoint: .leading, endPoint: .trailing)
+                    )
+                    .frame(height: 2)
+                    .shadow(color: AG.brand500, radius: 8)
+                    .offset(y: sweepOffset - geo.size.height / 2)
+                    .onAppear {
+                        sweepOffset = 0
+                        withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) {
+                            sweepOffset = geo.size.height
                         }
-                }
+                    }
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .overlay(alignment: .topLeading) { bracket(0).offset(x: -10, y: -10) }
@@ -938,10 +699,10 @@ private struct GuideFrameView: View {
     private func bracket(_ degrees: Double) -> some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 2)
-                .fill(locked ? AG.brand : .white)
+                .fill(.white)
                 .frame(width: 28, height: 4)
             RoundedRectangle(cornerRadius: 2)
-                .fill(locked ? AG.brand : .white)
+                .fill(.white)
                 .frame(width: 4, height: 28)
         }
         .frame(width: 28, height: 28, alignment: .topLeading)
@@ -952,52 +713,20 @@ private struct GuideFrameView: View {
 // MARK: - Status pill
 
 private struct StatusPillView: View {
-    let phase: ScanPhase
-    let graded: Int
-    let total: Int
-
-    @State private var spin = false
     @State private var blink = false
 
     var body: some View {
         HStack(spacing: 10) {
-            switch phase {
-            case .aligning:
-                Circle()
-                    .fill(.white)
-                    .frame(width: 8, height: 8)
-                    .opacity(blink ? 1 : 0.4)
-                    .onAppear {
-                        withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
-                            blink = true
-                        }
+            Circle()
+                .fill(.white)
+                .frame(width: 8, height: 8)
+                .opacity(blink ? 1 : 0.4)
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                        blink = true
                     }
-                Text("請將考卷對齊框內")
-
-            case .detected:
-                ZStack {
-                    Circle().fill(AG.brand)
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 9, weight: .heavy))
-                        .foregroundStyle(.white)
                 }
-                .frame(width: 16, height: 16)
-                Text("已偵測到考卷・開始批改")
-
-            default:
-                Circle()
-                    .trim(from: 0.15, to: 1)
-                    .stroke(AG.brand500, lineWidth: 2)
-                    .frame(width: 14, height: 14)
-                    .rotationEffect(.degrees(spin ? 360 : 0))
-                    .onAppear {
-                        withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
-                            spin = true
-                        }
-                    }
-                Text("即時批改中・\(graded)/\(total)")
-                    .monospacedDigit()
-            }
+            Text("請將考卷對齊框內")
         }
         .font(.system(size: 15, weight: .medium))
         .foregroundStyle(.white)

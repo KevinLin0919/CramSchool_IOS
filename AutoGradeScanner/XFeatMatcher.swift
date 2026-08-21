@@ -278,38 +278,6 @@ enum XFeatMatcher {
     }
 }
 
-// MARK: - High-level alignment
-
-// Estimates the homography that maps normalized coordinates in the template
-// image onto normalized coordinates in the scanned photo. Template answer
-// boxes (800x600 web-canvas space) can then be projected onto the scan by
-// normalizing with WebCanvas dimensions first, removing the dependency on
-// YOLO detection order.
-enum XFeatAligner {
-    static func alignmentHomography(template: UIImage, scan: UIImage,
-                                    minMatches: Int = 12) throws -> XFeatMatcher.Homography? {
-        guard let engine = XFeatEngine.shared else { throw XFeatError.modelMissing }
-        let templateFeatures = try engine.extract(from: template)
-        let scanFeatures = try engine.extract(from: scan)
-        let pairs = XFeatMatcher.match(templateFeatures, scanFeatures)
-        guard pairs.count >= minMatches else { return nil }
-        return XFeatMatcher.findHomography(from: pairs.map { templateFeatures.keypoints[$0.0] },
-                                           to: pairs.map { scanFeatures.keypoints[$0.1] })
-    }
-
-    // Partial-view alignment. A photo of only part of the sheet shows its
-    // content ~2x larger than the full-page template does, which breaks
-    // plain nearest-neighbor matching. Match the scan against several
-    // windows of the template (full page, top/bottom band) so one window's
-    // content scale roughly agrees with the photo, keep the candidate with
-    // the most RANSAC inliers, and map its homography back to full-template
-    // coordinates.
-    static func partialAlignmentHomography(template: UIImage, scan: UIImage,
-                                           minMatches: Int = 12) throws -> XFeatMatcher.Homography? {
-        try XFeatTemplateMatcher(template: template).align(scan: scan, minMatches: minMatches)
-    }
-}
-
 // Template-side feature cache for repeated alignment against one master
 // sheet: the window features are extracted once, so aligning a stream of
 // camera frames only pays for the scan-side extraction each time.
@@ -411,7 +379,7 @@ final class XFeatTemplateMatcher {
                                           prior: priorFullTemplate.map { $0 * aInverse })
             : nil
         #if DEBUG
-        if ProcessInfo.processInfo.environment["DEMO_SELFTEST_SCAN"] != nil {
+        if ProcessInfo.processInfo.environment["DEMO_SELFTEST_LIVE"] != nil {
             print("XFEAT window=\(window) features=\(entry.features.count) "
                   + "pairs=\(pairs.count) inliers=\(h?.inlierCount ?? 0)")
         }
