@@ -70,6 +70,19 @@ final class APIClient {
     /// instead of showing a generic failure on every screen at once.
     static let unauthorizedNotification = Notification.Name("APIClient.unauthorized")
 
+    /// userInfo key carrying the server's own explanation, when it sent one.
+    static let detailKey = "detail"
+
+    /// FastAPI's error shape. Anything else — an HTML error page from a proxy,
+    /// an empty body — reads as nil, and the caller falls back to wording of
+    /// its own rather than showing the user a fragment of markup.
+    private static func serverDetail(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let detail = object["detail"] as? String,
+              !detail.isEmpty else { return nil }
+        return detail
+    }
+
     private let session: URLSession
 
     private init() {
@@ -107,7 +120,16 @@ final class APIClient {
         if http.statusCode == 401 {
             // The credential is gone or revoked. Say so once, loudly, rather
             // than letting every screen invent its own wording for it.
-            NotificationCenter.default.post(name: Self.unauthorizedNotification, object: nil)
+            //
+            // The server distinguishes expired, revoked and deactivated, and
+            // those are three different things for the person holding the
+            // phone — one they fix by logging in again, two they cannot fix at
+            // all. Dropping the body here is what turned all three into a
+            // login screen that appeared for no stated reason.
+            NotificationCenter.default.post(
+                name: Self.unauthorizedNotification,
+                object: nil,
+                userInfo: Self.serverDetail(from: data).map { [Self.detailKey: $0] })
             throw APIError.unauthorized
         }
         guard (200..<300).contains(http.statusCode) else {

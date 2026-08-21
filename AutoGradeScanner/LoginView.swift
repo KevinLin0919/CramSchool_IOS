@@ -57,6 +57,19 @@ struct LoginView: View {
         .background(AG.bg2)
         .sheet(isPresented: $showingInvite) { EnrolmentView() }
         .animation(.spring(duration: 0.28), value: status)
+        .task {
+            // A device whose authorisation died lands here with no idea why.
+            // Expired, revoked by an admin, account deactivated — the first
+            // they fix by signing in again, the other two they cannot fix at
+            // all, and arriving at a bare login screen tells them none of it.
+            //
+            // Moved into local state and cleared at the source so it shows
+            // once. The next thing to write here is whatever they do next.
+            if let reason = model.signedOutReason, status == .idle {
+                status = .failed(reason)
+                model.signedOutReason = nil
+            }
+        }
     }
 
     // MARK: - Pieces

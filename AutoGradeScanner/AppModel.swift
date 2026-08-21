@@ -17,6 +17,11 @@ final class AppModel: ObservableObject {
     @Published var templatesError: String?
     @Published var selectedTemplateID: Int?
 
+    /// Why the credential stopped working, in the server's own words, waiting
+    /// for the login screen to say it. Nil when the person simply has not
+    /// signed in yet — that screen needs no explanation.
+    @Published var signedOutReason: String?
+
     /// The session just finished, for the scanner's own one-shot flow.
     /// The stack the results page shows lives in `GradingStore` — it survives
     /// the app being killed, which this does not.
@@ -27,17 +32,27 @@ final class AppModel: ObservableObject {
     init() {
         NotificationCenter.default.publisher(for: APIClient.unauthorizedNotification)
             .receive(on: RunLoop.main)
-            .sink { _ in
+            .sink { [weak self] note in
                 // Clearing the credential is what routes back to the login
                 // screen: `needsLogin` reads the Keychain, so there is no
                 // second flag to keep in step with it.
+                //
+                // Clear FIRST. `Credentials.clear()` posts didChange, and the
+                // handler below drops this message whenever a credential
+                // exists — setting the reason before that runs would have it
+                // erased by its own cause.
                 Credentials.clear()
+                self?.signedOutReason =
+                    note.userInfo?[APIClient.detailKey] as? String ?? "這台裝置的授權已失效"
             }
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: Credentials.didChange)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
+                // Signing in successfully answers the message; signing out
+                // does not, since that is when it was just written.
+                if Credentials.isEnrolled { self?.signedOutReason = nil }
                 Task { await self?.loadTemplates() }
             }
             .store(in: &cancellables)
