@@ -105,7 +105,14 @@ final class ARScanView: ARSCNView, ARSessionDelegate {
         // Feed XFeat at a throttled cadence, dropping frames while busy —
         // same policy as the AVCapture path.
         frameCounter += 1
-        if frameCounter % 3 == 0, !busy, let engine {
+        // Tested rather than bound. Binding it would hold the engine strongly
+        // for the length of this block, and the submit below deliberately
+        // re-reads `self.engine` instead: it happens a hop and a frame
+        // conversion later, by which time the scanner may have torn the
+        // session down. `engine` being weak is what lets that be noticed —
+        // capturing a strong reference here would keep a dead engine alive and
+        // feed it frames nobody is looking at.
+        if frameCounter % 3 == 0, !busy, engine != nil {
             busy = true
             let buffer = frame.capturedImage
             let timestamp = frame.timestamp

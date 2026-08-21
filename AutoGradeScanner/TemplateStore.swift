@@ -211,7 +211,9 @@ final class TemplateStore: ObservableObject {
         // should find what they synced this morning, not a spinner.
         for summary in page.templates where !summary.isDeleted {
             if isDetailStale(summary) {
-                try? await cacheDetail(id: summary.id)
+                // `@discardableResult` does not survive `try?` — that wraps the
+                // return in an Optional, and it is the Optional going unused.
+                _ = try? await cacheDetail(id: summary.id)
             }
         }
     }
