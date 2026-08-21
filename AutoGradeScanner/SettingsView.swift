@@ -13,6 +13,7 @@ struct SettingsView: View {
 
     @AppStorage(DemoData.modeKey) private var demoModeOverride = false
     @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
+    @AppStorage(LiveScanEngine.autoAdvanceKey) private var autoAdvancePage = true
     @AppStorage(ServerConfig.apiKey) private var apiBase = ServerConfig.defaultAPI
     @AppStorage(ServerConfig.predictKey) private var predictBase = ServerConfig.defaultPredict
     @AppStorage(ServerConfig.ocrGoogleKey) private var ocrGoogleBase = ServerConfig.defaultOCRGoogle
@@ -41,6 +42,7 @@ struct SettingsView: View {
             Form {
                 deviceSection
                 syncSection
+                gradingSection
                 diagnosticsSection
                 inferenceSection
             }
@@ -272,6 +274,20 @@ struct SettingsView: View {
             } footer: {
                 Text("同步後即可離線批改：母卷與標準答案都存在裝置上。")
             }
+        }
+    }
+
+    @ViewBuilder
+    private var gradingSection: some View {
+        Section {
+            Toggle("一頁批完自動翻頁", isOn: $autoAdvancePage)
+        } header: {
+            Text("批改")
+        } footer: {
+            Text("一頁的答案全部批完後，自動翻到下一個還沒批完的頁，只影響多頁考卷。"
+                 + "關掉之後改用畫面下方的頁籤自己切換。\n"
+                 + "兩種都不會改變批改結果——答案一旦判定就不再更動，而翻頁的條件正是"
+                 + "這一頁每一格都已經判定完畢。")
         }
     }
 

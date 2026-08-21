@@ -74,6 +74,22 @@ final class LiveScanEngine {
 
     var onUpdate: ((Update) -> Void)?
 
+    /// Whether a finished page turns itself.
+    ///
+    /// Read at the moment the turn would happen rather than captured when the
+    /// session starts, so flipping it in Settings takes effect on the next
+    /// page instead of the next scan.
+    ///
+    /// Note what this cannot change: a verdict locks in and is never revisited,
+    /// and the page only turns once every cell on it has one. Staying longer
+    /// cannot improve a reading. What the switch decides is whether the
+    /// teacher gets to see the page settle before the view moves on.
+    static let autoAdvanceKey = "scan.autoAdvancePage"
+
+    private static var autoAdvanceEnabled: Bool {
+        UserDefaults.standard.object(forKey: autoAdvanceKey) as? Bool ?? true
+    }
+
     private let template: ResolvedTemplate
     private let boxes: [CGRect]
     private let expected: [String]
@@ -378,7 +394,7 @@ final class LiveScanEngine {
     /// sees it resolve. Any manual tap during the wait cancels — the teacher
     /// overrides the automation, never the other way round.
     private func scheduleAdvanceIfPageDone() {
-        guard template.pages.count > 1, advanceTask == nil,
+        guard Self.autoAdvanceEnabled, template.pages.count > 1, advanceTask == nil,
               !arrivedOnCompletePage, isComplete(page: currentPage),
               let next = nextUnfinishedPage() else { return }
 
