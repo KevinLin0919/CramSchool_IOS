@@ -69,6 +69,28 @@ final class AppModel: ObservableObject {
         Task { await loadTemplates() }
     }
 
+    /// True when someone chose the demo rather than merely lacking a
+    /// credential. Settings uses it to decide whether it owes them a way out:
+    /// `enterDemo` writes a flag that nothing else removed, so choosing 先看示範
+    /// on the login screen used to be a one-way door — the screen could never
+    /// come back, on any launch.
+    var isExplicitDemo: Bool {
+        !Credentials.isEnrolled
+            && UserDefaults.standard.object(forKey: DemoData.modeKey) != nil
+    }
+
+    /// The mirror of `enterDemo`, and deliberately not `signOut`: nothing was
+    /// downloaded under a demo flag and nothing is being revoked, so purging
+    /// the template cache here would be theatre with a confirmation dialog
+    /// attached.
+    func exitDemo() {
+        UserDefaults.standard.removeObject(forKey: DemoData.modeKey)
+        selectedTemplateID = nil
+        lastResult = nil
+        objectWillChange.send()
+        Task { await loadTemplates() }
+    }
+
     // MARK: - Templates
 
     func loadTemplates() async {

@@ -25,13 +25,19 @@ struct ExamTemplate: Identifiable, Hashable {
     let serverGrade: String?
     let serverSubject: String?
 
+    /// How many sides this paper has. The server has always reported it; the
+    /// list just never carried it through, so nothing downstream could tell a
+    /// double-sided paper from a single one.
+    let pageCount: Int
+
     init(id: Int,
          examName: String,
          annotationCount: Int,
          createdAt: String,
          updatedAt: String = "",
          serverGrade: String? = nil,
-         serverSubject: String? = nil) {
+         serverSubject: String? = nil,
+         pageCount: Int = 1) {
         self.id = id
         self.examName = examName
         self.annotationCount = annotationCount
@@ -39,6 +45,7 @@ struct ExamTemplate: Identifiable, Hashable {
         self.updatedAt = updatedAt
         self.serverGrade = serverGrade
         self.serverSubject = serverSubject
+        self.pageCount = max(1, pageCount)
     }
 
     init(dto: TemplateSummaryDTO) {
@@ -48,7 +55,19 @@ struct ExamTemplate: Identifiable, Hashable {
                   createdAt: dto.createdAt,
                   updatedAt: dto.updatedAt,
                   serverGrade: dto.grade,
-                  serverSubject: dto.subject)
+                  serverSubject: dto.subject,
+                  pageCount: dto.pageCount)
+    }
+
+    /// Shown beside the question count, and only when there is something to
+    /// say. Single-sided is the overwhelming majority, so labelling it "單面"
+    /// would put a word on nearly every row that carries no information.
+    var pageBadge: String? {
+        switch pageCount {
+        case ...1: return nil
+        case 2: return "雙面"
+        default: return "\(pageCount) 頁"
+        }
     }
 
     /// Preferred display order. This is a *sort key*, not the set of grades
@@ -160,13 +179,23 @@ struct GradedAnswer: Identifiable {
     /// by-product of ordinary grading.
     var teacherValue: String?
 
+    /// Which side of the paper this cell is on.
+    ///
+    /// Purely a display attribute — it says which master to draw the box over,
+    /// nothing more. The identity stays the flat question number, because that
+    /// is what the upload format keys on (`GradedAnswerIn.question_no`, unique
+    /// per session) and a local identity richer than the wire format would only
+    /// have to be flattened at the boundary anyway.
+    let pageIndex: Int
+
     init(id: Int,
          expected: String,
          recognized: String,
          verdict: GradingVerdict,
          rect: CGRect?,
          templateRect: CGRect? = nil,
-         teacherValue: String? = nil) {
+         teacherValue: String? = nil,
+         pageIndex: Int = 0) {
         self.id = id
         self.expected = expected
         self.recognized = recognized
@@ -174,6 +203,7 @@ struct GradedAnswer: Identifiable {
         self.rect = rect
         self.templateRect = templateRect
         self.teacherValue = teacherValue
+        self.pageIndex = pageIndex
     }
 
     var questionNumber: Int { id + 1 }

@@ -24,7 +24,10 @@ struct ResultsView: View {
 
     @State private var index = 0
     @State private var correcting: StoredAnswer?
-    @State private var master: UIImage?
+    /// One master per page of the paper, in page order.
+    @State private var masters: [UIImage] = []
+    @State private var pageLabels: [String] = []
+    @State private var shownPage = 0
     @State private var loadedTemplate: Int?
     @State private var showsClearConfirm = false
 
@@ -106,13 +109,22 @@ struct ResultsView: View {
         VStack(alignment: .leading, spacing: 8) {
             summaryRow(paper)
 
+            // The same page control the scanner uses, for the same reason: a
+            // box belongs to one side of the paper, and drawing every side's
+            // boxes over one master would scatter the back's cells across the
+            // front at coordinates that look plausible.
+            if masters.count > 1 {
+                pageSwitcher(paper)
+            }
+
             ZStack {
-                if let master {
-                    Image(uiImage: master)
+                if masters.indices.contains(shownPage) {
+                    Image(uiImage: masters[shownPage])
                         .resizable()
                         .scaledToFit()
                         .overlay(GeometryReader { geo in
-                            ForEach(paper.answers, id: \.questionNo) { answer in
+                            ForEach(paper.answers.filter { $0.page == shownPage },
+                                    id: \.questionNo) { answer in
                                 if let rect = answer.rect {
                                     boxMarker(answer, in: rect, size: geo.size)
                                 }
@@ -128,6 +140,39 @@ struct ResultsView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(AG.border2, lineWidth: 1))
         }
+    }
+
+    private func pageSwitcher(_ paper: StoredPaper) -> some View {
+        HStack(spacing: 4) {
+            ForEach(masters.indices, id: \.self) { page in
+                let unsure = paper.answers
+                    .filter { $0.page == page && $0.effectiveVerdict == .unsure }.count
+                Button {
+                    shownPage = page
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(page < pageLabels.count ? pageLabels[page] : "\(page + 1)")
+                            .font(.system(size: 13, weight: page == shownPage ? .semibold : .regular))
+                        // Where the remaining work is, so the page holding it
+                        // is findable without opening every one.
+                        if unsure > 0 {
+                            Text("\(unsure)")
+                                .font(.system(size: 11, weight: .bold).monospacedDigit())
+                                .foregroundStyle(AG.warn)
+                        }
+                    }
+                    .foregroundStyle(page == shownPage ? AG.fg1 : AG.fg2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(page == shownPage ? AG.bg1 : .clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(AG.bg3)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private func boxMarker(_ answer: StoredAnswer, in rect: CGRect, size: CGSize) -> some View {
@@ -356,9 +401,12 @@ struct ResultsView: View {
     private func loadMaster() async {
         guard let paper = current else { return }
         guard loadedTemplate != paper.templateID else { return }
-        master = nil
+        masters = []
+        pageLabels = []
+        shownPage = 0
         if let resolved = try? await TemplateStore.shared.resolve(id: paper.templateID) {
-            master = resolved.master
+            masters = resolved.pages.map(\.master)
+            pageLabels = resolved.pages.indices.map { resolved.pageLabel($0) }
             loadedTemplate = paper.templateID
         }
     }

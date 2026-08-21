@@ -22,6 +22,14 @@ import Foundation
 // The remaining work, once the registration exists:
 //   iOS      ASWebAuthenticationSession + PKCE against
 //            login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize
+//
+//            The authorize URL MUST carry `prompt=select_account`. Settings
+//            now offers a 登出 whose whole purpose is recovering from signing
+//            in as the wrong account, and ASWebAuthenticationSession shares
+//            Safari's cookies by default — so without it, 登出 followed by 登入
+//            silently returns the same wrong account and the button looks
+//            broken. (`prefersEphemeralWebBrowserSession = true` also works,
+//            at the cost of re-typing the password every time.)
 //   backend  POST /api/v1/auth/microsoft — verify the ID token against the
 //            tenant's JWKS, check `aud` and `tid`, find or create the teacher,
 //            issue a device token exactly as the invite-code path does.

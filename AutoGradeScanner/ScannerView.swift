@@ -1,5 +1,4 @@
 import SwiftUI
-import PhotosUI
 import ARKit
 
 // Screen 2 — full-bleed camera scanner.
@@ -21,7 +20,6 @@ struct ScannerView: View {
     @State private var captured: UIImage?
     @State private var answers: [GradedAnswer] = []
     @State private var revealed = 0
-    @State private var pickerItem: PhotosPickerItem?
     @State private var gradingTask: Task<Void, Never>?
 
     // Live grading (bundled demo templates): boxes track the paper in the
@@ -38,6 +36,9 @@ struct ScannerView: View {
     /// papers is what made grading a stack feel like leaving and re-entering
     /// the app forty times.
     @State private var completedPaper: StoredPaper?
+    /// Pages the teacher would abandon by finishing now. Non-nil while the
+    /// confirmation is up.
+    @State private var leftBehind: LiveScanEngine.LeftBehind?
     @StateObject private var papers = GradingStore.shared
 
     // Experimental ARKit world-tracking backbone (Phase 3). When enabled and
@@ -58,6 +59,14 @@ struct ScannerView: View {
         #else
         false
         #endif
+    }
+
+    /// Names the pages, not just the fact that some exist. "背面還有 10 題沒批改"
+    /// can be acted on; "還有題目沒批改" sends someone hunting.
+    private var leftBehindTitle: String {
+        guard let leftBehind, !leftBehind.isEmpty else { return "" }
+        let names = leftBehind.pages.map(\.label).joined(separator: "、")
+        return "\(names)還有 \(leftBehind.remaining) 題沒批改"
     }
 
     private var revealedCorrect: Int {
@@ -92,6 +101,12 @@ struct ScannerView: View {
         .background(Color.black)
         .onAppear {
             camera.onCapture = { image in handleCapture(image) }
+            // Photographing a paper and having a server grade it is not what
+            // this app does any more: grading runs on device, off the live
+            // frames, and the one-shot path returned answers with no cell
+            // crops — so a teacher reviewing a verdict saw blanks where the
+            // evidence should be. The path is left compiled but unreachable.
+            camera.autoCaptureEnabled = false
             if let template = model.selectedTemplate {
                 startLiveSession(for: template)
                 // ARKit owns the camera in AR mode; starting the AVCapture
@@ -104,7 +119,6 @@ struct ScannerView: View {
         .onDisappear {
             gradingTask?.cancel()
             camera.onLiveFrame = nil
-            camera.autoCaptureEnabled = true
             liveEngine = nil
             liveUpdate = nil
             completedPaper = nil
@@ -115,24 +129,33 @@ struct ScannerView: View {
             // rather than the absence of one. "The paper left the frame" and
             // "I am panning across it" look identical to the sensor, and at
             // the range these cells need, the second happens constantly.
+            //
+            // `totalCount` spans every page, so this only fires once the whole
+            // paper is graded — a finished front does not file a half paper.
+            // Turning the page is the engine's job and it declines to schedule
+            // one when nothing is left, so the two never race.
             guard let graded, let live = liveUpdate,
                   live.totalCount > 0, graded == live.totalCount,
                   completedPaper == nil else { return }
             finishLiveSession()
         }
+        .confirmationDialog(leftBehindTitle,
+                            isPresented: Binding(get: { leftBehind != nil },
+                                                 set: { if !$0 { leftBehind = nil } }),
+                            titleVisibility: .visible) {
+            if let first = leftBehind?.pages.first {
+                Button("翻到\(first.label)繼續") {
+                    liveEngine?.switchTo(page: first.index)
+                    leftBehind = nil
+                }
+            }
+            Button("其他頁沒有作答，直接完成", role: .destructive) { finishLiveSession() }
+        } message: {
+            Text("現在完成的話，那些題目會記成未作答。")
+        }
         .onChange(of: camera.paperDetected) { _, detected in
             if detected && phase == .aligning {
                 phase = .detected
-            }
-        }
-        .onChange(of: pickerItem) { _, item in
-            guard let item else { return }
-            Task { @MainActor in
-                if let data = try? await item.loadTransferable(type: Data.self),
-                   let image = UIImage(data: data) {
-                    handleCapture(image)
-                }
-                pickerItem = nil
             }
         }
     }
@@ -245,27 +268,35 @@ struct ScannerView: View {
                     livePill(live)
                         .padding(.bottom, 14)
 
+                    if live.pages.count > 1 {
+                        pageStrip(live)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 14)
+                    }
+
                     if live.gradedCount > 0 {
                         liveFinishButton(live)
-                            .padding(.bottom, 14)
+                            .padding(.bottom, geo.safeAreaInsets.bottom + 26)
+                    } else {
+                        Color.clear.frame(height: geo.safeAreaInsets.bottom + 26)
                     }
                 } else {
                     StatusPillView(phase: phase,
                                    graded: revealed,
                                    total: totalQuestions)
-                        .padding(.bottom, 18)
+                        .padding(.bottom, geo.safeAreaInsets.bottom + 26)
                 }
 
-                if completedPaper == nil, phase == .aligning || phase == .detected {
-                    utilitiesRow
-                        .padding(.bottom, 16)
-                }
-
-                if completedPaper == nil {
-                    Text(liveHint)
-                        .font(.system(size: 12))
-                        .foregroundStyle(resolveError == nil
-                                         ? .white.opacity(0.5) : Color(hex: 0xF2A0A0))
+                // The standing hint is gone: it stood between the teacher and
+                // the paper for the entire session to say something they only
+                // needed once. What it also carried was the template-load
+                // failure, and that has to survive — without it a template
+                // that cannot load is a camera drawing no boxes and offering
+                // no explanation.
+                if completedPaper == nil, let resolveError {
+                    Text("無法載入這份考卷：\(resolveError)\n請回到考卷列表重新同步")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color(hex: 0xF2A0A0))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 28)
                         .padding(.bottom, geo.safeAreaInsets.bottom + 24)
@@ -289,19 +320,6 @@ struct ScannerView: View {
         .animation(.spring(duration: 0.32), value: phase)
     }
 
-    private var liveHint: String {
-        if let resolveError { return "無法載入模板：\(resolveError)　改用拍照批改" }
-        return liveEngine != nil ? "・ 靠近一點，答案格越大讀得越準 ・" : bottomHint
-    }
-
-    private var bottomHint: String {
-        switch phase {
-        case .aligning: return "・ 即時批改啟用中 ・"
-        case .detected: return "・ 偵測穩定，YOLO 辨識答案區 ・"
-        case .grading: return "・ OCR 即時比對答案中 ・"
-        default: return ""
-        }
-    }
 
     private var topBar: some View {
         HStack(spacing: 10) {
@@ -352,7 +370,10 @@ struct ScannerView: View {
             Spacer()
 
             if !papers.papers.isEmpty {
-                Text("這疊 \(papers.papers.count)")
+                // The one being graded, not the count already filed: those
+                // differ by one, and labelling the finished count "第 N 份"
+                // would name the paper you just put down.
+                Text("第 \(papers.papers.count + 1) 份")
                     .font(.system(size: 13, weight: .bold).monospacedDigit())
                     .foregroundStyle(.white)
                     .padding(.horizontal, 11)
@@ -380,46 +401,6 @@ struct ScannerView: View {
         }
     }
 
-    private var utilitiesRow: some View {
-        HStack(spacing: 22) {
-            utilityButton(icon: camera.isTorchOn ? "bolt.fill" : "bolt.slash",
-                          label: "閃光") {
-                camera.toggleTorch()
-            }
-
-            PhotosPicker(selection: $pickerItem, matching: .images) {
-                utilityLabel(icon: "photo.on.rectangle", label: "相簿")
-            }
-
-            utilityButton(icon: "arrow.triangle.2.circlepath.camera",
-                          label: "翻轉") {
-                camera.flipCamera()
-            }
-        }
-        .opacity(0.75)
-    }
-
-    private func utilityButton(icon: String, label: String,
-                               action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            utilityLabel(icon: icon, label: label)
-        }
-    }
-
-    private func utilityLabel(icon: String, label: String) -> some View {
-        VStack(spacing: 4) {
-            ZStack {
-                Circle().fill(.white.opacity(0.12))
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 38, height: 38)
-            Text(label)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white)
-        }
-    }
 
     // Slim controls after grading — the verdict boxes on the image are the
     // result; scoring/judgement stays with the teacher.
@@ -563,11 +544,12 @@ struct ScannerView: View {
                     }
                 }
             } catch {
-                // Live grading needs the master sheet; without it the scanner
-                // keeps working through the one-shot capture path rather than
-                // presenting a dead camera.
+                // There is no fallback left to offer, and inventing one would
+                // be worse than saying so: this used to flip on auto-capture
+                // and grade server-side, which quietly moved the teacher onto
+                // a slower path with no cell crops — from their side, the app
+                // just started behaving differently for no stated reason.
                 liveEngine = nil
-                camera.autoCaptureEnabled = true
                 resolveError = error.localizedDescription
             }
         }
@@ -642,7 +624,7 @@ struct ScannerView: View {
                     }
                 }
                 Spacer()
-                Text("第 \(papers.papers.count) 張")
+                Text("已完成 \(papers.papers.count) 份")
                     .font(.system(size: 12, weight: .medium).monospacedDigit())
                     .foregroundStyle(.white.opacity(0.6))
             }
@@ -666,7 +648,7 @@ struct ScannerView: View {
                             .stroke(clean ? .clear : AG.warn.opacity(0.5), lineWidth: 1))
                 }
                 Button(action: nextPaper) {
-                    Text("下一張")
+                    Text("下一份")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
@@ -683,12 +665,77 @@ struct ScannerView: View {
         .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
     }
 
+    // One pill per side of the paper. It is the page indicator and the page
+    // switch at once: "which side am I on" and "which side still needs work"
+    // are the same question, and answering it with an arrow pager would mean
+    // pressing forward three times just to find out.
+    //
+    // Six pages is the stated ceiling, and six pills come to roughly 322pt
+    // against the 361pt an iPhone leaves — so this never scrolls, and there is
+    // no ellipsis or arrow case to design.
+    private func pageStrip(_ live: LiveScanEngine.Update) -> some View {
+        HStack(spacing: 4) {
+            ForEach(live.pages) { page in
+                pagePill(page, isCurrent: page.id == live.currentPage,
+                         showsCount: live.pages.count == 2)
+            }
+        }
+        .padding(4)
+        .background(.black.opacity(0.55))
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 0.5))
+    }
+
+    private func pagePill(_ page: LiveScanEngine.PageState,
+                          isCurrent: Bool,
+                          showsCount: Bool) -> some View {
+        Button {
+            // Tapping the page already in view does nothing. It is a
+            // selection, not a toggle — a mis-tap should not walk the teacher
+            // off the side they are working on.
+            guard !isCurrent else { return }
+            liveEngine?.switchTo(page: page.id)
+        } label: {
+            HStack(spacing: 6) {
+                Text(page.label)
+                    .font(.system(size: 15, weight: isCurrent ? .semibold : .regular))
+                    .foregroundStyle(isCurrent ? Color.white : Color.white.opacity(0.62))
+
+                // Only the page in hand spells out its progress. The others
+                // owe one answer — done or not — and a row of x/y counts at
+                // six pages neither fits nor helps.
+                if isCurrent || showsCount {
+                    Text("\(page.graded)/\(page.total)")
+                        .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(page.isComplete || isCurrent
+                                         ? Color(hex: 0x6FCF97)
+                                         : Color.white.opacity(0.42))
+                } else if page.isComplete {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color(hex: 0x6FCF97))
+                } else {
+                    Circle()
+                        .fill(page.isUntouched ? Color.white.opacity(0.3)
+                              : Color(hex: 0xF2C94C))
+                        .frame(width: 6, height: 6)
+                }
+            }
+            .padding(.horizontal, showsCount ? 16 : 13)
+            .padding(.vertical, 13)
+            .background(isCurrent ? Color.white.opacity(0.20) : Color.clear)
+            .clipShape(Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func liveFinishButton(_ live: LiveScanEngine.Update) -> some View {
-        Button(action: finishLiveSession) {
+        Button(action: attemptFinish) {
             HStack(spacing: 8) {
                 Image(systemName: "checkmark")
                     .font(.system(size: 15, weight: .bold))
-                Text("完成批改（\(live.gradedCount)/\(live.totalCount) 題）")
+                Text("完成這份（\(live.gradedCount)/\(live.totalCount) 題）")
                     .font(.system(size: 16, weight: .semibold))
                     .monospacedDigit()
             }
@@ -728,11 +775,28 @@ struct ScannerView: View {
         #endif
     }
 
+    /// Finishes, unless doing so would quietly abandon a side nobody turned to.
+    ///
+    /// Forgetting to flip the paper is the ordinary mistake, and its cost is
+    /// silent: the back's cells simply file as unanswered, against the student.
+    /// A prompt that names the pages is the cheap fix.
+    @MainActor
+    private func attemptFinish() {
+        guard let engine = liveEngine else { return }
+        let pending = engine.pagesLeftBehind
+        if pending.isEmpty {
+            finishLiveSession()
+        } else {
+            leftBehind = pending
+        }
+    }
+
     // Ends the paper without ending the session: no camera stop, no frozen
     // frame, no navigation. The result is filed immediately — the loop only
     // stays safe because nothing waits on the teacher to look at it.
     @MainActor
     private func finishLiveSession() {
+        leftBehind = nil
         guard let engine = liveEngine, let result = engine.finish() else { return }
         let paper = GradingStore.record(from: result, templateID: engine.templateIdentifier)
         papers.store(paper, cells: engine.capturedCells())

@@ -11,6 +11,20 @@ import Security
 // The teacher's name and id sit in UserDefaults on purpose — they are not
 // secret, they are shown in Settings, and keeping them out of the Keychain
 // means the common "who am I logged in as" read costs nothing.
+
+/// How this device got its credential.
+///
+/// Recorded because the two paths are not equally reversible, and the sign-out
+/// affordance has to say so. A Microsoft device can sign out and sign straight
+/// back in as somebody else — which is the whole point, since signing in as the
+/// wrong account is the common mistake. An invite-code device cannot: the code
+/// was spent when it was redeemed, so leaving means waiting for an admin to
+/// issue another one.
+enum EnrolmentMethod: String {
+    case microsoft
+    case invite
+}
+
 enum Credentials {
 
     private static let account = "api-token"
@@ -20,6 +34,7 @@ enum Credentials {
 
     private static let teacherNameKey = "auth.teacherName"
     private static let teacherIDKey = "auth.teacherID"
+    private static let methodKey = "auth.enrolmentMethod"
 
     /// Posted when enrolment starts or ends, so views showing enrolment state
     /// (and DemoData's default) refresh without polling the Keychain.
@@ -54,10 +69,20 @@ enum Credentials {
         return stored > 0 ? stored : nil
     }
 
+    /// Devices enrolled before this was recorded read back as `.invite`, which
+    /// is not a guess: the invite code was the only path that ever worked.
+    static var enrolmentMethod: EnrolmentMethod {
+        UserDefaults.standard.string(forKey: methodKey)
+            .flatMap(EnrolmentMethod.init(rawValue:)) ?? .invite
+    }
+
     // MARK: - Writing
 
     @discardableResult
-    static func store(token: String, teacherID: Int, teacherName: String) -> Bool {
+    static func store(token: String,
+                      teacherID: Int,
+                      teacherName: String,
+                      method: EnrolmentMethod) -> Bool {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -82,6 +107,7 @@ enum Credentials {
 
         UserDefaults.standard.set(teacherName, forKey: teacherNameKey)
         UserDefaults.standard.set(teacherID, forKey: teacherIDKey)
+        UserDefaults.standard.set(method.rawValue, forKey: methodKey)
         NotificationCenter.default.post(name: didChange, object: nil)
         return true
     }
@@ -95,6 +121,7 @@ enum Credentials {
         SecItemDelete(base as CFDictionary)
         UserDefaults.standard.removeObject(forKey: teacherNameKey)
         UserDefaults.standard.removeObject(forKey: teacherIDKey)
+        UserDefaults.standard.removeObject(forKey: methodKey)
         NotificationCenter.default.post(name: didChange, object: nil)
     }
 }

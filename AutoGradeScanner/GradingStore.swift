@@ -47,6 +47,13 @@ struct StoredAnswer: Codable, Equatable, Identifiable {
     /// x, y, w, h as fractions of the master sheet.
     let templateRect: [Double]?
 
+    /// Which page of the paper the cell is on. Optional so records written
+    /// before double-sided papers existed still decode — they were all
+    /// single-page, so absent means page 0 and nothing needs migrating.
+    var pageIndex: Int?
+
+    var page: Int { pageIndex ?? 0 }
+
     var parsedVerdict: GradingVerdict {
         switch verdict {
         case "correct": return .correct
@@ -205,7 +212,8 @@ final class GradingStore: ObservableObject {
                     confidence: nil,
                     templateRect: answer.templateRect.map {
                         [$0.minX, $0.minY, $0.width, $0.height]
-                    })
+                    },
+                    pageIndex: answer.pageIndex)
             })
     }
 }

@@ -32,11 +32,26 @@ final class LiveScanEngine {
         let readText: String?     // what the model actually read, for the debug overlay
     }
 
+    /// One side of the paper, as the scanner chrome needs it.
+    struct PageState: Identifiable {
+        let id: Int               // page index
+        let label: String         // 正面/背面, or a page number
+        let graded: Int
+        let total: Int
+
+        var isComplete: Bool { total > 0 && graded == total }
+        var isUntouched: Bool { graded == 0 }
+    }
+
     struct Update {
         let boxes: [Box]
         let aligned: Bool         // last processed frame aligned OK
+        /// Graded/total for the WHOLE paper, every page counted. The finish
+        /// button reports the paper, not the side you happen to be looking at.
         let gradedCount: Int
         let totalCount: Int
+        let pages: [PageState]
+        let currentPage: Int
         let frameSize: CGSize     // upright frame dimensions, for overlay mapping
         let isReady: Bool         // template features loaded
         let alignMillis: Double   // last alignment wall time (0 until first result)
@@ -63,8 +78,28 @@ final class LiveScanEngine {
     private let boxes: [CGRect]
     private let expected: [String]
 
-    private var matcher: XFeatTemplateMatcher?
-    private var buildFailed = false
+    /// Which page each flat question slot belongs to, and the reverse lookup.
+    /// The flat slot stays the index space the whole session works in — every
+    /// verdict, accumulator and cell crop is keyed by it — so adding pages
+    /// costs a filter, not a rewrite.
+    private let pageOf: [Int]
+    private let slotsByPage: [[Int]]
+
+    /// One matcher per page, built on demand. Building one runs XFeat over
+    /// three windows of that page's master, so building six up front would
+    /// stall the camera for seconds before the first frame could be graded.
+    private var matchers: [Int: XFeatTemplateMatcher] = [:]
+    private var currentPage = 0
+
+    /// Bumped on every page change.
+    ///
+    /// Alignment runs off the main thread and takes long enough for the
+    /// teacher to turn the page while a frame is still in flight. That result
+    /// was computed against the OLD side's master, so integrating it would
+    /// project the new side's boxes through the wrong homography — scattering
+    /// them across the paper and feeding one frame of garbage crops into the
+    /// accumulators. The generation is what lets a stale result be dropped.
+    private var pageGeneration = 0
     private var busy = false
     private var missStreak = 0
     private var verdicts: [Int: Verdict] = [:]   // question -> outcome, locked in
@@ -76,6 +111,11 @@ final class LiveScanEngine {
     private var grace: [Int: Int] = [:]          // per-box frames of display grace left
     private var lastFrame: UIImage?
     private var lastFrameSize = CGSize(width: 3, height: 4)
+    /// Set when the teacher arrives on a page that is already finished — they
+    /// came back to look at it. Auto-advance sits out that visit, otherwise
+    /// checking page 2 bounces straight off it again.
+    private var arrivedOnCompletePage = false
+    private var advanceTask: Task<Void, Never>?
     private var lastAlignMillis: Double = 0
     private var lastInlierCount = 0
     private var anchorTimestamp: TimeInterval = 0
@@ -91,7 +131,10 @@ final class LiveScanEngine {
     /// missing. Keeping the best whole-sheet frame costs nothing: the guide
     /// frame already asks for the full page, so one goes by before anyone
     /// moves in to read the answers.
-    private var pageKeyframe: PageKeyframe?
+    ///
+    /// Kept per page, because each side gets photographed separately and the
+    /// best look at the front says nothing about where the back's cells are.
+    private var pageKeyframes: [Int: PageKeyframe] = [:]
 
     private struct PageKeyframe {
         let image: UIImage
@@ -113,7 +156,8 @@ final class LiveScanEngine {
     /// question is held — a cell is sampled dozens of times and keeping them
     /// all would be memory spent on frames nobody will ever look at.
     private var cellImages: [Int: UIImage] = [:]
-    private let masterAspect: CGFloat
+    /// One entry per page — a booklet's sides need not share a shape.
+    private let masterAspect: [CGFloat]
     /// Long side, in pixels, of the last cell handed to recognition. Surfaced
     /// on screen because it is the number that decides whether an answer is
     /// readable at all — measured on real handwriting, 128px scores 6/6 and
@@ -137,10 +181,21 @@ final class LiveScanEngine {
     /// using a real template saw a different product from the one in the demo.
     init(template: ResolvedTemplate) {
         self.template = template
-        self.boxes = template.boxes
-        self.expected = template.expected
-        let master = template.master
-        self.masterAspect = master.size.height > 0 ? master.size.width / master.size.height : 1
+        let questions = template.questions
+        self.boxes = questions.map(\.box)
+        self.expected = questions.map(\.answer)
+        self.pageOf = questions.map(\.pageIndex)
+
+        var slots = Array(repeating: [Int](), count: template.pages.count)
+        for (slot, question) in questions.enumerated() {
+            let page = template.pages.firstIndex { $0.index == question.pageIndex } ?? 0
+            slots[page].append(slot)
+        }
+        self.slotsByPage = slots
+
+        self.masterAspect = template.pages.map {
+            $0.master.size.height > 0 ? $0.master.size.width / $0.master.size.height : 1
+        }
 
         var inliers = 16
         var ratio = 0.3
@@ -152,18 +207,44 @@ final class LiveScanEngine {
         minInliers = inliers
         minRatio = ratio
 
+        build(page: 0)
+    }
+
+    /// Builds one page's matcher off the main thread, then speculatively
+    /// builds the one after it. Prebuilding the neighbour is what makes turning
+    /// the paper over feel instant: by the time anyone has physically flipped
+    /// it, the features for that side are already extracted.
+    ///
+    /// Exactly ONE page of lookahead, and only after the current page is done.
+    /// Letting the prefetch chain itself onwards would quietly extract every
+    /// page in the booklet — eighteen XFeat passes on a six-page paper —
+    /// competing with live alignment for the whole session to prepare sides
+    /// nobody may reach.
+    private func build(page: Int, prefetchingNext: Bool = true) {
+        guard template.pages.indices.contains(page), matchers[page] == nil else { return }
+        let master = template.pages[page].master
         Task.detached(priority: .userInitiated) { [weak self] in
             let built = try? XFeatTemplateMatcher(template: master)
             await MainActor.run {
                 guard let self else { return }
-                self.matcher = built
-                self.buildFailed = built == nil
+                // A page that failed to build is simply left unbuilt: it has
+                // no matcher, so `isReady` reports false for it and switching
+                // to it tries again.
+                if let built { self.matchers[page] = built }
                 self.publish()
+                if prefetchingNext, let next = self.pageAfter(page) {
+                    self.build(page: next, prefetchingNext: false)
+                }
             }
         }
     }
 
-    var isReady: Bool { matcher != nil }
+    private func pageAfter(_ page: Int) -> Int? {
+        let next = page + 1
+        return template.pages.indices.contains(next) ? next : nil
+    }
+
+    var isReady: Bool { matchers[currentPage] != nil }
 
     // Entry point for camera frames; drops the frame when a previous one is
     // still being aligned. Timestamp and intrinsics ride along so the overlay
@@ -172,34 +253,41 @@ final class LiveScanEngine {
                 timestamp: TimeInterval = CACurrentMediaTime(),
                 intrinsics: simd_double3x3? = nil,
                 pixels: CellPixelSource? = nil) {
-        guard !busy, let matcher else { return }
+        guard !busy, let matcher = matchers[currentPage] else { return }
         busy = true
         let hint = trackingHint
+        let generation = pageGeneration
         Task.detached(priority: .userInitiated) { [weak self] in
             let started = CACurrentMediaTime()
             let tracked = try? matcher.alignTracked(scan: frame, hint: hint)
             let millis = (CACurrentMediaTime() - started) * 1000
             await MainActor.run {
-                self?.integrate(frame: frame, tracked: tracked ?? nil, millis: millis,
-                                timestamp: timestamp, intrinsics: intrinsics, pixels: pixels)
-                self?.busy = false
+                guard let self else { return }
+                // Released first, so a frame dropped for being stale cannot
+                // wedge the pipeline.
+                self.busy = false
+                guard self.pageGeneration == generation else { return }
+                self.integrate(frame: frame, tracked: tracked ?? nil, millis: millis,
+                               timestamp: timestamp, intrinsics: intrinsics, pixels: pixels)
             }
         }
     }
 
     // Same as submit, but awaits the frame's integration — for headless tests.
     func process(frame: UIImage) async {
-        guard let matcher else { return }
+        guard let matcher = matchers[currentPage] else { return }
         busy = true
         let hint = trackingHint
+        let generation = pageGeneration
         let started = CACurrentMediaTime()
         let tracked = try? await Task.detached(priority: .userInitiated) {
             try matcher.alignTracked(scan: frame, hint: hint)
         }.value
+        busy = false
+        guard pageGeneration == generation else { return }
         integrate(frame: frame, tracked: tracked ?? nil,
                   millis: (CACurrentMediaTime() - started) * 1000,
                   timestamp: CACurrentMediaTime(), intrinsics: nil)
-        busy = false
     }
 
     func reset() {
@@ -211,31 +299,137 @@ final class LiveScanEngine {
         cellImages = [:]
         lastCellPixels = 0
         lastFramePixels = 0
+        pageKeyframes = [:]
+        advanceTask?.cancel()
+        advanceTask = nil
+        arrivedOnCompletePage = false
+        currentPage = 0
+        pageGeneration += 1
+        clearTracking()
+        lastFrame = nil
+        lastAlignMillis = 0
+        publish()
+    }
+
+    /// Everything that describes *where the paper is*, as opposed to what has
+    /// been graded on it. Turning the page invalidates all of it — the boxes
+    /// on screen were projected through the old page's master and would be
+    /// wrong the moment the next frame arrives.
+    private func clearTracking() {
         visibleQuads = [:]
         visibleRects = [:]
+        seenStreak = [:]
         grace = [:]
         supportHistory = []
         trackingHint = nil
         missStreak = 0
-        lastFrame = nil
-        lastAlignMillis = 0
         lastInlierCount = 0
         anchorTimestamp = 0
         anchorIntrinsics = nil
         anchorSheetQuad = nil
-        pageKeyframe = nil
+    }
+
+    // MARK: - Pages
+
+    /// Turn to another side. Verdicts, accumulators and cell crops all survive
+    /// — they belong to the paper, not to the side being looked at — so coming
+    /// back to check a page shows it exactly as it was left.
+    func switchTo(page: Int) {
+        guard template.pages.indices.contains(page), page != currentPage else { return }
+        advanceTask?.cancel()
+        advanceTask = nil
+        currentPage = page
+        pageGeneration += 1
+        arrivedOnCompletePage = isComplete(page: page)
+        clearTracking()
+        // Usually already built by the prefetch; when it is not — the teacher
+        // jumped several pages, or the prefetch failed — this is the retry.
+        build(page: page)
         publish()
     }
 
+    /// A page with no answer cells counts as done. It is not a distinction
+    /// worth arguing about on screen, but auto-advance would otherwise treat
+    /// an empty page as unfinished, turn to it, and have nothing there that
+    /// could ever complete it — a page the loop could not leave.
+    private func isComplete(page: Int) -> Bool {
+        let slots = slotsByPage.indices.contains(page) ? slotsByPage[page] : []
+        return slots.allSatisfy { verdicts[$0] != nil }
+    }
+
+    /// The next page still carrying ungraded cells, searched forward and
+    /// wrapping. Strictly `+1` would land on a page that is already finished
+    /// whenever someone grades out of order, and turning the paper to a side
+    /// with nothing left to do is exactly the wasted motion this is for.
+    private func nextUnfinishedPage() -> Int? {
+        let count = template.pages.count
+        guard count > 1 else { return nil }
+        for step in 1..<count {
+            let candidate = (currentPage + step) % count
+            if !isComplete(page: candidate) { return candidate }
+        }
+        return nil
+    }
+
+    /// Turns the page once the current one is fully graded.
+    ///
+    /// The delay is not politeness: the last cell's verdict lands on the same
+    /// frame that completes the page, and jumping instantly means nobody ever
+    /// sees it resolve. Any manual tap during the wait cancels — the teacher
+    /// overrides the automation, never the other way round.
+    private func scheduleAdvanceIfPageDone() {
+        guard template.pages.count > 1, advanceTask == nil,
+              !arrivedOnCompletePage, isComplete(page: currentPage),
+              let next = nextUnfinishedPage() else { return }
+
+        // Inherits this actor, so no hop and no detachment: the whole point is
+        // to run back here, in order, after the pause.
+        advanceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.advanceTask = nil
+            self.switchTo(page: next)
+        }
+    }
+
+    /// What finishing now would leave ungraded on the sides NOT in view.
+    ///
+    /// Only the other pages, deliberately. A half-graded page in front of the
+    /// camera is visible — the empty cells are right there on screen and
+    /// stopping anyway is a choice. A page nobody has turned to is invisible,
+    /// and forgetting to turn it over is the whole failure this catches.
+    struct LeftBehind {
+        let pages: [(index: Int, label: String)]
+        let remaining: Int
+
+        var isEmpty: Bool { pages.isEmpty }
+    }
+
+    var pagesLeftBehind: LeftBehind {
+        var pages: [(index: Int, label: String)] = []
+        var remaining = 0
+        for page in template.pages.indices where page != currentPage {
+            let ungraded = slotsByPage[page].filter { verdicts[$0] == nil }
+            guard !ungraded.isEmpty else { continue }
+            pages.append((page, template.pageLabel(page)))
+            remaining += ungraded.count
+        }
+        return LeftBehind(pages: pages, remaining: remaining)
+    }
+
     // Freeze the session into a GradingResult: every question graded so far,
-    // with rects for the ones visible in the last aligned frame.
+    // across every page, with rects placed on whichever page's keyframe saw
+    // them.
     func finish() -> GradingResult? {
         guard !verdicts.isEmpty else { return nil }
 
-        // Prefer the full-page keyframe. Its homography places *every* box on
-        // the sheet, not only the ones the camera happened to be looking at
-        // when 完成 was pressed.
-        let backdrop = pageKeyframe?.image ?? lastFrame
+        // The backdrop is only a representative frame — the results page draws
+        // on the cached masters, one per page, so it needs no photograph at
+        // all. Prefer a whole-sheet keyframe anyway, lowest page first, so
+        // what does get carried is a full page rather than a close-up.
+        let backdrop = template.pages.indices
+            .compactMap { pageKeyframes[$0]?.image }
+            .first ?? lastFrame
         guard let backdrop else { return nil }
 
         let answers = verdicts.keys.sorted().map { i -> GradedAnswer in
@@ -245,15 +439,22 @@ final class LiveScanEngine {
             // array's index, so a paper whose questions are not numbered 1..n
             // still reports the number the teacher sees on the page.
             let number = i < template.questions.count ? template.questions[i].number : i + 1
-            let rect = pageKeyframe.map { $0.homography.project(boxes[i]) } ?? visibleRects[i]
+            let serverPage = i < pageOf.count ? pageOf[i] : 0
+            let slot = template.pages.firstIndex { $0.index == serverPage } ?? 0
+            let rect = pageKeyframes[slot].map { $0.homography.project(boxes[i]) }
+                ?? visibleRects[i]
             return GradedAnswer(id: number - 1, expected: exp, recognized: recognized,
                                 verdict: verdicts[i] ?? .unsure,
                                 rect: rect,
-                                templateRect: i < boxes.count ? boxes[i] : nil)
+                                templateRect: i < boxes.count ? boxes[i] : nil,
+                                pageIndex: slot)
         }
+        // Every page had to be framed whole for the result to claim it shows
+        // whole pages.
+        let full = template.pages.indices.allSatisfy { pageKeyframes[$0] != nil }
         return GradingResult(image: backdrop, answers: answers,
                              templateTitle: template.title, date: Date(),
-                             isFullPage: pageKeyframe != nil)
+                             isFullPage: full)
     }
 
     /// The crops recognition read, keyed by question number (not array index),
@@ -310,7 +511,11 @@ final class LiveScanEngine {
         var nowRects: [Int: CGRect] = [:]
         var rawQuads: [Int: [CGPoint]] = [:]
         var confirmedNow = Set<Int>()
-        for (i, box) in boxes.enumerated() {
+        // Only this page's cells. The homography maps THIS page's master onto
+        // the frame, so projecting another side's boxes through it would scatter
+        // them across the paper at plausible-looking coordinates.
+        for i in currentSlots {
+            let box = boxes[i]
             let corners = h.projectedCorners(of: box)
             // Recognition samples the UNsmoothed corners: smoothing exists to
             // stop the drawn overlay twitching, and applying it here would
@@ -366,7 +571,7 @@ final class LiveScanEngine {
             lastCellPixels = Self.sampledSide(of: quad, in: framePixels)
         }
 
-        for i in 0..<boxes.count {
+        for i in currentSlots {
             guard confirmedNow.contains(i) else { seenStreak[i] = 0; continue }
             seenStreak[i, default: 0] += 1
             guard seenStreak[i, default: 0] >= 2, verdicts[i] == nil else { continue }
@@ -378,7 +583,9 @@ final class LiveScanEngine {
                let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
                 if verdicts[i] == nil { cellImages[i] = cut.bitmap.makeImage() }
                 let box = boxes[i]
-                let aspect = box.height > 0 ? (box.width * masterAspect) / box.height : 1
+                let pageAspect = masterAspect.indices.contains(currentPage)
+                    ? masterAspect[currentPage] : 1
+                let aspect = box.height > 0 ? (box.width * pageAspect) / box.height : 1
                 if let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
                                                  aspect: aspect, expected: exp) {
                     blankStreak[i] = 0
@@ -421,6 +628,12 @@ final class LiveScanEngine {
         visibleQuads = nowQuads
         visibleRects = nowRects
         publish(aligned: true)
+        scheduleAdvanceIfPageDone()
+    }
+
+    /// Flat question slots printed on the page currently being scanned.
+    private var currentSlots: [Int] {
+        slotsByPage.indices.contains(currentPage) ? slotsByPage[currentPage] : []
     }
 
     /// What `CellPixelSource.cell` would hand back for this quad, without
@@ -466,8 +679,8 @@ final class LiveScanEngine {
 
         let area = Double((maxX - minX) * (maxY - minY))
         let score = area * Double(h.inlierCount)
-        guard score > (pageKeyframe?.score ?? 0) else { return }
-        pageKeyframe = PageKeyframe(image: frame, homography: h, score: score)
+        guard score > (pageKeyframes[currentPage]?.score ?? 0) else { return }
+        pageKeyframes[currentPage] = PageKeyframe(image: frame, homography: h, score: score)
     }
 
     private func lockIn(_ index: Int, recognized: String, expected: String) {
@@ -518,12 +731,21 @@ final class LiveScanEngine {
                 expectedText: i < expected.count ? expected[i] : "",
                 readText: recognizedText[i])
         }
+        let pages = template.pages.indices.map { page -> PageState in
+            let slots = slotsByPage[page]
+            return PageState(id: page,
+                             label: template.pageLabel(page),
+                             graded: slots.filter { verdicts[$0] != nil }.count,
+                             total: slots.count)
+        }
         onUpdate?(Update(boxes: visible,
                          aligned: aligned && !visible.isEmpty,
                          gradedCount: verdicts.count,
                          totalCount: boxes.count,
+                         pages: pages,
+                         currentPage: currentPage,
                          frameSize: lastFrameSize,
-                         isReady: matcher != nil,
+                         isReady: matchers[currentPage] != nil,
                          alignMillis: lastAlignMillis,
                          inlierCount: lastInlierCount,
                          frameTimestamp: anchorTimestamp,

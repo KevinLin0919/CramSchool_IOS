@@ -386,6 +386,19 @@ struct TemplatesView: View {
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     Text("\(template.annotationCount) 題")
+                    // Only papers with more than one side say so. Single-sided
+                    // is the overwhelming majority, and a "單面" tag on nearly
+                    // every row would be a word that never distinguishes
+                    // anything — absence carries it for free.
+                    if let badge = template.pageBadge {
+                        Text(badge)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(AG.brand)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(AG.brandSoft)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
                     Text("・").foregroundStyle(AG.fg4)
                     Text(template.dateText)
                 }

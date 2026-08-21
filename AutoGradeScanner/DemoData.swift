@@ -175,15 +175,20 @@ final class DemoData {
         let questions = bundled.boxes.enumerated().map { index, box in
             ResolvedTemplate.Question(number: index + 1,
                                       box: box,
-                                      answer: index < answers.count ? answers[index] : "")
+                                      answer: index < answers.count ? answers[index] : "",
+                                      pageIndex: 0)
         }
         let title = shared.templateList(search: nil).first { $0.id == id }?.fullTitle
             ?? "示範考卷"
 
+        // Every bundled sheet is single-sided, so the demo never exercises the
+        // page strip. That is a gap in the demo, not in the engine — the page
+        // machinery is the same code path with one page in it.
         return ResolvedTemplate(id: id,
                                 title: title,
-                                master: master,
-                                questions: questions,
+                                pages: [ResolvedTemplate.Page(index: 0,
+                                                              master: master,
+                                                              questions: questions)],
                                 scriptedAnswers: bundled.written)
     }
 

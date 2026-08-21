@@ -24,14 +24,29 @@ import UIKit
 struct ResolvedTemplate {
     struct Question {
         let number: Int          // stable question_no, not an array index
-        let box: CGRect          // normalized within the master image
+        let box: CGRect          // normalized within its own page's master
         let answer: String
+        let pageIndex: Int       // which sheet side this cell is printed on
+    }
+
+    /// One physical side of the paper: its own master image and its own cells.
+    ///
+    /// The server has stored templates this way all along — `template_pages`
+    /// keyed by `page_index`, with `GET /templates/{id}/master?page=N` already
+    /// taking the page — and `TemplateDetailDTO.pages` has always been an
+    /// array. This client collapsed all of it with a `.first`, which is why a
+    /// double-sided paper could only ever be half graded.
+    struct Page {
+        let index: Int
+        let master: UIImage
+        let questions: [Question]
     }
 
     let id: Int
     let title: String
-    let master: UIImage
-    let questions: [Question]
+    /// Ascending by `index`, never empty — `resolve` throws rather than hand
+    /// back a template with nothing to grade against.
+    let pages: [Page]
 
     /// Demo templates only. The bundled master is a *blank* answer sheet, so
     /// there is no ink on it to read and a scripted answer is the only reason
@@ -40,13 +55,33 @@ struct ResolvedTemplate {
     /// see `LiveScanEngine`'s handling of `blankStreak`.
     let scriptedAnswers: [String]?
 
+    /// Every cell on the paper, page by page. This flat order is the index
+    /// space the scan session works in, so it has to be stable: pages
+    /// ascending, then question number ascending within a page.
+    var questions: [Question] { pages.flatMap(\.questions) }
+
     var boxes: [CGRect] { questions.map(\.box) }
     var expected: [String] { questions.map(\.answer) }
+
+    /// The first page's master. Kept for the places that legitimately want one
+    /// representative image — the picker's preview, the alignment debug view.
+    var master: UIImage { pages[0].master }
+
+    var pageCount: Int { pages.count }
+
+    /// What to call a page on screen. A sheet has a front and a back and that
+    /// is what teachers say; a four-page booklet does not, and numbering it is
+    /// the only thing that reads naturally.
+    func pageLabel(_ index: Int) -> String {
+        guard pages.count == 2 else { return "\(index + 1)" }
+        return index == 0 ? "正面" : "背面"
+    }
 }
 
 enum TemplateStoreError: LocalizedError {
     case notCached
     case masterUnavailable
+    case duplicateQuestionNumbers
 
     var errorDescription: String? {
         switch self {
@@ -54,6 +89,8 @@ enum TemplateStoreError: LocalizedError {
             return "這份考卷尚未下載，請連上伺服器後重新整理"
         case .masterUnavailable:
             return "考卷母卷影像損毀，請重新整理"
+        case .duplicateQuestionNumbers:
+            return "這份考卷的題號跨頁重複，無法批改，請重新編號後再同步"
         }
     }
 }
@@ -226,28 +263,48 @@ final class TemplateStore: ObservableObject {
         }
         guard let detail else { throw TemplateStoreError.notCached }
 
-        guard let page = detail.pages.sorted(by: { $0.pageIndex < $1.pageIndex }).first else {
-            throw TemplateStoreError.notCached
+        let ordered = detail.pages.sorted { $0.pageIndex < $1.pageIndex }
+        guard !ordered.isEmpty else { throw TemplateStoreError.notCached }
+
+        // The server's two halves disagree about what makes a question unique.
+        // A template's cells are unique per PAGE (`uq_box_question_no` is on
+        // `page_id, question_no`), but a grading session's answers are unique
+        // per SESSION (`uq_answer_question_no`), and the upload schema rejects
+        // a repeat outright. So a paper that restarts numbering on its back is
+        // storable and ungradeable — and worse, `expectedAnswers` flattens and
+        // sorts by question number, which would quietly pair every cell with
+        // the wrong standard answer. Refusing is the only honest option; a
+        // wrong grade that looks right is the failure worth preventing.
+        var seen = Set<Int>()
+        for page in ordered {
+            for box in page.boxes where !seen.insert(box.questionNo).inserted {
+                throw TemplateStoreError.duplicateQuestionNumbers
+            }
         }
 
-        if !FileManager.default.fileExists(atPath: masterURL(imageID: page.imageID).path) {
-            try await cacheMaster(templateID: id, page: page)
+        var pages: [ResolvedTemplate.Page] = []
+        for page in ordered {
+            if !FileManager.default.fileExists(atPath: masterURL(imageID: page.imageID).path) {
+                try await cacheMaster(templateID: id, page: page)
+            }
+            guard let master = UIImage(contentsOfFile: masterURL(imageID: page.imageID).path) else {
+                throw TemplateStoreError.masterUnavailable
+            }
+            let questions = page.boxes
+                .sorted { $0.questionNo < $1.questionNo }
+                .map { ResolvedTemplate.Question(number: $0.questionNo,
+                                                 box: $0.rect,
+                                                 answer: $0.answer,
+                                                 pageIndex: page.pageIndex) }
+            pages.append(ResolvedTemplate.Page(index: page.pageIndex,
+                                               master: master,
+                                               questions: questions))
         }
-        guard let master = UIImage(contentsOfFile: masterURL(imageID: page.imageID).path) else {
-            throw TemplateStoreError.masterUnavailable
-        }
-
-        let questions = page.boxes
-            .sorted { $0.questionNo < $1.questionNo }
-            .map { ResolvedTemplate.Question(number: $0.questionNo,
-                                             box: $0.rect,
-                                             answer: $0.answer) }
 
         let summary = index.templates.first { $0.id == id }
         let title = summary.map { ExamTemplate(dto: $0).fullTitle } ?? detail.examName
 
-        return ResolvedTemplate(id: id, title: title, master: master,
-                                questions: questions, scriptedAnswers: nil)
+        return ResolvedTemplate(id: id, title: title, pages: pages, scriptedAnswers: nil)
     }
 
     private func cachedDetail(id: Int) -> TemplateDetailDTO? {
@@ -255,12 +312,15 @@ final class TemplateStore: ObservableObject {
         return try? JSONDecoder().decode(TemplateDetailDTO.self, from: data)
     }
 
-    /// True when a template can be graded with no network at all.
+    /// True when a template can be graded with no network at all. Every page
+    /// has to be there: a two-sided paper whose back never downloaded is not
+    /// offline-ready, it is a paper that stops halfway through.
     func isAvailableOffline(id: Int) -> Bool {
         if DemoData.isEnabled, DemoData.bundledTemplates[id] != nil { return true }
-        guard let detail = cachedDetail(id: id),
-              let page = detail.pages.first else { return false }
-        return FileManager.default.fileExists(atPath: masterURL(imageID: page.imageID).path)
+        guard let detail = cachedDetail(id: id), !detail.pages.isEmpty else { return false }
+        return detail.pages.allSatisfy {
+            FileManager.default.fileExists(atPath: masterURL(imageID: $0.imageID).path)
+        }
     }
 
     /// Drops every cached template. Used when a device is un-enrolled — the

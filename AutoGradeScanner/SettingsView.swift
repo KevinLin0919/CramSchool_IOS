@@ -21,6 +21,8 @@ struct SettingsView: View {
     @State private var showingEnrolment = false
     @State private var showingSignOutConfirm = false
     @State private var enrolled = Credentials.isEnrolled
+    @State private var method = Credentials.enrolmentMethod
+    @StateObject private var papers = GradingStore.shared
 
     private enum TestState: Equatable {
         case idle
@@ -50,29 +52,61 @@ struct SettingsView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: Credentials.didChange)) { _ in
                 enrolled = Credentials.isEnrolled
+                method = Credentials.enrolmentMethod
                 testState = .idle
             }
-            .confirmationDialog("要取消註冊嗎？",
+            .confirmationDialog(signOutTitle,
                                 isPresented: $showingSignOutConfirm,
                                 titleVisibility: .visible) {
-                Button("取消註冊並清除已下載的考卷", role: .destructive) {
+                Button(signOutConfirmLabel, role: .destructive) {
                     model.signOut()
                     enrolled = false
+                    dismiss()
                 }
             } message: {
-                Text("已下載的考卷與標準答案會一併刪除。")
+                Text(signOutMessage)
             }
         }
     }
 
     // MARK: - Sections
 
+    // Every way in has a way out.
+    //
+    // There used to be exactly one, and it belonged to the enrolled state:
+    // choosing 先看示範 on the login screen set a flag no button removed, so the
+    // login screen could never come back. Signing in as the wrong account had
+    // no remedy either — the only exit was labelled 取消註冊, which reads like
+    // it destroys something, because for an invite-code device it does.
+    //
+    // So the row is always present and its wording follows the one thing that
+    // actually differs between the three states: what it costs to come back.
     @ViewBuilder
     private var deviceSection: some View {
         Section {
             if enrolled {
                 LabeledContent("目前帳號", value: Credentials.teacherName ?? "已註冊")
-                Button("取消註冊", role: .destructive) { showingSignOutConfirm = true }
+                LabeledContent("登入方式",
+                               value: method == .microsoft ? "學校帳號" : "邀請碼")
+                // Red only for the invite path. Signing a Microsoft account
+                // out destroys nothing that cannot be fetched again, and
+                // painting it as destructive is how you teach people not to
+                // press the button that fixes their problem.
+                Button(signOutLabel,
+                       role: method == .microsoft ? nil : ButtonRole.destructive) {
+                    showingSignOutConfirm = true
+                }
+            } else if model.isExplicitDemo {
+                LabeledContent("目前模式", value: "示範考卷")
+                Button {
+                    showingEnrolment = true
+                } label: {
+                    Label("註冊這台裝置", systemImage: "person.badge.key")
+                }
+                Button("結束示範，回到登入頁") {
+                    model.exitDemo()
+                    dismiss()
+                }
             } else {
                 Button {
                     showingEnrolment = true
@@ -83,10 +117,46 @@ struct SettingsView: View {
         } header: {
             Text("裝置")
         } footer: {
-            Text(enrolled
-                 ? "授權存放於裝置的鑰匙圈，可由管理員隨時撤銷。"
-                 : "尚未註冊。App 目前使用內建的示範考卷離線運作，不會連線伺服器。")
+            Text(deviceFooter)
         }
+    }
+
+    private var signOutLabel: String {
+        method == .microsoft ? "登出" : "登出並取消註冊"
+    }
+
+    private var deviceFooter: String {
+        if enrolled {
+            return method == .microsoft
+                ? "登出後已下載的考卷會一併移除，重新登入即可再同步。"
+                : "這台裝置是用邀請碼註冊的。登出後需要向管理員索取新的邀請碼才能再次使用。"
+        }
+        if model.isExplicitDemo {
+            return "示範考卷完全離線，不會連線伺服器。結束示範可改用學校帳號或邀請碼登入，已批改的紀錄會保留。"
+        }
+        return "尚未註冊。App 目前使用內建的示範考卷離線運作，不會連線伺服器。"
+    }
+
+    private var signOutTitle: String {
+        method == .microsoft ? "要登出嗎？" : "要登出並取消註冊嗎？"
+    }
+
+    private var signOutConfirmLabel: String {
+        method == .microsoft ? "登出" : "登出並取消註冊"
+    }
+
+    /// Names the unrecoverable part first, and the graded papers that stay
+    /// behind second — on a shared device those are the previous teacher's,
+    /// and they have not been uploaded anywhere yet.
+    private var signOutMessage: String {
+        var lines = [method == .microsoft
+                     ? "已下載的考卷與標準答案會一併刪除，重新登入後可再次同步。"
+                     : "已下載的考卷與標準答案會一併刪除，且需要新的邀請碼才能再次註冊。"]
+        let pending = papers.papers.count
+        if pending > 0 {
+            lines.append("已批改的 \(pending) 份仍會留在這台裝置上。")
+        }
+        return lines.joined(separator: "\n")
     }
 
     @ViewBuilder

@@ -134,7 +134,8 @@ struct LoginView: View {
             let result = try await MicrosoftSignIn.run()
             guard Credentials.store(token: result.token,
                                     teacherID: result.teacherID,
-                                    teacherName: result.teacherName) else {
+                                    teacherName: result.teacherName,
+                                    method: .microsoft) else {
                 status = .failed("無法將授權寫入鑰匙圈，請重試")
                 return
             }
