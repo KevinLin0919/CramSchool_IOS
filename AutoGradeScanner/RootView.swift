@@ -54,7 +54,13 @@ private struct TabBarView: View {
         .floatingGlass(in: Capsule())
         .centeredContent(AG.Width.tabBar)
         .padding(.horizontal, 16)
-        .padding(.bottom, 6)
+        // Measured from the physical bottom, not from the safe area. Sitting
+        // above the inset put the bar 40pt clear of the screen edge, and on a
+        // floating bar that gap is just bare background — the old full-width
+        // slab hid it by running to the edge. 16pt keeps the home indicator
+        // clear while closing most of it.
+        .padding(.bottom, 16)
+        .ignoresSafeArea(edges: .bottom)
     }
 
     private func tabButton(screen: AppScreen, icon: String, label: String,

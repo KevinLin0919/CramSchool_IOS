@@ -476,56 +476,51 @@ private struct CorrectionSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 18) {
-                if let image = papers.cellImage(paper, question: answer.questionNo) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxHeight: 150)
-                        .background(Color(hex: 0xF3EEE3))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(AG.border2, lineWidth: 1))
-                }
+            ScrollView {
+                VStack(spacing: 20) {
+                    evidence
+                    currentState
 
-                HStack(spacing: 28) {
-                    labelled("裝置讀到", answer.recognized.isEmpty ? "—" : answer.recognized)
-                    labelled("標準答案", answer.expected.isEmpty ? "—" : answer.expected)
-                }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("這格學生實際寫了什麼？")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(AG.fg2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
-                VStack(spacing: 8) {
-                    Text("這格實際是")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(AG.fg2)
-
-                    HStack(spacing: 10) {
-                        if !answer.recognized.isEmpty {
-                            choice(answer.recognized)
+                        // Two candidates, each labelled with where it came
+                        // from and what picking it does. They used to be two
+                        // identical green buttons showing only a value, so
+                        // telling "what the device read" from "the standard
+                        // answer" meant matching digits against a caption row
+                        // somewhere else on the screen.
+                        HStack(spacing: 10) {
+                            if !answer.recognized.isEmpty {
+                                choice(answer.recognized, source: "裝置讀到")
+                            }
+                            if !answer.expected.isEmpty, answer.expected != answer.recognized {
+                                choice(answer.expected, source: "標準答案")
+                            }
                         }
-                        if !answer.expected.isEmpty, answer.expected != answer.recognized {
-                            choice(answer.expected)
+
+                        HStack(spacing: 8) {
+                            TextField("其他答案", text: $typed)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 16).monospaced())
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                            Button("套用") { apply(typed) }
+                                .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                     }
 
-                    HStack(spacing: 8) {
-                        TextField("其他答案", text: $typed)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 16).monospaced())
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Button("套用") { apply(typed) }
-                            .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if answer.teacherValue != nil {
+                        Button("清除修正，回到裝置判定", role: .destructive) { apply(nil) }
+                            .font(.system(size: 14))
                     }
-                    .padding(.top, 4)
                 }
-
-                if answer.teacherValue != nil {
-                    Button("取消修正，回到裝置判定", role: .destructive) { apply(nil) }
-                        .font(.system(size: 14))
-                }
-
-                Spacer()
+                .padding(20)
             }
-            .padding(20)
+            .background(AG.bg2)
             .navigationTitle("第 \(answer.questionNo) 題")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -537,29 +532,96 @@ private struct CorrectionSheet: View {
         .presentationDetents([.medium, .large])
     }
 
-    private func labelled(_ title: String, _ value: String) -> some View {
-        VStack(spacing: 3) {
-            Text(title)
-                .font(.system(size: 11))
-                .foregroundStyle(AG.fg2)
-            Text(value)
-                .font(.system(size: 22, weight: .bold).monospaced())
-                .foregroundStyle(AG.fg1)
+    /// The crop is the only evidence on this screen and everything else is a
+    /// judgement about it, so it gets the room. When there is none, say so —
+    /// a silent gap reads as a layout bug rather than as missing data.
+    @ViewBuilder
+    private var evidence: some View {
+        if let image = papers.cellImage(paper, question: answer.questionNo) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity)
+                .frame(height: 190)
+                .background(Color(hex: 0xF3EEE3))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(AG.border2, lineWidth: 1))
+        } else {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(AG.bg1)
+                .frame(height: 120)
+                .overlay {
+                    Text("這一格沒有留下裁切影像")
+                        .font(.system(size: 13))
+                        .foregroundStyle(AG.fg3)
+                }
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(AG.border2, lineWidth: 1))
         }
     }
 
-    private func choice(_ value: String) -> some View {
-        Button {
+    private var currentState: some View {
+        let verdict = answer.effectiveVerdict
+        let tint = AG.color(for: verdict)
+        let corrected = answer.teacherValue != nil
+        return HStack(spacing: 8) {
+            Image(systemName: AG.glyph(for: verdict))
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 20, height: 20)
+                .background(tint)
+                .clipShape(Circle())
+            Text(corrected
+                 ? "老師已修正為 \(answer.teacherValue ?? "")"
+                 : "裝置判定：\(answer.recognized.isEmpty ? "沒有讀到" : answer.recognized)")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(AG.fg1)
+            Spacer()
+            Text("標準答案 \(answer.expected.isEmpty ? "—" : answer.expected)")
+                .font(.system(size: 13).monospaced())
+                .foregroundStyle(AG.fg2)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(tint.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Says the value, where it came from, and what happens if it is chosen.
+    ///
+    /// The consequence matters because the question being asked is not "is
+    /// this right" — it is "what did the student write". The verdict follows
+    /// from the answer, and showing which way it will fall is what stops the
+    /// teacher having to work that out from two bare numbers.
+    private func choice(_ value: String, source: String) -> some View {
+        let becomesCorrect = AnswerKind.canonical(value) == AnswerKind.canonical(answer.expected)
+        let tint = becomesCorrect ? AG.ok : AG.bad
+        let isCurrent = answer.teacherValue == value
+        return Button {
             apply(value)
         } label: {
-            Text(value)
-                .font(.system(size: 20, weight: .bold).monospaced())
-                .foregroundStyle(.white)
-                .frame(minWidth: 74)
-                .frame(height: 48)
-                .background(AG.brand)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+            VStack(spacing: 5) {
+                Text(value)
+                    .font(.system(size: 26, weight: .bold).monospaced())
+                    .foregroundStyle(AG.fg1)
+                Text(source)
+                    .font(.system(size: 11))
+                    .foregroundStyle(AG.fg2)
+                HStack(spacing: 3) {
+                    Image(systemName: becomesCorrect ? "checkmark" : "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                    Text(becomesCorrect ? "改為正確" : "仍算錯誤")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundStyle(tint)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(AG.bg1)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14)
+                .stroke(isCurrent ? tint : AG.border2, lineWidth: isCurrent ? 2 : 1))
         }
+        .buttonStyle(.plain)
     }
 
     private func apply(_ value: String?) {
