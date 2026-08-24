@@ -81,8 +81,7 @@ struct ResultsView: View {
     // read.
     private func content(_ paper: StoredPaper) -> some View {
         RegularWidth { isRegular in
-            VStack(spacing: 0) {
-                topNav(paper)
+            ZStack(alignment: .top) {
                 // The nav stays put; only the paper slides. Reaching for two
                 // small arrows at the top of the screen to step through a
                 // stack is the wrong shape of gesture for the job — the thing
@@ -94,19 +93,29 @@ struct ResultsView: View {
                         removal: .move(edge: swipeForward ? .leading : .trailing)))
                     .clipped()
                     .simultaneousGesture(swipeGesture)
+
+                // Floats, rather than sitting in a stack above the content.
+                // That is what gives the glass something to sample: a bar over
+                // a flat background has nothing to refract and may as well be
+                // a tinted rectangle.
+                topNav(paper)
             }
             .background(AG.bg2)
         }
     }
 
+    /// Leaves room at the top for the floating nav, inside the scroll rather
+    /// than outside it, so content passes underneath instead of stopping short.
+    private static let navInset: CGFloat = 46
+
     @ViewBuilder
     private func paperBody(_ paper: StoredPaper, isRegular: Bool) -> some View {
         if isRegular {
             HStack(alignment: .top, spacing: 0) {
-                ScrollView { sheetPanel(paper).padding(16) }
+                ScrollView { sheetPanel(paper).padding(16).padding(.top, Self.navInset) }
                     .frame(maxWidth: .infinity)
                 Rectangle().fill(AG.border2).frame(width: 1)
-                ScrollView { cellPanel(paper).padding(16) }
+                ScrollView { cellPanel(paper).padding(16).padding(.top, Self.navInset) }
                     .frame(width: 380)
             }
         } else {
@@ -116,6 +125,7 @@ struct ResultsView: View {
                     cellPanel(paper)
                 }
                 .padding(16)
+                .padding(.top, Self.navInset)
                 .padding(.bottom, 80)
             }
         }
@@ -380,8 +390,8 @@ struct ResultsView: View {
                     .foregroundStyle(AG.brand)
             }
         }
-        .padding(.horizontal, 16)
-        .frame(height: 46)
+        .padding(.horizontal, 14)
+        .frame(height: 44)
         // Centred as an overlay rather than between two Spacers: the left
         // button carries an icon and two words, the right a single glyph, so
         // spacers split the leftover space unevenly and push the counter off
@@ -400,11 +410,12 @@ struct ResultsView: View {
                 }
             }
         }
-        .background(AG.bg1)
-        .overlay(alignment: .bottom) { AG.border1.frame(height: 0.5) }
+        .floatingGlass(in: Capsule())
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
         .confirmationDialog("清除這一疊批改結果？", isPresented: $showsClearConfirm,
                             titleVisibility: .visible) {
-            Button("清除 \(papers.papers.count) 張", role: .destructive) {
+            Button("清除 \(papers.papers.count) 份", role: .destructive) {
                 papers.clearAll()
                 index = 0
             }

@@ -125,3 +125,29 @@ struct RegularWidth<Content: View>: View {
         content(sizeClass == .regular)
     }
 }
+
+// MARK: - Liquid Glass
+
+extension View {
+    /// Liquid Glass where the OS has it, the material it replaced where it
+    /// does not.
+    ///
+    /// The app deploys to iOS 17 and builds against the iOS 26 SDK, so system
+    /// surfaces — every Form, sheet, alert and navigation bar — already render
+    /// as glass on a current device while anything hand-rolled here does not.
+    /// This is what closes that gap for the hand-rolled chrome, in one place,
+    /// so call sites do not each carry their own availability fork.
+    ///
+    /// Only for surfaces that FLOAT over content. Glass earns its cost by
+    /// sampling what passes beneath it; over a flat background it is an
+    /// expensive way to draw a slightly tinted rectangle.
+    @ViewBuilder
+    func floatingGlass(in shape: some Shape) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular, in: shape)
+        } else {
+            self.background(shape.fill(.ultraThinMaterial))
+                .overlay(shape.stroke(AG.border1, lineWidth: 0.5))
+        }
+    }
+}

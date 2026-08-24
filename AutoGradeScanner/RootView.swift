@@ -49,18 +49,12 @@ private struct TabBarView: View {
             tabButton(screen: .results, icon: "chart.bar", label: "結果",
                       disabled: papers.papers.isEmpty)
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .floatingGlass(in: Capsule())
         .centeredContent(AG.Width.tabBar)
-        .padding(.horizontal, 8)
-        .padding(.top, 6)
-        .padding(.bottom, 2)
-        .background(
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .overlay(alignment: .top) {
-                    AG.border1.frame(height: 0.5)
-                }
-                .ignoresSafeArea(edges: .bottom)
-        )
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
     }
 
     private func tabButton(screen: AppScreen, icon: String, label: String,
@@ -84,15 +78,15 @@ private struct TabBarView: View {
         .disabled(disabled)
     }
 
-    // Sits in the bar rather than on top of it.
+    // Solid, not glass, and that is a constraint rather than a preference:
+    // glass cannot sample other glass, so a glass circle sitting inside the
+    // glass bar would render as an artifact rather than a button. Two glass
+    // shapes may sit BESIDE each other inside a `GlassEffectContainer`, but
+    // this one belongs in the middle of the row, which means overlapping.
     //
-    // It used to be lifted 6pt and ringed in `bg2` to read as a raised button.
-    // Two things went wrong with that. The ring is opaque light grey over the
-    // bar's translucent material, so it read as a halo rather than a cut-out;
-    // and lifting the circle brought its top edge to within half a point of
-    // the bar's hairline, which then looked like a line drawn across the
-    // button. Sitting it flush costs the raised look and buys back the height
-    // that was making the bar feel top-heavy with empty space beneath it.
+    // Solid brand also keeps the one saturated colour in the app doing its
+    // job: on a surface that takes its colour from whatever scrolls beneath
+    // it, the fixed green is what stays recognisable.
     private var scanButton: some View {
         Button {
             model.screen = .scan
