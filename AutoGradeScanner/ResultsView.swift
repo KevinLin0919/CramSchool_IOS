@@ -28,6 +28,9 @@ struct ResultsView: View {
     @State private var masters: [UIImage] = []
     @State private var pageLabels: [String] = []
     @State private var shownPage = 0
+    /// Which way the next paper should come in from. Set before the index
+    /// moves so the transition matches the direction of the gesture.
+    @State private var swipeForward = true
     @State private var loadedTemplate: Int?
     @State private var showsClearConfirm = false
 
@@ -80,27 +83,63 @@ struct ResultsView: View {
         RegularWidth { isRegular in
             VStack(spacing: 0) {
                 topNav(paper)
-                if isRegular {
-                    HStack(alignment: .top, spacing: 0) {
-                        ScrollView { sheetPanel(paper).padding(16) }
-                            .frame(maxWidth: .infinity)
-                        Rectangle().fill(AG.border2).frame(width: 1)
-                        ScrollView { cellPanel(paper).padding(16) }
-                            .frame(width: 380)
-                    }
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 18) {
-                            sheetPanel(paper)
-                            cellPanel(paper)
-                        }
-                        .padding(16)
-                        .padding(.bottom, 80)
-                    }
-                }
+                // The nav stays put; only the paper slides. Reaching for two
+                // small arrows at the top of the screen to step through a
+                // stack is the wrong shape of gesture for the job — the thing
+                // being flipped through is the full-width panel below.
+                paperBody(paper, isRegular: isRegular)
+                    .id(paper.id)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: swipeForward ? .trailing : .leading),
+                        removal: .move(edge: swipeForward ? .leading : .trailing)))
+                    .clipped()
+                    .simultaneousGesture(swipeGesture)
             }
             .background(AG.bg2)
         }
+    }
+
+    @ViewBuilder
+    private func paperBody(_ paper: StoredPaper, isRegular: Bool) -> some View {
+        if isRegular {
+            HStack(alignment: .top, spacing: 0) {
+                ScrollView { sheetPanel(paper).padding(16) }
+                    .frame(maxWidth: .infinity)
+                Rectangle().fill(AG.border2).frame(width: 1)
+                ScrollView { cellPanel(paper).padding(16) }
+                    .frame(width: 380)
+            }
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    sheetPanel(paper)
+                    cellPanel(paper)
+                }
+                .padding(16)
+                .padding(.bottom, 80)
+            }
+        }
+    }
+
+    /// Simultaneous rather than exclusive, so the crops list still scrolls.
+    /// The cost of that is this gesture also sees every vertical flick, which
+    /// is why it insists the movement was clearly sideways before acting —
+    /// scrolling a long list at a slight angle is the common gesture here, and
+    /// turning that into a page change would be maddening.
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onEnded { value in
+                guard abs(value.translation.width) > 60,
+                      abs(value.translation.width) > abs(value.translation.height) * 1.5
+                else { return }
+                goTo(index + (value.translation.width < 0 ? 1 : -1))
+            }
+    }
+
+    private func goTo(_ target: Int) {
+        guard papers.papers.indices.contains(target), target != index else { return }
+        swipeForward = target > index
+        withAnimation(.spring(duration: 0.32)) { index = target }
     }
 
     // MARK: - Top: the master sheet with boxes
@@ -349,15 +388,15 @@ struct ResultsView: View {
         // centre by the difference.
         .overlay {
             HStack(spacing: 12) {
-                pagerButton("chevron.left", enabled: index > 0) { index -= 1 }
+                pagerButton("chevron.left", enabled: index > 0) { goTo(index - 1) }
                 // Paging is by position in the stack. Which student a paper
                 // belongs to is not recorded yet, and guessing would put a
                 // name on a record nobody verified.
-                Text("第 \(index + 1) / \(papers.papers.count) 張")
+                Text("第 \(index + 1) / \(papers.papers.count) 份")
                     .font(.system(size: 14, weight: .semibold).monospacedDigit())
                     .foregroundStyle(AG.fg1)
                 pagerButton("chevron.right", enabled: index < papers.papers.count - 1) {
-                    index += 1
+                    goTo(index + 1)
                 }
             }
         }

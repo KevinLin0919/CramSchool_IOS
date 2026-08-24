@@ -51,8 +51,8 @@ private struct TabBarView: View {
         }
         .centeredContent(AG.Width.tabBar)
         .padding(.horizontal, 8)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
         .background(
             Rectangle()
                 .fill(.ultraThinMaterial)
@@ -70,9 +70,10 @@ private struct TabBarView: View {
             guard !disabled else { return }
             model.screen = screen
         } label: {
-            VStack(spacing: 3) {
+            VStack(spacing: 2) {
                 Image(systemName: icon)
-                    .font(.system(size: 22, weight: isActive ? .semibold : .regular))
+                    .font(.system(size: 21, weight: isActive ? .semibold : .regular))
+                    .frame(height: 44)
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
             }
@@ -83,6 +84,15 @@ private struct TabBarView: View {
         .disabled(disabled)
     }
 
+    // Sits in the bar rather than on top of it.
+    //
+    // It used to be lifted 6pt and ringed in `bg2` to read as a raised button.
+    // Two things went wrong with that. The ring is opaque light grey over the
+    // bar's translucent material, so it read as a halo rather than a cut-out;
+    // and lifting the circle brought its top edge to within half a point of
+    // the bar's hairline, which then looked like a line drawn across the
+    // button. Sitting it flush costs the raised look and buys back the height
+    // that was making the bar feel top-heavy with empty space beneath it.
     private var scanButton: some View {
         Button {
             model.screen = .scan
@@ -91,13 +101,10 @@ private struct TabBarView: View {
                 ZStack {
                     Circle()
                         .fill(AG.brand)
-                        .frame(width: 50, height: 50)
-                        .shadow(color: AG.brand.opacity(0.35), radius: 9, y: 8)
-                        .overlay(
-                            Circle().stroke(AG.bg2, lineWidth: 3)
-                        )
+                        .frame(width: 44, height: 44)
+                        .shadow(color: AG.brand.opacity(0.28), radius: 6, y: 3)
                     Image(systemName: "viewfinder")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.white)
                 }
                 Text("掃描")
@@ -105,7 +112,6 @@ private struct TabBarView: View {
                     .foregroundStyle(model.screen == .scan ? AG.brand : AG.fg2)
             }
             .frame(maxWidth: .infinity)
-            .offset(y: -6)
         }
     }
 }
