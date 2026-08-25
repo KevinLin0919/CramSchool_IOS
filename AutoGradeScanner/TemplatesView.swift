@@ -33,13 +33,14 @@ struct TemplatesView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            VStack(spacing: 0) {
-                header
-                listArea
-            }
-            startButton
+        VStack(spacing: 0) {
+            header
+            listArea
         }
+        // Overlaid for the same reason the tab bar is: it hangs past the safe
+        // area, and as a ZStack sibling that would have stretched the stack to
+        // the physical bottom and taken the list down with it.
+        .overlay(alignment: .bottom) { startButton }
         .background(AG.bg2)
         .task {
             if model.templates.isEmpty {
@@ -503,13 +504,22 @@ struct TemplatesView: View {
         }
         .centeredContent(AG.Width.action)
         .padding(.horizontal, 16)
-        .padding(.bottom, 76)
         .frame(maxWidth: .infinity)
         .background(
             LinearGradient(colors: [AG.bg2.opacity(0), AG.bg2.opacity(0.98), AG.bg2],
                            startPoint: .top, endPoint: .bottom)
             .allowsHitTesting(false)
         )
+        // Measured from the physical bottom, the same reference the tab bar
+        // uses, so the gap between them is a fixed 16pt on every device. Read
+        // off the safe area instead and it would be 16pt here and none at all
+        // on a phone without a home indicator.
+        //
+        // The gradient stops above this padding rather than filling it, so the
+        // list stays visible in the strip the bar floats over — which is what
+        // gives the glass something to sample on this screen.
+        .padding(.bottom, 88)
+        .ignoresSafeArea(edges: .bottom)
     }
 }
 

@@ -15,19 +15,27 @@ struct RootView: View {
     }
 
     private var main: some View {
-        ZStack(alignment: .bottom) {
-            Group {
-                switch model.screen {
-                case .templates:
-                    TemplatesView()
-                case .scan:
-                    ScannerView()
-                case .results:
-                    ResultsView()
-                }
+        Group {
+            switch model.screen {
+            case .templates:
+                TemplatesView()
+            case .scan:
+                ScannerView()
+            case .results:
+                ResultsView()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // An overlay, not a sibling in a ZStack.
+        //
+        // The bar reaches past the safe area to sit near the home indicator,
+        // and inside a ZStack that expanded the whole stack to the physical
+        // bottom — which the SCREEN then inherited. Its own bottom-anchored
+        // controls, positioned against what they thought was the safe area,
+        // dropped by the height of the inset and landed under the bar. An
+        // overlay is sized by what it covers, so it can hang below without
+        // moving anything.
+        .overlay(alignment: .bottom) {
             if model.screen != .scan {
                 TabBarView()
             }
