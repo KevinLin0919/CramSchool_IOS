@@ -265,6 +265,45 @@ final class APIClient {
         let height: Int
     }
 
+    // MARK: - Grading results
+
+    struct SessionAnswer: Encodable {
+        let question_no: Int
+        let expected: String
+        let recognized: String?
+        let verdict: String
+        let teacher_value: String?
+        let cell_image_id: Int?
+    }
+
+    struct SessionPayload: Encodable {
+        let template_id: Int
+        let student_id: Int?
+        let image_id: Int?
+        let scanned_at: String
+        let app_version: String?
+        let answers: [SessionAnswer]
+    }
+
+    /// PUT on the UUID the device minted, so a retry after a dropped response
+    /// lands on the row the first attempt created rather than making a second
+    /// copy of the same paper. The same call carries a teacher's later
+    /// corrections: re-sending updates in place.
+    func upsertSession(clientUUID: UUID, _ payload: SessionPayload) async throws {
+        var request = try makeRequest(path: "/api/v1/grading-sessions/\(clientUUID.uuidString.lowercased())",
+                                      method: "PUT")
+        try json(&request, body: payload)
+        _ = try await send(request)
+    }
+
+    /// Bundle version and build, trimmed to what the server will store.
+    static var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return String("\(short) (\(build))".prefix(40))
+    }
+
     // MARK: - Template creation
 
     struct NewBox: Encodable {

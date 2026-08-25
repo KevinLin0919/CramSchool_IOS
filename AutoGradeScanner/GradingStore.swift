@@ -30,6 +30,36 @@ struct StoredPaper: Codable, Identifiable, Equatable {
     var total: Int { answers.count }
 
     var needsReview: Bool { unsureCount > 0 }
+
+    // MARK: - Upload
+
+    /// When this paper reached the server. Nil means it has not, which is the
+    /// only state the queue acts on.
+    var uploadedAt: Date?
+    var uploadAttempts: Int?
+    var lastUploadError: String?
+
+    /// Set when the server has told us this paper can never be accepted — its
+    /// template was deleted, say. Retrying that forever would burn battery to
+    /// collect the same refusal, and hide the papers that could still succeed.
+    var uploadBlocked: Bool?
+
+    /// Graded against a bundled demo sheet, whose template exists on no
+    /// server. Recorded when the paper is filed rather than inferred later:
+    /// someone can look around in 示範模式, enrol afterwards, and those papers
+    /// would otherwise queue up and fail forever against a template id that
+    /// was never real.
+    var isDemo: Bool?
+
+    /// Bumped whenever the record changes in a way the server needs to see.
+    /// An upload carries the generation it started from; if a correction lands
+    /// while the request is in flight, the reply no longer matches and is
+    /// discarded rather than marking a stale version as delivered.
+    var revision: Int?
+
+    var needsUpload: Bool {
+        uploadedAt == nil && uploadBlocked != true && isDemo != true
+    }
 }
 
 struct StoredAnswer: Codable, Equatable, Identifiable {
@@ -146,6 +176,7 @@ final class GradingStore: ObservableObject {
         } else {
             papers.append(paper)
         }
+        UploadQueue.shared.drain()
     }
 
     /// A teacher's correction. Rewrites only the record — the crop is what the
@@ -157,6 +188,38 @@ final class GradingStore: ObservableObject {
 
         let trimmed = value?.trimmingCharacters(in: .whitespaces)
         papers[index].answers[answer].teacherValue = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        // The server has a stale copy now. Re-uploading the same UUID updates
+        // it in place, which is exactly what the upload endpoint is built for.
+        papers[index].uploadedAt = nil
+        papers[index].revision = (papers[index].revision ?? 0) + 1
+        writeRecord(papers[index])
+        UploadQueue.shared.drain()
+    }
+
+    // MARK: - Upload bookkeeping
+
+    var pendingUploadCount: Int { papers.filter(\.needsUpload).count }
+
+    /// Papers that will never upload, so the reason can be shown once rather
+    /// than retried forever.
+    var blockedUploadCount: Int { papers.filter { $0.uploadBlocked == true }.count }
+
+    func markUploaded(_ id: UUID, revision: Int) {
+        guard let index = papers.firstIndex(where: { $0.id == id }) else { return }
+        // A correction landing while the request was in flight bumped the
+        // revision. The reply describes a version of this paper that no longer
+        // exists, so it cannot be allowed to mark it delivered.
+        guard (papers[index].revision ?? 0) == revision else { return }
+        papers[index].uploadedAt = Date()
+        papers[index].lastUploadError = nil
+        writeRecord(papers[index])
+    }
+
+    func markUploadFailed(_ id: UUID, error: String, permanent: Bool) {
+        guard let index = papers.firstIndex(where: { $0.id == id }) else { return }
+        papers[index].uploadAttempts = (papers[index].uploadAttempts ?? 0) + 1
+        papers[index].lastUploadError = error
+        if permanent { papers[index].uploadBlocked = true }
         writeRecord(papers[index])
     }
 
@@ -214,6 +277,11 @@ final class GradingStore: ObservableObject {
                         [$0.minX, $0.minY, $0.width, $0.height]
                     },
                     pageIndex: answer.pageIndex)
-            })
+            },
+            // Stamped now rather than worked out at upload time. Someone can
+            // look around in 示範模式, enrol afterwards, and by then nothing
+            // distinguishes those papers from real ones except this.
+            isDemo: DemoData.isEnabled ? true : nil,
+            revision: 0)
     }
 }

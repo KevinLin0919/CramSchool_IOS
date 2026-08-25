@@ -29,6 +29,7 @@ struct SettingsView: View {
     @State private var enrolled = Credentials.isEnrolled
     @State private var method = Credentials.enrolmentMethod
     @StateObject private var papers = GradingStore.shared
+    @StateObject private var uploads = UploadQueue.shared
 
     private enum TestState: Equatable {
         case idle
@@ -223,9 +224,13 @@ struct SettingsView: View {
         var lines = [method == .microsoft
                      ? "已下載的考卷與標準答案會一併刪除，重新登入後可再次同步。"
                      : "已下載的考卷與標準答案會一併刪除，且需要新的邀請碼才能再次註冊。"]
-        let pending = papers.papers.count
+        // Not "how many papers are here" — how many would be stranded. Once
+        // the token is revoked nothing on this device can send them, and no
+        // later sign-in helps: the queue authenticates as whoever holds the
+        // credential now.
+        let pending = papers.pendingUploadCount
         if pending > 0 {
-            lines.append("已批改的 \(pending) 份仍會留在這台裝置上。")
+            lines.append("有 \(pending) 份批改結果還沒上傳，登出後將無法再上傳。")
         }
         return lines.joined(separator: "\n")
     }
@@ -268,6 +273,23 @@ struct SettingsView: View {
                     Text(message)
                         .font(.system(size: 13))
                         .foregroundStyle(AG.bad)
+                }
+
+                // Appears only while there is a problem. Upload is plumbing;
+                // when it works there is nothing here worth a teacher's
+                // attention, and a permanent "0 待上傳" would be one more thing
+                // on screen that never says anything.
+                if papers.pendingUploadCount > 0 {
+                    LabeledContent("待上傳") {
+                        Text("\(papers.pendingUploadCount) 份")
+                            .font(.system(size: 15).monospacedDigit())
+                            .foregroundStyle(AG.fg2)
+                    }
+                }
+                if let error = uploads.haltedReason {
+                    Text(error)
+                        .font(.system(size: 13))
+                        .foregroundStyle(AG.warn)
                 }
             } header: {
                 Text("考卷同步")

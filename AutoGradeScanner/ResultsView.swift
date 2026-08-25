@@ -420,7 +420,11 @@ struct ResultsView: View {
                 index = 0
             }
         } message: {
-            Text("這些結果尚未上傳到伺服器，清除後無法復原。")
+            // The one place on this screen where upload state changes a
+            // decision, so the one place it is mentioned.
+            Text(papers.pendingUploadCount > 0
+                 ? "其中 \(papers.pendingUploadCount) 份還沒上傳到伺服器，清除後無法復原。"
+                 : "這些結果都已上傳到伺服器，這裡只清除裝置上的紀錄。")
         }
     }
 
