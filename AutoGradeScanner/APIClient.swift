@@ -47,7 +47,7 @@ enum APIError: LocalizedError {
     case notConfigured
     case badURL
     case unauthorized
-    case badStatus(Int)
+    case badStatus(Int, detail: String?)
     case badPayload
     case imageEncoding
 
@@ -56,7 +56,11 @@ enum APIError: LocalizedError {
         case .notConfigured: return "尚未設定伺服器位址，請至設定填寫"
         case .badURL: return "伺服器位址無效，請至設定檢查"
         case .unauthorized: return "裝置未註冊或授權已撤銷，請重新註冊"
-        case .badStatus(let code): return "伺服器回應錯誤（\(code)）"
+        case .badStatus(let code, let detail):
+            // The server almost always says something more useful than the
+            // number — "邀請碼無效或已使用" rather than 400. Dropping it left
+            // people staring at a code that named the failure to nobody.
+            return detail.map { "\($0)（\(code)）" } ?? "伺服器回應錯誤（\(code)）"
         case .badPayload: return "無法解析伺服器回應"
         case .imageEncoding: return "圖片編碼失敗"
         }
@@ -133,7 +137,7 @@ final class APIClient {
             throw APIError.unauthorized
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw APIError.badStatus(http.statusCode)
+            throw APIError.badStatus(http.statusCode, detail: Self.serverDetail(from: data))
         }
         return data
     }
@@ -179,12 +183,12 @@ final class APIClient {
     /// clears the credential either way, so a long wait buys nothing but a
     /// teacher watching a spinner while handing over an iPad.
     func revokeThisDevice() async throws {
-        var request = try makeRequest(path: "/auth/logout", method: "POST")
+        var request = try makeRequest(path: "/api/v1/auth/logout", method: "POST")
         request.timeoutInterval = 8
-        let (_, response) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) || http.statusCode == 401 else {
-            throw APIError.badStatus(http.statusCode)
+            throw APIError.badStatus(http.statusCode, detail: Self.serverDetail(from: data))
         }
     }
 
@@ -349,7 +353,7 @@ final class APIClient {
     private func sendPlain(_ request: URLRequest) async throws -> Data {
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw APIError.badStatus(http.statusCode)
+            throw APIError.badStatus(http.statusCode, detail: Self.serverDetail(from: data))
         }
         return data
     }

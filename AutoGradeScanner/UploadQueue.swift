@@ -85,13 +85,13 @@ final class UploadQueue: ObservableObject {
             haltedReason = "裝置授權已失效，重新登入後會繼續上傳"
             return true
 
-        case .badStatus(let code) where code == 400:
+        case .badStatus(let code, let detail) where code == 400:
             // The server rejected the paper itself, not the attempt: its
             // template was deleted, or an image it references is gone.
             // Retrying collects the same refusal forever and buries the papers
             // that could still succeed.
             store.markUploadFailed(paper.id,
-                                   error: "伺服器不接受這份紀錄（考卷模板可能已刪除）",
+                                   error: detail ?? "伺服器不接受這份紀錄（考卷模板可能已刪除）",
                                    permanent: true)
             return false
 
