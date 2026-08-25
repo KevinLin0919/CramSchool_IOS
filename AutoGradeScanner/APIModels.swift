@@ -153,9 +153,11 @@ struct TemplateIndex: Codable {
     ///
     /// 2: masters could be left over from a different server's ids, or half
     ///    written by a sync that lost the connection partway.
+    /// 3: version 2 rebuilt the cache, but the re-download was answered out of
+    ///    URLSession's own store — so it rebuilt it from the same stale bytes.
     var version: Int?
 
-    static let current = 2
+    static let current = 3
 
     static let empty = TemplateIndex(cursor: nil, templates: [], version: current)
 }

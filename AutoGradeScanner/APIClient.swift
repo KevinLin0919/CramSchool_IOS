@@ -215,9 +215,21 @@ final class APIClient {
     }
 
     func masterImage(templateID: Int, page: Int = 0, width: Int) async throws -> Data {
-        let request = try makeRequest(path: "/api/v1/templates/\(templateID)/master",
+        var request = try makeRequest(path: "/api/v1/templates/\(templateID)/master",
                                       query: [URLQueryItem(name: "w", value: String(width)),
                                               URLQueryItem(name: "page", value: String(page))])
+        // Go to the server, whatever URLSession thinks it already has.
+        //
+        // This path is not content-addressed: replace a template's page and
+        // the same URL serves a different sheet. The server used to answer it
+        // with a year of `immutable`, so URLSession kept handing back the
+        // previous server's master from its own store and never sent a
+        // request — a template that had visibly changed everywhere else went
+        // on rendering the old paper, with nothing in any log to show for it.
+        //
+        // `TemplateStore` keeps its own copy on disk and decides for itself
+        // when to re-fetch, so the HTTP cache was never buying anything here.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         return try await send(request)
     }
 
