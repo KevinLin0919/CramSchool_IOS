@@ -143,5 +143,19 @@ struct TemplateIndex: Codable {
     var cursor: String?
     var templates: [TemplateSummaryDTO]
 
-    static let empty = TemplateIndex(cursor: nil, templates: [])
+    /// What the cache on disk was written by.
+    ///
+    /// A sync is incremental and trusts what it already has, so a cache that
+    /// went wrong stays wrong: nothing revisits a template whose revision has
+    /// not moved. Bumping this is the way to say "whatever is down there, do
+    /// not trust it" and have every device rebuild on next launch — without
+    /// which the only cure for a bad cache is for the teacher to sign out.
+    ///
+    /// 2: masters could be left over from a different server's ids, or half
+    ///    written by a sync that lost the connection partway.
+    var version: Int?
+
+    static let current = 2
+
+    static let empty = TemplateIndex(cursor: nil, templates: [], version: current)
 }

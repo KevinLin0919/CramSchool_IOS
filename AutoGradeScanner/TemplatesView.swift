@@ -531,7 +531,8 @@ private struct TemplatePreviewSheet: View {
 
     @State private var answers: [String] = []
     @State private var loaded = false
-    @State private var master: UIImage?
+    @State private var resolved: ResolvedTemplate?
+    @State private var failure: String?
 
     var body: some View {
         NavigationStack {
@@ -552,22 +553,47 @@ private struct TemplatePreviewSheet: View {
 
     @ViewBuilder
     private var content: some View {
-        if let master {
-            // The master sheet as the scanner will see it — the same cached
-            // copy, so a preview that renders proves the template can also be
-            // graded offline.
+        if let resolved {
+            // Every page, in order — a two-sided paper that previews as one
+            // sheet is indistinguishable from a two-sided paper that only
+            // half synced, which is exactly how a stale master went unnoticed.
             ScrollView {
-                Image(uiImage: master)
-                    .resizable()
-                    .scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(16)
+                VStack(spacing: 20) {
+                    ForEach(resolved.pages, id: \.index) { page in
+                        VStack(alignment: .leading, spacing: 8) {
+                            if resolved.pageCount > 1 {
+                                Text(resolved.pageLabel(page.index))
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(AG.fg2)
+                                    .padding(.horizontal, 4)
+                            }
+                            Image(uiImage: page.master)
+                                .resizable()
+                                .scaledToFit()
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                }
+                .padding(16)
             }
         } else if loaded {
-            // No master cached: show the answer key rather than an empty page.
-            AnswerSheetSchematic(title: template.fullTitle,
-                                 subject: template.subject,
-                                 answers: answers)
+            // No master cached: show the answer key rather than an empty page,
+            // and say why the sheet itself is missing. Silence here is how a
+            // half-synced template passed for a one-page paper.
+            VStack(spacing: 0) {
+                if let failure {
+                    Text(failure)
+                        .font(.system(size: 13))
+                        .foregroundStyle(AG.fg2)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                }
+                AnswerSheetSchematic(title: template.fullTitle,
+                                     subject: template.subject,
+                                     answers: answers)
+            }
         } else {
             ProgressView().tint(AG.brand)
         }
@@ -578,9 +604,12 @@ private struct TemplatePreviewSheet: View {
         // Resolving goes through the same cache the scanner uses, so this
         // works with no network once the template has synced — and an
         // AsyncImage could not have carried the bearer token anyway.
-        if let resolved = try? await TemplateStore.shared.resolve(id: template.id) {
-            master = resolved.master
-            answers = resolved.expected
+        do {
+            let detail = try await TemplateStore.shared.resolve(id: template.id)
+            resolved = detail
+            answers = detail.expected
+        } catch {
+            failure = error.localizedDescription
         }
         loaded = true
     }

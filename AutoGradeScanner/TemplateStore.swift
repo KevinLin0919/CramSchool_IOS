@@ -111,6 +111,9 @@ final class TemplateStore: ObservableObject {
 
     private var index = TemplateIndex.empty
 
+    /// The sync currently on the wire, if any. See `refresh()`.
+    private var inFlight: Task<Void, Never>?
+
     private init() {
         loadFromDisk()
     }
@@ -150,13 +153,22 @@ final class TemplateStore: ObservableObject {
         ensureDirectories()
         if let data = try? Data(contentsOf: indexURL),
            let decoded = try? JSONDecoder().decode(TemplateIndex.self, from: data) {
-            index = decoded
+            if decoded.version == TemplateIndex.current {
+                index = decoded
+            } else {
+                // Written by a build whose cache cannot be trusted. Drop it
+                // and sync from scratch: a few hundred KB once, against a
+                // template that silently renders the wrong sheet forever.
+                purge()
+                return
+            }
         }
         publish()
     }
 
     private func saveIndex() {
         ensureDirectories()
+        index.version = TemplateIndex.current
         guard let data = try? JSONEncoder().encode(index) else { return }
         try? data.write(to: indexURL, options: .atomic)
     }
@@ -170,7 +182,33 @@ final class TemplateStore: ObservableObject {
 
     // MARK: - Sync
 
+    /// One sync at a time, and callers that arrive mid-flight wait for the one
+    /// already running rather than starting a second.
+    ///
+    /// The app asks for a refresh from several places at once on launch — the
+    /// templates screen appearing, the credential notification firing — which
+    /// put two syncs on the wire downloading the same masters over each other.
+    ///
+    /// The work runs in an unstructured `Task` on purpose. A sync started from
+    /// a SwiftUI `.task` is cancelled when that view goes away, and a master
+    /// download aborted halfway leaves the cache in exactly the state this
+    /// file spent a day untangling. Detaching it from the caller's lifetime
+    /// means leaving a screen no longer half-writes the cache.
     func refresh() async {
+        if let existing = inFlight {
+            await existing.value
+            return
+        }
+        let task = Task { await self.performRefresh() }
+        inFlight = task
+        await task.value
+        // Only if it is still ours. `purge` cancels and clears mid-flight, and
+        // a new sync may already have taken the slot by the time we wake up;
+        // clearing that one would let a third caller start a duplicate.
+        if inFlight == task { inFlight = nil }
+    }
+
+    private func performRefresh() async {
         guard Credentials.isEnrolled else {
             syncError = "尚未註冊裝置"
             return
@@ -230,21 +268,27 @@ final class TemplateStore: ObservableObject {
     private func cacheDetail(id: Int) async throws -> TemplateDetailDTO {
         let detail = try await APIClient.shared.templateDetail(id: id)
         ensureDirectories()
+
+        // Every master first, and a failure is allowed to escape.
+        //
+        // The detail file is what `isDetailStale` reads to decide there is
+        // nothing to do, so writing it before the images are safely down
+        // records a template as current while a page of it is still missing —
+        // and nothing ever retries. That is not hypothetical: one page landed,
+        // the other lost its connection, and the template went on rendering
+        // the previous server's sheet with no way back.
+        //
+        // `force` because the filename is the server's image id, which is
+        // unique only within one database. Rebuild the server and template 2
+        // is a different paper wearing the same numbers, so "2_1600.jpg
+        // exists" answers a question nobody asked. Reaching here at all means
+        // the template is not what we last saw; its pages are not either.
+        for page in detail.pages {
+            try await cacheMaster(templateID: id, page: page, force: true)
+        }
+
         if let data = try? JSONEncoder().encode(detail) {
             try? data.write(to: detailURL(id), options: .atomic)
-        }
-        // Re-fetch the masters too, without asking whether a file with that
-        // name is already there.
-        //
-        // This runs only when the detail was missing or its revision moved —
-        // in other words, when the template is not what we last saw. The image
-        // id inside it is assigned by the server and is unique only within one
-        // database, so "a file called 2_1600.jpg exists" says nothing about
-        // whether it is THIS template's page. Rebuild the server and template
-        // 2 becomes a different paper wearing the same numbers; the app went
-        // on drawing the old sheet, and drew it confidently.
-        for page in detail.pages {
-            try? await cacheMaster(templateID: id, page: page, force: true)
         }
         return detail
     }
@@ -259,8 +303,17 @@ final class TemplateStore: ObservableObject {
         let data = try await APIClient.shared.masterImage(templateID: templateID,
                                                           page: page.pageIndex,
                                                           width: Self.masterWidth)
+        // Decode before storing. A truncated body still writes a file, and a
+        // file is all the rest of this class checks for — so a bad download
+        // would be indistinguishable from a good one until the scanner had
+        // nothing to align against.
+        guard UIImage(data: data) != nil else {
+            throw TemplateStoreError.masterUnavailable
+        }
         ensureDirectories()
-        try? data.write(to: url, options: .atomic)
+        // Not `try?`: the caller decides a template is fully cached by whether
+        // this returned, so a write that failed has to say so.
+        try data.write(to: url, options: .atomic)
     }
 
     // MARK: - Resolving
@@ -342,6 +395,11 @@ final class TemplateStore: ObservableObject {
     /// Drops every cached template. Used when a device is un-enrolled — the
     /// answer keys should not outlive the credential that fetched them.
     func purge() {
+        // Stop any sync first. It is holding the ids of the server we are
+        // throwing away, and letting it finish would write those files back in
+        // behind us — which is the whole failure this purge exists to undo.
+        inFlight?.cancel()
+        inFlight = nil
         try? FileManager.default.removeItem(at: root)
         index = .empty
         ensureDirectories()
