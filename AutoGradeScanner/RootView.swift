@@ -58,7 +58,7 @@ private struct TabBarView: View {
                       disabled: papers.papers.isEmpty)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.vertical, AG.tabBarPadding)
         .floatingGlass(in: Capsule())
         .centeredContent(AG.Width.tabBar)
         .padding(.horizontal, 16)
@@ -85,10 +85,10 @@ private struct TabBarView: View {
             guard !disabled else { return }
             model.screen = screen
         } label: {
-            VStack(spacing: 2) {
+            VStack(spacing: AG.tabBarItemSpacing) {
                 Image(systemName: icon)
                     .font(.system(size: 21, weight: isActive ? .semibold : .regular))
-                    .frame(height: 44)
+                    .frame(height: AG.tabBarIconSlot)
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
             }
@@ -112,11 +112,11 @@ private struct TabBarView: View {
         Button {
             model.screen = .scan
         } label: {
-            VStack(spacing: 2) {
+            VStack(spacing: AG.tabBarItemSpacing) {
                 ZStack {
                     Circle()
                         .fill(AG.brand)
-                        .frame(width: 44, height: 44)
+                        .frame(width: AG.tabBarIconSlot, height: AG.tabBarIconSlot)
                         .shadow(color: AG.brand.opacity(0.28), radius: 6, y: 3)
                     Image(systemName: "viewfinder")
                         .font(.system(size: 20, weight: .semibold))

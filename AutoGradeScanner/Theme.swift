@@ -149,15 +149,27 @@ extension AG {
     /// with a few points to spare.
     static let tabBarBottomGap: CGFloat = 18
 
-    /// 44pt of content plus 6pt of padding above and below.
-    static let tabBarHeight: CGFloat = 56
+    // The bar's height, from its parts rather than as a number to keep in
+    // step by hand. Guessing it at 56 when it is really 70 is what put the
+    // action button flat against it: the missing 14pt was the entire gap.
+    static let tabBarIconSlot: CGFloat = 44
+    static let tabBarItemSpacing: CGFloat = 2
+    static let tabBarLabelHeight: CGFloat = 12
+    static let tabBarPadding: CGFloat = 6
+
+    static var tabBarHeight: CGFloat {
+        tabBarPadding * 2 + tabBarIconSlot + tabBarItemSpacing + tabBarLabelHeight
+    }
 
     /// Where a screen's own bottom-anchored content has to stop, measured from
     /// the physical bottom edge. Anything positioned against the safe area
     /// instead lands in a different place on every device — and on one with no
     /// bottom inset, underneath the bar.
+    ///
+    /// The gap above the bar matches the gap below it, so the bar reads as
+    /// floating in a space rather than pinned to one edge of it.
     static var bottomChromeClearance: CGFloat {
-        tabBarBottomGap + tabBarHeight + 14
+        tabBarBottomGap + tabBarHeight + tabBarBottomGap
     }
 
     /// Bottom padding that puts a control's edge `distance` above the physical
