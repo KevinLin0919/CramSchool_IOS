@@ -24,14 +24,15 @@ struct ResultsView: View {
 
     @State private var index = 0
     @State private var correcting: StoredAnswer?
-    /// One master per page of the paper, in page order.
-    @State private var masters: [UIImage] = []
-    @State private var pageLabels: [String] = []
+    /// Masters and page labels, keyed by template.
+    ///
+    /// A pager keeps the neighbouring papers alive so they can follow the
+    /// finger, and those may belong to a different template. One shared set of
+    /// masters would have drawn the paper you are swiping toward over the one
+    /// you are leaving — right up until the swipe finished.
+    @State private var mastersByTemplate: [Int: [UIImage]] = [:]
+    @State private var labelsByTemplate: [Int: [String]] = [:]
     @State private var shownPage = 0
-    /// Which way the next paper should come in from. Set before the index
-    /// moves so the transition matches the direction of the gesture.
-    @State private var swipeForward = true
-    @State private var loadedTemplate: Int?
     @State private var showsClearConfirm = false
 
     private var current: StoredPaper? {
@@ -41,13 +42,12 @@ struct ResultsView: View {
 
     var body: some View {
         Group {
-            if let paper = current {
-                content(paper)
-            } else {
+            if papers.papers.isEmpty {
                 emptyState
+            } else {
+                content
             }
         }
-        .task(id: current?.templateID) { await loadMaster() }
         .onChange(of: papers.papers.count) { _, count in
             if index >= count { index = max(0, count - 1) }
         }
@@ -79,26 +79,34 @@ struct ResultsView: View {
     // An iPad has room to show the sheet and the answers at once; a phone
     // stacks them, with the crops taking the space because they are what gets
     // read.
-    private func content(_ paper: StoredPaper) -> some View {
+    /// Takes no paper on purpose. Handing it the current one would rebuild the
+    /// whole pager every time the selection moved — including the neighbours
+    /// mid-drag, which is the one moment they need to stay put.
+    private var content: some View {
         RegularWidth { isRegular in
             ZStack(alignment: .top) {
-                // The nav stays put; only the paper slides. Reaching for two
-                // small arrows at the top of the screen to step through a
-                // stack is the wrong shape of gesture for the job — the thing
-                // being flipped through is the full-width panel below.
-                paperBody(paper, isRegular: isRegular)
-                    .id(paper.id)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: swipeForward ? .trailing : .leading),
-                        removal: .move(edge: swipeForward ? .leading : .trailing)))
-                    .clipped()
-                    .simultaneousGesture(swipeGesture)
+                // A real pager rather than a swipe that commits past a
+                // threshold. Under a threshold, a swipe that falls short does
+                // nothing at all — no movement, no hint — so nobody who does
+                // not already know the gesture exists ever finds out. Dragging
+                // the paper with the finger and letting it fall back is the
+                // behaviour that teaches itself.
+                TabView(selection: $index) {
+                    ForEach(Array(papers.papers.enumerated()), id: \.element.id) { position, item in
+                        paperBody(item, isRegular: isRegular)
+                            .task(id: item.templateID) { await loadMasters(for: item.templateID) }
+                            .tag(position)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
 
                 // Floats, rather than sitting in a stack above the content.
                 // That is what gives the glass something to sample: a bar over
                 // a flat background has nothing to refract and may as well be
                 // a tinted rectangle.
-                topNav(paper)
+                if let paper = current {
+                    topNav(paper)
+                }
             }
             .background(AG.bg2)
         }
@@ -131,31 +139,20 @@ struct ResultsView: View {
         }
     }
 
-    /// Simultaneous rather than exclusive, so the crops list still scrolls.
-    /// The cost of that is this gesture also sees every vertical flick, which
-    /// is why it insists the movement was clearly sideways before acting —
-    /// scrolling a long list at a slight angle is the common gesture here, and
-    /// turning that into a page change would be maddening.
-    private var swipeGesture: some Gesture {
-        DragGesture(minimumDistance: 20)
-            .onEnded { value in
-                guard abs(value.translation.width) > 60,
-                      abs(value.translation.width) > abs(value.translation.height) * 1.5
-                else { return }
-                goTo(index + (value.translation.width < 0 ? 1 : -1))
-            }
-    }
 
     private func goTo(_ target: Int) {
         guard papers.papers.indices.contains(target), target != index else { return }
-        swipeForward = target > index
-        withAnimation(.spring(duration: 0.32)) { index = target }
+        withAnimation(.easeInOut(duration: 0.28)) { index = target }
     }
 
     // MARK: - Top: the master sheet with boxes
 
     private func sheetPanel(_ paper: StoredPaper) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let masters = mastersByTemplate[paper.templateID] ?? []
+        // A paper with fewer sides than the one before it must not inherit its
+        // page: the strip would point at a side this paper does not have.
+        let page = min(shownPage, max(0, masters.count - 1))
+        return VStack(alignment: .leading, spacing: 8) {
             summaryRow(paper)
 
             // The same page control the scanner uses, for the same reason: a
@@ -163,16 +160,16 @@ struct ResultsView: View {
             // boxes over one master would scatter the back's cells across the
             // front at coordinates that look plausible.
             if masters.count > 1 {
-                pageSwitcher(paper)
+                pageSwitcher(paper, masters: masters, shown: page)
             }
 
             ZStack {
-                if masters.indices.contains(shownPage) {
-                    Image(uiImage: masters[shownPage])
+                if masters.indices.contains(page) {
+                    Image(uiImage: masters[page])
                         .resizable()
                         .scaledToFit()
                         .overlay(GeometryReader { geo in
-                            ForEach(paper.answers.filter { $0.page == shownPage },
+                            ForEach(paper.answers.filter { $0.page == page },
                                     id: \.questionNo) { answer in
                                 if let rect = answer.rect {
                                     boxMarker(answer, in: rect, size: geo.size)
@@ -191,8 +188,11 @@ struct ResultsView: View {
         }
     }
 
-    private func pageSwitcher(_ paper: StoredPaper) -> some View {
-        HStack(spacing: 4) {
+    private func pageSwitcher(_ paper: StoredPaper,
+                             masters: [UIImage],
+                             shown: Int) -> some View {
+        let labels = labelsByTemplate[paper.templateID] ?? []
+        return HStack(spacing: 4) {
             ForEach(masters.indices, id: \.self) { page in
                 let unsure = paper.answers
                     .filter { $0.page == page && $0.effectiveVerdict == .unsure }.count
@@ -200,8 +200,8 @@ struct ResultsView: View {
                     shownPage = page
                 } label: {
                     HStack(spacing: 5) {
-                        Text(page < pageLabels.count ? pageLabels[page] : "\(page + 1)")
-                            .font(.system(size: 13, weight: page == shownPage ? .semibold : .regular))
+                        Text(page < labels.count ? labels[page] : "\(page + 1)")
+                            .font(.system(size: 13, weight: page == shown ? .semibold : .regular))
                         // Where the remaining work is, so the page holding it
                         // is findable without opening every one.
                         if unsure > 0 {
@@ -210,10 +210,10 @@ struct ResultsView: View {
                                 .foregroundStyle(AG.warn)
                         }
                     }
-                    .foregroundStyle(page == shownPage ? AG.fg1 : AG.fg2)
+                    .foregroundStyle(page == shown ? AG.fg1 : AG.fg2)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(page == shownPage ? AG.bg1 : .clear)
+                    .background(page == shown ? AG.bg1 : .clear)
                     .clipShape(RoundedRectangle(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
@@ -448,17 +448,14 @@ struct ResultsView: View {
         return text
     }
 
-    private func loadMaster() async {
-        guard let paper = current else { return }
-        guard loadedTemplate != paper.templateID else { return }
-        masters = []
-        pageLabels = []
-        shownPage = 0
-        if let resolved = try? await TemplateStore.shared.resolve(id: paper.templateID) {
-            masters = resolved.pages.map(\.master)
-            pageLabels = resolved.pages.indices.map { resolved.pageLabel($0) }
-            loadedTemplate = paper.templateID
-        }
+    /// Each page in the pager asks for its own template, and the first to ask
+    /// pays. A stack is usually one exam, so this normally holds a single
+    /// entry no matter how many papers are in it.
+    private func loadMasters(for templateID: Int) async {
+        guard mastersByTemplate[templateID] == nil else { return }
+        guard let resolved = try? await TemplateStore.shared.resolve(id: templateID) else { return }
+        mastersByTemplate[templateID] = resolved.pages.map(\.master)
+        labelsByTemplate[templateID] = resolved.pages.indices.map { resolved.pageLabel($0) }
     }
 }
 
