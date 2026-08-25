@@ -126,6 +126,47 @@ struct RegularWidth<Content: View>: View {
     }
 }
 
+// MARK: - Bottom chrome geometry
+
+extension AG {
+    /// The window's bottom safe-area inset, read from UIKit.
+    ///
+    /// SwiftUI's `.ignoresSafeArea` is the obvious way to place something past
+    /// this line and it does nothing inside an overlay on a view that already
+    /// respects the safe area — there is no inset left there to reclaim. Every
+    /// bottom-anchored control here therefore measures the inset and moves by
+    /// the difference, which does not depend on that behaviour at all.
+    static var bottomSafeInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }?
+            .safeAreaInsets.bottom ?? 0
+    }
+
+    /// Clearance from the bottom of the screen to the bottom of the tab bar.
+    /// The home indicator sits roughly 8–13pt up, so this leaves it visible
+    /// with a few points to spare.
+    static let tabBarBottomGap: CGFloat = 18
+
+    /// 44pt of content plus 6pt of padding above and below.
+    static let tabBarHeight: CGFloat = 56
+
+    /// Where a screen's own bottom-anchored content has to stop, measured from
+    /// the physical bottom edge. Anything positioned against the safe area
+    /// instead lands in a different place on every device — and on one with no
+    /// bottom inset, underneath the bar.
+    static var bottomChromeClearance: CGFloat {
+        tabBarBottomGap + tabBarHeight + 14
+    }
+
+    /// Bottom padding that puts a control's edge `distance` above the physical
+    /// bottom, whatever the device's inset happens to be.
+    static func padding(above distance: CGFloat) -> CGFloat {
+        max(0, distance - bottomSafeInset)
+    }
+}
+
 // MARK: - Liquid Glass
 
 extension View {

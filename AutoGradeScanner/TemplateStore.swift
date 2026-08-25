@@ -233,15 +233,29 @@ final class TemplateStore: ObservableObject {
         if let data = try? JSONEncoder().encode(detail) {
             try? data.write(to: detailURL(id), options: .atomic)
         }
+        // Re-fetch the masters too, without asking whether a file with that
+        // name is already there.
+        //
+        // This runs only when the detail was missing or its revision moved —
+        // in other words, when the template is not what we last saw. The image
+        // id inside it is assigned by the server and is unique only within one
+        // database, so "a file called 2_1600.jpg exists" says nothing about
+        // whether it is THIS template's page. Rebuild the server and template
+        // 2 becomes a different paper wearing the same numbers; the app went
+        // on drawing the old sheet, and drew it confidently.
         for page in detail.pages {
-            try? await cacheMaster(templateID: id, page: page)
+            try? await cacheMaster(templateID: id, page: page, force: true)
         }
         return detail
     }
 
-    private func cacheMaster(templateID: Int, page: TemplatePageDTO) async throws {
+    /// `force` skips the "already on disk" shortcut. Callers that are merely
+    /// filling a gap leave it off; callers that have just learned the template
+    /// changed must set it, because the filename cannot tell them apart.
+    private func cacheMaster(templateID: Int, page: TemplatePageDTO,
+                             force: Bool = false) async throws {
         let url = masterURL(imageID: page.imageID)
-        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        if !force, FileManager.default.fileExists(atPath: url.path) { return }
         let data = try await APIClient.shared.masterImage(templateID: templateID,
                                                           page: page.pageIndex,
                                                           width: Self.masterWidth)

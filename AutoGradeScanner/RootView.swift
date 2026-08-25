@@ -74,21 +74,8 @@ private struct TabBarView: View {
         //
         // Exactly one of these is ever non-zero: padding when the device has
         // less inset than the gap we want, offset when it has more.
-        .padding(.bottom, max(0, Self.bottomGap - Self.bottomSafeInset))
-        .offset(y: max(0, Self.bottomSafeInset - Self.bottomGap))
-    }
-
-    /// Clearance from the bottom of the screen to the bottom of the bar. The
-    /// home indicator sits roughly 8–13pt up, so this leaves it visible with a
-    /// few points to spare.
-    private static let bottomGap: CGFloat = 18
-
-    private static var bottomSafeInset: CGFloat {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first { $0.isKeyWindow }?
-            .safeAreaInsets.bottom ?? 0
+        .padding(.bottom, AG.padding(above: AG.tabBarBottomGap))
+        .offset(y: max(0, AG.bottomSafeInset - AG.tabBarBottomGap))
     }
 
     private func tabButton(screen: AppScreen, icon: String, label: String,

@@ -510,16 +510,16 @@ struct TemplatesView: View {
                            startPoint: .top, endPoint: .bottom)
             .allowsHitTesting(false)
         )
-        // Measured from the physical bottom, the same reference the tab bar
-        // uses, so the gap between them is a fixed 16pt on every device. Read
-        // off the safe area instead and it would be 16pt here and none at all
-        // on a phone without a home indicator.
+        // Stops where the tab bar begins, measured from the physical bottom
+        // like the bar itself, so the gap between them is the same on every
+        // device. `.ignoresSafeArea` was doing this job and was doing nothing:
+        // the button stayed put while the bar moved down, and the space
+        // between them grew by exactly the inset.
         //
         // The gradient stops above this padding rather than filling it, so the
         // list stays visible in the strip the bar floats over — which is what
         // gives the glass something to sample on this screen.
-        .padding(.bottom, 88)
-        .ignoresSafeArea(edges: .bottom)
+        .padding(.bottom, AG.padding(above: AG.bottomChromeClearance))
     }
 }
 

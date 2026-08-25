@@ -30,8 +30,13 @@ final class AppModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
 
     init() {
+        // `DispatchQueue.main` rather than `RunLoop.main`: the RunLoop
+        // scheduler only delivers in the default mode, so anything posted
+        // while a sheet is animating or a list is being dragged waits for the
+        // interaction to finish. Both of these fire at exactly those moments —
+        // enrolment dismisses a sheet — and neither wants to be held.
         NotificationCenter.default.publisher(for: APIClient.unauthorizedNotification)
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] note in
                 // Clearing the credential is what routes back to the login
                 // screen: `needsLogin` reads the Keychain, so there is no
@@ -48,7 +53,7 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: Credentials.didChange)
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 if Credentials.isEnrolled {
                     // Signing in successfully answers the message; signing out
