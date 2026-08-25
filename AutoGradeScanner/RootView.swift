@@ -62,13 +62,33 @@ private struct TabBarView: View {
         .floatingGlass(in: Capsule())
         .centeredContent(AG.Width.tabBar)
         .padding(.horizontal, 16)
-        // Measured from the physical bottom, not from the safe area. Sitting
-        // above the inset put the bar 40pt clear of the screen edge, and on a
-        // floating bar that gap is just bare background — the old full-width
-        // slab hid it by running to the edge. 16pt keeps the home indicator
-        // clear while closing most of it.
-        .padding(.bottom, 16)
-        .ignoresSafeArea(edges: .bottom)
+        // Land the bar's bottom edge `bottomGap` above the PHYSICAL screen
+        // edge, so it sits just clear of the home indicator rather than a
+        // whole safe-area inset above it.
+        //
+        // `.ignoresSafeArea` was the obvious way to do this and it does not
+        // work here: inside an overlay on a view that already respects the
+        // safe area, there is no inset left for it to reclaim, so the bar
+        // stayed where it was. Measuring the inset and moving by the
+        // difference does not depend on that behaviour at all.
+        //
+        // Exactly one of these is ever non-zero: padding when the device has
+        // less inset than the gap we want, offset when it has more.
+        .padding(.bottom, max(0, Self.bottomGap - Self.bottomSafeInset))
+        .offset(y: max(0, Self.bottomSafeInset - Self.bottomGap))
+    }
+
+    /// Clearance from the bottom of the screen to the bottom of the bar. The
+    /// home indicator sits roughly 8–13pt up, so this leaves it visible with a
+    /// few points to spare.
+    private static let bottomGap: CGFloat = 18
+
+    private static var bottomSafeInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }?
+            .safeAreaInsets.bottom ?? 0
     }
 
     private func tabButton(screen: AppScreen, icon: String, label: String,

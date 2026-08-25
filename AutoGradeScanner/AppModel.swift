@@ -50,9 +50,22 @@ final class AppModel: ObservableObject {
         NotificationCenter.default.publisher(for: Credentials.didChange)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                // Signing in successfully answers the message; signing out
-                // does not, since that is when it was just written.
-                if Credentials.isEnrolled { self?.signedOutReason = nil }
+                if Credentials.isEnrolled {
+                    // Signing in successfully answers the message; signing out
+                    // does not, since that is when it was just written.
+                    self?.signedOutReason = nil
+
+                    // And drop whatever the last credential downloaded. The
+                    // cache is keyed by ids the SERVER assigns — masters by
+                    // image id, details by template id — and those are only
+                    // unique within one database. Point a device at a rebuilt
+                    // server and template 2 is a different paper that happens
+                    // to share a number, while `cacheMaster` skips the
+                    // download because a file with that name is already there.
+                    // The symptom is a template that quietly shows the wrong
+                    // sheet, which is worse than showing nothing.
+                    TemplateStore.shared.purge()
+                }
                 Task { await self?.loadTemplates() }
             }
             .store(in: &cancellables)
