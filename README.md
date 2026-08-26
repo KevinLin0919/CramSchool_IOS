@@ -1,6 +1,7 @@
-# AutoGrade Scanner (iOS)
+# 浮島 (iOS)
 
-補習班考卷批改系統的 iOS App。**批改完全在裝置上執行**——相機對到考卷，
+補習班考卷批改系統的 iOS App，主畫面上叫**浮島**，專案與 bundle 仍是
+`AutoGradeScanner`。**批改完全在裝置上執行**——相機對到考卷，
 XFeat 把模板題框貼上去，MNIST CNN 與拓樸判斷讀出答案，全程不連伺服器。
 
 伺服器（[`CramSchool_Backend`](https://github.com/KevinLin0919/CramSchool_Backend)）只負責
@@ -15,9 +16,9 @@ XFeat 把模板題框貼上去，MNIST CNN 與拓樸判斷讀出答案，全程�
 
 | 分頁 | 功能 |
 |------|------|
-| 考卷 | 從伺服器同步的模板，依「年級 → 科目」分組瀏覽、搜尋、改名、刪除。「新增」可拍標準答案卷 → YOLO 自動框答案區 → OCR 辨識標準答案 → 人工確認後存回伺服器 |
-| 掃描 | 全螢幕相機。題框**貼著考卷移動**，鏡頭平移到哪就批改到哪，按「完成」凍結成結果 |
-| 結果 | 整頁考卷 + 批改框、逐題明細、分享 |
+| 考卷 | 從伺服器同步的模板，依「年級 → 科目」分組瀏覽、搜尋、改名、刪除。預覽會把**每一頁**都畫出來。「新增」可拍標準答案卷 → YOLO 自動框答案區 → OCR 辨識標準答案 → 人工確認後存回伺服器（目前只做單面） |
+| 掃描 | 全螢幕相機。題框**貼著考卷移動**，鏡頭平移到哪就批改到哪。多頁考卷在上方有頁籤可切換，按「完成這份」凍結成結果 |
+| 結果 | 整頁考卷 + 批改框、逐題明細、分享。左右滑動換**份**，多頁考卷可切換底圖看各面 |
 
 ## 三種判定，不是兩種
 
@@ -37,16 +38,63 @@ XFeat 把模板題框貼上去，MNIST CNN 與拓樸判斷讀出答案，全程�
 
 ---
 
-## 註冊與離線
+## 多頁（雙面）考卷
 
-### 註冊
+一份考卷是一疊**頁**，不是一張紙。`ResolvedTemplate.pages` 每一頁有自己的母卷影像
+與自己的題框，掃描時每一頁也有自己的 XFeat 特徵快取。
 
-設定 → 註冊這台裝置，填**伺服器位址**與**一次性邀請碼**（管理員以
-`cramctl teachers invite` 產生）。換到的 token 存在 **Keychain**，
-`AfterFirstUnlockThisDeviceOnly`：
+上方頁籤顯示每頁進度，點一下切過去（點目前這頁不會有反應——它是選擇，不是 toggle，
+誤觸不該把老師帶離正在改的那一面）。兩頁的考卷標成**正面／背面**，三頁以上就編號。
+一頁改完會自動跳到下一頁未完成的頁，設定裡可以關掉。
+
+⚠️ **題號必須跨頁連續。** 這不是選擇，是伺服器兩邊 schema 對不上的後果：
+模板的題框是 `(page_id, question_no)` 唯一，批改結果的答案卻是
+`(session_id, question_no)` 唯一。所以一份正反面都印「1、2、3」的考卷，
+存得進模板卻批不了——而且更糟的是，`expected` 攤平後依題號排序，
+每一格都會配到錯的標準答案。`TemplateStore.resolve` 直接拒絕並說明原因；
+一個看起來正確的錯誤成績，是最值得擋下來的失敗。
+
+實務上就是後面那面接著編號（正面 1–3，背面 4–6）。代價是 App 顯示的題號
+與考卷上印的對不起來，老師看到「第 4 題」要自己換算成「七、的第 1 題」。
+要解決得讓題號能存**顯示用的標籤**而不只是數字，那是另一個功能。
+
+---
+
+## 登入、離線與上傳
+
+### 登入
+
+登入頁的主要按鈕只寫**登入**，後面是補習班的 Microsoft 帳號
+（`MicrosoftSignIn.swift`）。**這條路目前是預留的**——OAuth 流程需要對方
+Entra 租戶裡的 app registration，後端也需要一個驗簽與 `tid` 的端點，兩者都還不存在。
+寫一個看起來完成、實地一定失敗的畫面，比一顆說清楚缺什麼的按鈕更糟，
+所以那個檔案只定義形狀：填上去的時候，動到的只有那幾行，token 層以下完全不變。
+
+底下兩個入口：**使用邀請碼**（一次性，管理員以 `cramctl teachers invite` 產生）
+與**先看示範**。
+
+換到的 token 存在 **Keychain**，`AfterFirstUnlockThisDeviceOnly`：
 
 - `AfterFirstUnlock` 而非 `WhenUnlocked` —— 否則鎖屏時背景上傳讀不到 token
 - `ThisDeviceOnly` —— 不進備份，避免還原到別台裝置後憑證復活
+
+### 登出
+
+三種狀態都有出口，而且說的是不同的事：
+
+| 進來的方式 | 按鈕 | 後果 |
+|---|---|---|
+| Microsoft | 登出 | 撤銷這台裝置的授權，清掉快取，重新登入即可再同步 |
+| 邀請碼 | 登出並取消註冊 | 同上，但邀請碼是一次性的，要再用得向管理員拿新的 |
+| 示範模式 | 離開示範 | 只是回到登入頁，沒有憑證可撤銷 |
+
+撤銷是**針對這台裝置**的（`POST /api/v1/auth/logout`），不是把老師所有裝置一起踢掉——
+一位老師手上可能同時有 iPad 和手機。伺服器撤銷失敗時會照實說「已在這台裝置登出，
+但伺服器端的授權還沒撤銷」，而不是假裝成功。還有沒上傳的批改結果也會先警告。
+
+⚠️ Microsoft 那條接起來時，authorize URL 必須帶 `prompt=select_account`。
+登出的整個用途就是從登錯帳號裡脫身，而 `ASWebAuthenticationSession` 預設共用
+Safari 的 cookie——少了它，登出再登入會安靜地回到同一個錯帳號。
 
 ### 示範模式 = 尚未註冊的狀態
 
@@ -63,13 +111,50 @@ XFeat 把模板題框貼上去，MNIST CNN 與拓樸判斷讀出答案，全程�
 
 ```
 Application Support/TemplateCache/
-  index.json           同步游標 + 模板清單
-  detail/{id}.json     題框與標準答案
+  index.json           快取格式版本 + 同步游標 + 模板清單
+  detail/{id}.json     題框與標準答案（每頁一組）
   master/{imageID}_1600.jpg
 ```
 
 同步走伺服器給的游標增量拉取，刪除的模板以**墓碑**形式抵達，
 所以離線一週的裝置回來後不會還留著一份沒人能批改的考卷。
+
+增量同步的代價是**它相信自己已經有的東西**：`detail/{id}.json` 的 revision
+沒變就整份跳過。所以一個壞掉的快取會一直壞下去。三件事保護這個不變式：
+
+- **母卷全部落地才寫 detail。** 反過來寫的話，一張圖下載失敗會讓那份模板
+  被記成「已是最新」，之後每一次同步都跳過它，永遠不重試
+- **`index.json` 帶格式版本。** 版本對不上就整包丟掉重建，不必叫老師登出去清一個
+  他看不到的快取
+- **母卷下載繞過 URLSession 的 HTTP 快取。** `/templates/{id}/master` 不是內容定址的，
+  換掉模板的頁，同一個網址就給出不同的圖。伺服器一度對它宣告
+  `Cache-Control: immutable`，於是 URLSession 直接交出舊伺服器的母卷、
+  連請求都不發——App 顯示一份考卷，資料庫裡是另一份，任何一邊的日誌都看不出來
+
+⚠️ 母卷檔名是伺服器指派的 image id，**只在同一個資料庫裡唯一**。重建資料庫之後
+`2_1600.jpg` 是另一張考卷穿著同一個編號，所以模板一有變動就強制重抓，
+不問磁碟上有沒有同名檔案。
+
+### 上傳
+
+批改完的考卷先寫進磁碟，`UploadQueue` 之後自己送出去（`GradingStore` 存本地，
+`PUT /api/v1/grading-sessions/{client_uuid}` 以裝置產生的 UUID 冪等上傳，
+所以重試與訂正走同一條路）。
+
+**上傳不在任何人的關鍵路徑上**，所以它不擋 UI、不轉圈、不要求點擊。前景時、
+存完一份時、訂正完一份時各排一次，失敗指數退避。老師改一疊考卷改到一半網路斷了，
+該繼續改就繼續改。
+
+只有兩種格子會連裁切圖一起送：**老師訂正過的**（那是一張有標籤的手寫樣本，
+是整個 schema 裡最有價值的一列），以及**模型讀不出來的**。其餘是大家都同意的答案，
+一份送二十張裁切圖跨補習班的上行頻寬，買不到東西。
+
+送出去的判定是**老師的**而不是模型的（`effectiveVerdict`）——伺服器會依收到的內容
+重算統計，送原始讀值等於回報一個無視所有訂正的成績。模型讀到什麼沒有遺失，
+`recognized` 與 `expected` 還在。
+
+⚠️ 401 會讓整個佇列停下並說明原因，400 視為永久失敗（模板被刪之類），
+不會一直重試把還能成功的考卷擋在後面。
 
 ---
 
@@ -132,7 +217,7 @@ Application Support/TemplateCache/
 **有 Mac：** Xcode 16 以上開 `AutoGradeScanner.xcodeproj`，選 Team，實機執行。
 
 **無 Mac（目前實際流程）：** GitHub Actions（`.github/workflows/ios.yml`，macOS runner）
-在推送 `main` / `demo-*` / `client-*` / `scan-*` 或手動觸發時：
+在推送 `main` / `coreml-xfeat` / `demo-*` / `client-*` / `scan-*` 或手動觸發時：
 
 | Job | 內容 |
 |---|---|
@@ -170,8 +255,12 @@ AutoGradeScanner/
 ├── APIModels.swift             /api/v1 的 Codable 線上型別
 ├── APIClient.swift             HTTP client（bearer token、multipart 上傳）
 ├── Credentials.swift           Keychain 憑證
+├── MicrosoftSignIn.swift       學校帳號登入的介面（尚未接上 Entra）
 ├── TemplateStore.swift         離線鏡像：增量同步、母卷快取、ResolvedTemplate
+├── GradingStore.swift          批改結果的本地儲存（含上傳狀態與修訂號）
+├── UploadQueue.swift           把批改結果送回伺服器，不擋任何 UI
 ├── AppModel.swift              全域狀態
+├── LoginView.swift             登入頁（Microsoft / 邀請碼 / 示範）
 ├── EnrolmentView.swift         裝置註冊（伺服器位址 + 邀請碼）
 ├── RootView.swift              三分頁 tab bar
 ├── TemplatesView.swift         畫面一：考卷模板
@@ -182,21 +271,20 @@ AutoGradeScanner/
 ├── SettingsView.swift          註冊狀態、同步、診斷
 ├── OverlayViews.swift          批改框 overlay
 ├── CameraController.swift      AVFoundation 相機（4K）＋Vision 紙張偵測
+├── CaptureOrientation.swift    相機方向與畫面座標的換算
 ├── CellPixelSource.swift       格子取樣來源：原始 buffer 或降採樣影像
 ├── CellPatch.swift             灰階取樣、Otsu、連通元件、印刷框線過濾
 ├── DigitRecognizer.swift       MNIST CNN（Core ML）
 ├── MarkRecognizer.swift        圈叉：形態學閉運算 + 數洞
 ├── AnswerRecognizer.swift      依答案型別路由 + 跨幀投票
 ├── DigitCNN.mlpackage          數字模型（與後端同權重）
-├── LiveScanEngine.swift        即時批改：逐幀對位、追蹤、整頁 keyframe
-├── GradingEngine.swift         單張拍照批改（對位失敗時的退路）
+├── LiveScanEngine.swift        即時批改：逐幀對位、追蹤、每頁 keyframe、自動換頁
 ├── DemoData.swift              內建示範考卷（未註冊時使用）
 ├── DemoSelfTest.swift          DEBUG：命令列跑批改路徑
 ├── RecognitionSelfTest.swift   DEBUG：辨識模型與取樣路徑自測
 ├── XFeat.mlmodel               XFeat 特徵模型
 ├── XFeatEngine.swift           XFeat 推論
 ├── XFeatMatcher.swift          特徵匹配 + RANSAC homography
-├── XFeatDebugView.swift        對位除錯頁
 ├── ARScanView.swift            ⚠️ 已停用的 ARKit 實驗，待移除
 └── PoseProvider.swift          陀螺儀（**主路徑在用**：靜止時降低送幀頻率）
 ```
