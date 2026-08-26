@@ -614,20 +614,28 @@ extension ResultsView {
 
         let matches = resolved.pages.filter { page in
             rects.allSatisfy { rect in
-                page.questions.contains { near($0.box, rect) }
+                page.questions.contains { sameCell($0.box, rect) }
             }
         }
         return matches.count == 1 ? matches[0] : nil
     }
 
-    /// Fractions of a master sheet, so the tolerance is in those terms:
-    /// 0.002 is about five pixels across a 2573px page. The numbers came from
-    /// the same server and survive only a JSON round trip, so anything that
-    /// is the same box agrees far more closely than this.
-    private static func near(_ a: CGRect, _ b: CGRect) -> Bool {
-        let t: CGFloat = 0.002
-        return abs(a.minX - b.minX) < t && abs(a.minY - b.minY) < t
-            && abs(a.width - b.width) < t && abs(a.height - b.height) < t
+    /// Centres only, and deliberately.
+    ///
+    /// A box's size is an artefact of how wide someone drew it; its centre is
+    /// which printed cell it sits on, and that is the question here. The two
+    /// come apart in practice: a master re-rendered at a different resolution
+    /// keeps every cell in the same place as a fraction of the page, but a
+    /// box laid out in pixels on the larger rendering normalises to a
+    /// different width entirely. Comparing sizes would reject a page these
+    /// boxes plainly came from.
+    ///
+    /// 0.01 of a page is about 26px across a 2573px master — comfortably
+    /// inside one answer cell, so three centres landing on three of a page's
+    /// cells is not something that happens to the wrong page.
+    private static func sameCell(_ a: CGRect, _ b: CGRect) -> Bool {
+        let t: CGFloat = 0.01
+        return abs(a.midX - b.midX) < t && abs(a.midY - b.midY) < t
     }
 }
 
