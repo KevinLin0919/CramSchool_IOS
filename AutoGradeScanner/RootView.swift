@@ -85,16 +85,19 @@ private struct TabBarView: View {
             guard !disabled else { return }
             model.screen = screen
         } label: {
-            VStack(spacing: AG.tabBarItemSpacing) {
+            VStack(spacing: AG.tabBarLabelGap) {
                 Image(systemName: icon)
-                    .font(.system(size: 21, weight: isActive ? .semibold : .regular))
-                    .frame(height: AG.tabBarIconSlot)
+                    .font(.system(size: AG.tabBarIconSize,
+                                  weight: isActive ? .semibold : .regular))
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
             }
             .foregroundStyle(disabled ? AG.fg4 : (isActive ? AG.brand : AG.fg2))
             .opacity(disabled ? 0.5 : 1)
-            .frame(maxWidth: .infinity)
+            // The group sizes itself and is centred in the row's height, which
+            // is set by the scan button's circle. Padding the glyph out to that
+            // height instead is what pushed the label down to begin with.
+            .frame(maxWidth: .infinity, minHeight: AG.tabBarContentHeight)
         }
         .disabled(disabled)
     }

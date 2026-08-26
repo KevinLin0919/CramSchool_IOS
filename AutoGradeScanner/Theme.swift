@@ -152,13 +152,36 @@ extension AG {
     // The bar's height, from its parts rather than as a number to keep in
     // step by hand. Guessing it at 56 when it is really 70 is what put the
     // action button flat against it: the missing 14pt was the entire gap.
+
+    /// The scan button's circle, and the height the row is measured from.
     static let tabBarIconSlot: CGFloat = 44
     static let tabBarItemSpacing: CGFloat = 2
     static let tabBarLabelHeight: CGFloat = 12
     static let tabBarPadding: CGFloat = 6
 
+    /// The glyph on the side tabs, and its distance from the label.
+    ///
+    /// These are not the scan button's numbers and cannot be. Its circle is a
+    /// filled 44pt shape, so its ink reaches to within 2pt of the label; a
+    /// 21pt glyph centred in a 44pt box leaves 11pt of air under it and reads
+    /// as a caption that drifted away from its icon. Drawing the glyph larger
+    /// and sitting it closer closes most of that gap.
+    ///
+    /// Most, not all. A circle 44pt tall beside a glyph 26pt tall cannot have
+    /// both its labels aligned with the others AND every group centred in the
+    /// bar — the arithmetic does not allow it. Centred wins, and the labels
+    /// land within about 5pt of each other, which nobody reads as an error.
+    static let tabBarIconSize: CGFloat = 26
+    static let tabBarLabelGap: CGFloat = 7
+
+    /// What every button in the row is laid out inside, so the glyph group can
+    /// be centred without the row's height following it.
+    static var tabBarContentHeight: CGFloat {
+        tabBarIconSlot + tabBarItemSpacing + tabBarLabelHeight
+    }
+
     static var tabBarHeight: CGFloat {
-        tabBarPadding * 2 + tabBarIconSlot + tabBarItemSpacing + tabBarLabelHeight
+        tabBarPadding * 2 + tabBarContentHeight
     }
 
     /// Where a screen's own bottom-anchored content has to stop, measured from
