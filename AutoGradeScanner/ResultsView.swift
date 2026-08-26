@@ -37,6 +37,7 @@ struct ResultsView: View {
     /// toward over the one being left, right up until the swipe finished.
     @State private var sheets: [UUID: SheetSet] = [:]
     @State private var shownPage = 0
+    @State private var showsClearConfirm = false
 
     /// What a paper's backdrop resolved to. `failure` is a state of its own:
     /// without it a sheet that cannot be fetched shows a spinner that never
@@ -45,7 +46,6 @@ struct ResultsView: View {
         var images: [UIImage?]
         var failure: String?
     }
-    @State private var showsClearConfirm = false
 
     private var current: StoredPaper? {
         guard papers.papers.indices.contains(index) else { return papers.papers.last }
@@ -517,6 +517,11 @@ struct ResultsView: View {
     /// which is the whole point. Anything older names nothing, and falls back
     /// to the template as it stands today — the same guess as before, but now
     /// clamped to the number of sides the paper actually has.
+    ///
+    /// Nothing is recorded once the task is cancelled — swiping past a paper
+    /// tears its task down mid-fetch, and storing the `CancellationError` that
+    /// arrives would cache "cancelled" as this paper's permanent answer. The
+    /// guard at the top would then never let it try again.
     private func loadSheets(for paper: StoredPaper) async {
         guard sheets[paper.id] == nil else { return }
         let pages = paper.pagesOrInferred
@@ -541,6 +546,7 @@ struct ResultsView: View {
                     failure = failure ?? error.localizedDescription
                 }
             }
+            guard !Task.isCancelled else { return }
             sheets[paper.id] = SheetSet(images: images, failure: failure)
             return
         }
@@ -559,8 +565,10 @@ struct ResultsView: View {
                     images.append(page.master)
                 }
             }
+            guard !Task.isCancelled else { return }
             sheets[paper.id] = SheetSet(images: images, failure: nil)
         } catch {
+            guard !Task.isCancelled else { return }
             sheets[paper.id] = SheetSet(images: pages.map { _ in nil },
                                         failure: error.localizedDescription)
         }
