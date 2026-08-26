@@ -438,18 +438,23 @@ struct CameraPreviewView: UIViewRepresentable {
 
         private func syncDisplayLink() {
             let wanted = window != nil && !(update?.boxes.isEmpty ?? true)
-            if wanted && displayLink == nil {
-                let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
-                link.add(to: .main, forMode: .common)
-                displayLink = link
-            } else if !wanted, let link = displayLink {
-                link.invalidate()
+            guard wanted else {
+                // Not conditional on the link still existing. Tying the
+                // cleanup to `if let displayLink` leaves anything drawn from
+                // `layoutSubviews` on screen when the link happens to be down
+                // already, which is a second way for the overlay to outlive
+                // what it was describing.
+                displayLink?.invalidate()
                 displayLink = nil
                 sheet = nil
                 rejectStreak = 0
-                boxLayers.values.forEach { $0.removeFromSuperlayer() }
-                boxLayers = [:]
+                removeAllBoxes()
+                return
             }
+            guard displayLink == nil else { return }
+            let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
         }
 
         @objc private func tick(_ link: CADisplayLink) {
@@ -552,6 +557,21 @@ struct CameraPreviewView: UIViewRepresentable {
                 labelLayers[id] = nil
             }
             CATransaction.commit()
+        }
+
+        /// Both layers, always together.
+        ///
+        /// They were torn down separately once and the labels were the half
+        /// that got missed. Turning a page empties the box list, which stops
+        /// the display link and cleared the boxes — leaving every label on
+        /// screen, over the next side, with nothing left to remove them: the
+        /// stale-layer sweep in `render` walks `boxLayers`, and that had just
+        /// been emptied, so those ids were never visited again.
+        private func removeAllBoxes() {
+            boxLayers.values.forEach { $0.removeFromSuperlayer() }
+            boxLayers = [:]
+            labelLayers.values.forEach { $0.removeFromSuperlayer() }
+            labelLayers = [:]
         }
 
         private static func color(for verdict: LiveScanEngine.Verdict?) -> UIColor {
