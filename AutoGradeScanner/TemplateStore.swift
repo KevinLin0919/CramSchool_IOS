@@ -69,10 +69,6 @@ struct ResolvedTemplate {
     var boxes: [CGRect] { questions.map(\.box) }
     var expected: [String] { questions.map(\.answer) }
 
-    /// The first page's master. Kept for the places that legitimately want one
-    /// representative image — the picker's preview, the alignment debug view.
-    var master: UIImage { pages[0].master }
-
     var pageCount: Int { pages.count }
 
     /// What to call a page on screen. A sheet has a front and a back and that

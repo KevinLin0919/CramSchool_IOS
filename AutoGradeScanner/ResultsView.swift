@@ -553,6 +553,30 @@ struct ResultsView: View {
 
         do {
             let resolved = try await TemplateStore.shared.resolve(id: paper.templateID)
+
+            // The template has to still be the shape this paper was graded
+            // against, or its pages are not the ones this record means.
+            //
+            // A paper filed when this exam was one sheet, against a template
+            // that now has two, does not get page 0 — that page is whatever
+            // was added in front, and drawing a back page's boxes on it puts
+            // every cell somewhere plausible and wrong. This exact case is
+            // sitting on the device already: the papers graded against the
+            // single-sided version of an exam that has since grown a front.
+            //
+            // Matching counts is the only signal an old record leaves. It
+            // does not catch a page whose picture was swapped in place, which
+            // nothing here can — but that one is far rarer than a template
+            // gaining a side.
+            guard resolved.pages.count == pages.count else {
+                sheets[paper.id] = SheetSet(
+                    images: pages.map { _ in nil },
+                    failure: "這份考卷後來從 \(pages.count) 面改成 \(resolved.pages.count) 面，"
+                           + "已經無法確定當初批改的是哪一面，所以不顯示底圖。\n"
+                           + "下方各題的作答與判定仍然是正確的。")
+                return
+            }
+
             var images: [UIImage?] = []
             for slot in pages.indices {
                 guard let page = resolved.pages[safe: slot] else { images.append(nil); continue }
