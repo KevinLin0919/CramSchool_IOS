@@ -40,6 +40,12 @@ struct ResolvedTemplate {
         let index: Int
         let master: UIImage
         let questions: [Question]
+
+        /// The server's id for this page's picture, or nil for a bundled demo
+        /// sheet. A graded paper records it so the result screen can redraw
+        /// the sheet it was actually marked against — a template id alone
+        /// says only which paper it *is*, not which picture it *was*.
+        let imageID: Int?
     }
 
     let id: Int
@@ -111,6 +117,21 @@ final class TemplateStore: ObservableObject {
 
     private var index = TemplateIndex.empty
 
+    /// Decoded masters, by image id.
+    ///
+    /// A stack of forty papers is usually forty results against the same two
+    /// sheets, and each one asks for its own backdrop by id. Decoding a 1600px
+    /// JPEG per paper is both the cost and the memory; `UIImage` is a
+    /// reference type, so handing every caller the same instance makes the
+    /// stack cost one decode per side however long it gets. `NSCache` because
+    /// the eviction should be the system's call under pressure, not a number
+    /// invented here.
+    private let decoded: NSCache<NSNumber, UIImage> = {
+        let cache = NSCache<NSNumber, UIImage>()
+        cache.countLimit = 24
+        return cache
+    }()
+
     /// The sync currently on the wire, if any. See `refresh()`.
     private var inFlight: Task<Void, Never>?
 
@@ -130,6 +151,15 @@ final class TemplateStore: ObservableObject {
     private var detailDir: URL { root.appendingPathComponent("detail", isDirectory: true) }
     private var masterDir: URL { root.appendingPathComponent("master", isDirectory: true) }
 
+    /// Pictures kept for what has already been graded rather than for what is
+    /// still gradeable. A template that drops a page stops fetching it; the
+    /// results filed against it still have to draw it.
+    private var archiveDir: URL { root.appendingPathComponent("archive", isDirectory: true) }
+
+    private func archiveURL(imageID: Int) -> URL {
+        archiveDir.appendingPathComponent("\(imageID).jpg")
+    }
+
     private func detailURL(_ id: Int) -> URL {
         detailDir.appendingPathComponent("\(id).json")
     }
@@ -142,7 +172,7 @@ final class TemplateStore: ObservableObject {
     }
 
     private func ensureDirectories() {
-        for dir in [root, detailDir, masterDir] {
+        for dir in [root, detailDir, masterDir, archiveDir] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }
@@ -367,13 +397,46 @@ final class TemplateStore: ObservableObject {
                                                  pageIndex: page.pageIndex) }
             pages.append(ResolvedTemplate.Page(index: page.pageIndex,
                                                master: master,
-                                               questions: questions))
+                                               questions: questions,
+                                               imageID: page.imageID))
         }
 
         let summary = index.templates.first { $0.id == id }
         let title = summary.map { ExamTemplate(dto: $0).fullTitle } ?? detail.examName
 
         return ResolvedTemplate(id: id, title: title, pages: pages, scriptedAnswers: nil)
+    }
+
+    /// The picture behind one image id, for a record that names it.
+    ///
+    /// Tries the template cache first, because a page still in use is already
+    /// there under this very id — masters have always been filed by image id,
+    /// which is what makes this possible at all. Falling back to the image
+    /// endpoint rather than the template's own `/master` is deliberate: the
+    /// caller is asking about a paper that was graded some time ago, and the
+    /// template it belonged to is the one thing that may have moved since.
+    func master(imageID: Int) async throws -> UIImage {
+        let key = NSNumber(value: imageID)
+        if let image = decoded.object(forKey: key) { return image }
+
+        if let image = UIImage(contentsOfFile: masterURL(imageID: imageID).path) {
+            decoded.setObject(image, forKey: key)
+            return image
+        }
+        let archived = archiveURL(imageID: imageID)
+        if let image = UIImage(contentsOfFile: archived.path) {
+            decoded.setObject(image, forKey: key)
+            return image
+        }
+
+        let data = try await APIClient.shared.imageContent(id: imageID)
+        guard let image = UIImage(data: data) else {
+            throw TemplateStoreError.masterUnavailable
+        }
+        ensureDirectories()
+        try? data.write(to: archived, options: .atomic)
+        decoded.setObject(image, forKey: key)
+        return image
     }
 
     private func cachedDetail(id: Int) -> TemplateDetailDTO? {
@@ -400,6 +463,7 @@ final class TemplateStore: ObservableObject {
         // behind us — which is the whole failure this purge exists to undo.
         inFlight?.cancel()
         inFlight = nil
+        decoded.removeAllObjects()
         try? FileManager.default.removeItem(at: root)
         index = .empty
         ensureDirectories()

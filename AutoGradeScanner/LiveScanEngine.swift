@@ -488,6 +488,17 @@ final class LiveScanEngine {
     /// Everything the session knows, in the form the store keeps it.
     var templateIdentifier: Int { template.id }
 
+    /// The paper's sides, for the record to keep. Labels are resolved here
+    /// rather than at display time because the template's page count is known
+    /// now and may not be later.
+    var storedPages: [StoredPage] {
+        template.pages.indices.map { slot in
+            StoredPage(index: slot,
+                       imageID: template.pages[slot].imageID,
+                       label: template.pageLabel(slot))
+        }
+    }
+
     // MARK: - Frame integration
 
     private func integrate(frame: UIImage,

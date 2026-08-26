@@ -233,6 +233,18 @@ final class APIClient {
         return try await send(request)
     }
 
+    /// One stored image by id, whatever template happens to point at it.
+    ///
+    /// Content-addressed in the way `/templates/{id}/master` is not: an image
+    /// row's sha256 never moves, so this answers for a picture that a template
+    /// has since stopped using — or that no template points at any more. That
+    /// is exactly what a graded paper needs to redraw the sheet it was marked
+    /// against, so this is the only endpoint whose long cache is honest.
+    func imageContent(id: Int) async throws -> Data {
+        let request = try makeRequest(path: "/api/v1/images/\(id)/content")
+        return try await send(request)
+    }
+
     func renameTemplate(id: Int, name: String) async throws {
         struct Body: Encodable { let exam_name: String }
         var request = try makeRequest(path: "/api/v1/templates/\(id)", method: "PATCH")

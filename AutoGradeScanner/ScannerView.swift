@@ -626,7 +626,9 @@ struct ScannerView: View {
     private func finishLiveSession() {
         leftBehind = nil
         guard let engine = liveEngine, let result = engine.finish() else { return }
-        let paper = GradingStore.record(from: result, templateID: engine.templateIdentifier)
+        let paper = GradingStore.record(from: result,
+                                        templateID: engine.templateIdentifier,
+                                        pages: engine.storedPages)
         papers.store(paper, cells: engine.capturedCells())
         model.lastResult = result
         withAnimation(.spring(duration: 0.3)) { completedPaper = paper }

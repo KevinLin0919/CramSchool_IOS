@@ -14,6 +14,26 @@ import UIKit
 // otherwise mean a teacher grades twenty papers and keeps only the last, since
 // the app has never retained more than one.
 
+/// One side of the paper, as it was when the paper was graded.
+///
+/// The record has to describe its own backdrop. Asking the template for it
+/// works only until the template moves, and templates move: a single-sided
+/// paper becomes double-sided and every result filed before that grows a
+/// second side it never had, empty of boxes. Worse, replacing a page's
+/// picture leaves the old records drawing their boxes on the new sheet — at
+/// coordinates measured against a different one, so nothing looks broken and
+/// everything is in the wrong place.
+struct StoredPage: Codable, Equatable {
+    /// Position in the paper, and the value `StoredAnswer.page` indexes.
+    let index: Int
+    /// The picture this side was graded against. Nil for a bundled demo
+    /// sheet, which has no server-side image at all.
+    let imageID: Int?
+    /// 正面 / 背面 / 1..n, decided when the paper had a known page count
+    /// rather than re-derived later from a template that may have grown.
+    let label: String
+}
+
 /// One graded paper, in a form that survives the app being killed.
 struct StoredPaper: Codable, Identifiable, Equatable {
     /// Minted on the device before anything is sent, so an upload that has to
@@ -23,6 +43,25 @@ struct StoredPaper: Codable, Identifiable, Equatable {
     let templateTitle: String
     let scannedAt: Date
     var answers: [StoredAnswer]
+
+    /// The sides this paper had, in order. Optional so records written before
+    /// papers described themselves still decode; `pagesOrInferred` is what
+    /// the UI should read, never this.
+    var pages: [StoredPage]?
+
+    /// What to draw, whether or not the record says so.
+    ///
+    /// An older record knows one thing about its shape — the highest page any
+    /// of its answers sits on — and that is enough to stop it borrowing sides
+    /// from whatever the template has become since.
+    var pagesOrInferred: [StoredPage] {
+        if let pages, !pages.isEmpty { return pages }
+        let count = (answers.map(\.page).max() ?? 0) + 1
+        return (0..<count).map {
+            StoredPage(index: $0, imageID: nil,
+                       label: count == 2 ? ($0 == 0 ? "正面" : "背面") : "\($0 + 1)")
+        }
+    }
 
     var correctCount: Int { answers.filter { $0.effectiveVerdict == .correct }.count }
     var wrongCount: Int { answers.filter { $0.effectiveVerdict == .wrong }.count }
@@ -253,6 +292,7 @@ final class GradingStore: ObservableObject {
     /// Builds the record from a finished session.
     static func record(from result: GradingResult,
                        templateID: Int,
+                       pages: [StoredPage],
                        id: UUID = UUID()) -> StoredPaper {
         StoredPaper(
             id: id,
@@ -278,6 +318,10 @@ final class GradingStore: ObservableObject {
                     },
                     pageIndex: answer.pageIndex)
             },
+            // The paper's own account of its shape, taken while the template
+            // that produced it is still in hand. Everything downstream reads
+            // this instead of asking the template again.
+            pages: pages,
             // Stamped now rather than worked out at upload time. Someone can
             // look around in 示範模式, enrol afterwards, and by then nothing
             // distinguishes those papers from real ones except this.

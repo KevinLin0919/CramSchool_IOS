@@ -24,15 +24,27 @@ struct ResultsView: View {
 
     @State private var index = 0
     @State private var correcting: StoredAnswer?
-    /// Masters and page labels, keyed by template.
+    /// Sheets already loaded, keyed by the paper that named them.
     ///
-    /// A pager keeps the neighbouring papers alive so they can follow the
-    /// finger, and those may belong to a different template. One shared set of
-    /// masters would have drawn the paper you are swiping toward over the one
-    /// you are leaving — right up until the swipe finished.
-    @State private var mastersByTemplate: [Int: [UIImage]] = [:]
-    @State private var labelsByTemplate: [Int: [String]] = [:]
+    /// Keyed by paper rather than by template because the paper is what says
+    /// which pictures it was graded against. Two papers from the same template
+    /// can legitimately want different sheets — one filed before its page was
+    /// replaced, one after — and a template-keyed cache would hand both the
+    /// same answer.
+    ///
+    /// A pager also keeps the neighbouring papers alive so they can follow the
+    /// finger, so a single shared set would have drawn the paper being swiped
+    /// toward over the one being left, right up until the swipe finished.
+    @State private var sheets: [UUID: SheetSet] = [:]
     @State private var shownPage = 0
+
+    /// What a paper's backdrop resolved to. `failure` is a state of its own:
+    /// without it a sheet that cannot be fetched shows a spinner that never
+    /// stops, which is how demo papers reviewed after enrolling used to look.
+    private struct SheetSet {
+        var images: [UIImage?]
+        var failure: String?
+    }
     @State private var showsClearConfirm = false
 
     private var current: StoredPaper? {
@@ -94,7 +106,7 @@ struct ResultsView: View {
                 TabView(selection: $index) {
                     ForEach(Array(papers.papers.enumerated()), id: \.element.id) { position, item in
                         paperBody(item, isRegular: isRegular)
-                            .task(id: item.templateID) { await loadMasters(for: item.templateID) }
+                            .task(id: item.id) { await loadSheets(for: item) }
                             .tag(position)
                     }
                 }
@@ -148,10 +160,17 @@ struct ResultsView: View {
     // MARK: - Top: the master sheet with boxes
 
     private func sheetPanel(_ paper: StoredPaper) -> some View {
-        let masters = mastersByTemplate[paper.templateID] ?? []
+        // The paper's own account of its shape, never the template's current
+        // one. A result filed when this exam was single-sided must not grow a
+        // back the moment someone adds one to the template.
+        let pages = paper.pagesOrInferred
+        let set = sheets[paper.id]
         // A paper with fewer sides than the one before it must not inherit its
         // page: the strip would point at a side this paper does not have.
-        let page = min(shownPage, max(0, masters.count - 1))
+        let page = min(shownPage, max(0, pages.count - 1))
+        // Two optionals collapse here: the set may not have loaded, and a page
+        // within a loaded set may have no picture.
+        let sheet: UIImage? = set.flatMap { $0.images[safe: page] ?? nil }
         return VStack(alignment: .leading, spacing: 8) {
             summaryRow(paper)
 
@@ -159,13 +178,13 @@ struct ResultsView: View {
             // box belongs to one side of the paper, and drawing every side's
             // boxes over one master would scatter the back's cells across the
             // front at coordinates that look plausible.
-            if masters.count > 1 {
-                pageSwitcher(paper, masters: masters, shown: page)
+            if pages.count > 1 {
+                pageSwitcher(paper, pages: pages, shown: page)
             }
 
             ZStack {
-                if masters.indices.contains(page) {
-                    Image(uiImage: masters[page])
+                if let sheet {
+                    Image(uiImage: sheet)
                         .resizable()
                         .scaledToFit()
                         .overlay(GeometryReader { geo in
@@ -180,7 +199,21 @@ struct ResultsView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(AG.bg1)
                         .frame(height: 220)
-                        .overlay(ProgressView().tint(AG.brand))
+                        .overlay {
+                            // Say what went wrong rather than spin forever.
+                            // The cell crops below still carry the grading, so
+                            // a missing backdrop is a degraded page, not a
+                            // broken one.
+                            if let failure = set?.failure {
+                                Text(failure)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(AG.fg2)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 24)
+                            } else {
+                                ProgressView().tint(AG.brand)
+                            }
+                        }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -189,18 +222,17 @@ struct ResultsView: View {
     }
 
     private func pageSwitcher(_ paper: StoredPaper,
-                             masters: [UIImage],
+                             pages: [StoredPage],
                              shown: Int) -> some View {
-        let labels = labelsByTemplate[paper.templateID] ?? []
-        return HStack(spacing: 4) {
-            ForEach(masters.indices, id: \.self) { page in
+        HStack(spacing: 4) {
+            ForEach(pages.indices, id: \.self) { page in
                 let unsure = paper.answers
                     .filter { $0.page == page && $0.effectiveVerdict == .unsure }.count
                 Button {
                     shownPage = page
                 } label: {
                     HStack(spacing: 5) {
-                        Text(page < labels.count ? labels[page] : "\(page + 1)")
+                        Text(pages[page].label)
                             .font(.system(size: 13, weight: page == shown ? .semibold : .regular))
                         // Where the remaining work is, so the page holding it
                         // is findable without opening every one.
@@ -270,7 +302,8 @@ struct ResultsView: View {
     // MARK: - Bottom: what the model actually saw
 
     private func cellPanel(_ paper: StoredPaper) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let pages = paper.pagesOrInferred
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("各題作答")
                     .font(.system(size: 12, weight: .semibold))
@@ -284,10 +317,32 @@ struct ResultsView: View {
                 }
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 10)], spacing: 10) {
-                ForEach(paper.answers, id: \.questionNo) { answer in
-                    cellCard(paper, answer)
+            // Grouped by side once there is more than one. Question numbers
+            // run continuously across the whole paper — the server's schema
+            // leaves no choice — so a flat grid of Q1…Q24 gives no way to tell
+            // which of six sides a cell came from, which is exactly what a
+            // teacher looking for the page still owing corrections needs.
+            if pages.count > 1 {
+                ForEach(pages.indices, id: \.self) { page in
+                    let answers = paper.answers.filter { $0.page == page }
+                    if !answers.isEmpty {
+                        Text(pages[page].label)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(AG.fg3)
+                            .padding(.top, page == 0 ? 0 : 4)
+                        cellGrid(paper, answers)
+                    }
                 }
+            } else {
+                cellGrid(paper, paper.answers)
+            }
+        }
+    }
+
+    private func cellGrid(_ paper: StoredPaper, _ answers: [StoredAnswer]) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 10)], spacing: 10) {
+            ForEach(answers, id: \.questionNo) { answer in
+                cellCard(paper, answer)
             }
         }
     }
@@ -452,14 +507,72 @@ struct ResultsView: View {
         return text
     }
 
-    /// Each page in the pager asks for its own template, and the first to ask
-    /// pays. A stack is usually one exam, so this normally holds a single
-    /// entry no matter how many papers are in it.
-    private func loadMasters(for templateID: Int) async {
-        guard mastersByTemplate[templateID] == nil else { return }
-        guard let resolved = try? await TemplateStore.shared.resolve(id: templateID) else { return }
-        mastersByTemplate[templateID] = resolved.pages.map(\.master)
-        labelsByTemplate[templateID] = resolved.pages.indices.map { resolved.pageLabel($0) }
+    /// Fetches the sheets one paper says it was graded against.
+    ///
+    /// Three sources, in the order they can be trusted. A demo paper's sheet
+    /// ships in the app and is the only thing that can answer for it — the
+    /// template ids it names exist on no server, so an enrolled device asking
+    /// the server about them gets a 404 and, before this, a spinner that never
+    /// stopped. A paper that names its image ids gets exactly those pictures,
+    /// which is the whole point. Anything older names nothing, and falls back
+    /// to the template as it stands today — the same guess as before, but now
+    /// clamped to the number of sides the paper actually has.
+    private func loadSheets(for paper: StoredPaper) async {
+        guard sheets[paper.id] == nil else { return }
+        let pages = paper.pagesOrInferred
+
+        if paper.isDemo == true {
+            let demo = DemoData.resolved(id: paper.templateID)
+            sheets[paper.id] = SheetSet(
+                images: pages.indices.map { demo?.pages[safe: $0]?.master },
+                failure: demo == nil ? "找不到這份示範考卷的底圖" : nil)
+            return
+        }
+
+        if pages.contains(where: { $0.imageID != nil }) {
+            var images: [UIImage?] = []
+            var failure: String?
+            for page in pages {
+                guard let imageID = page.imageID else { images.append(nil); continue }
+                do {
+                    images.append(try await TemplateStore.shared.master(imageID: imageID))
+                } catch {
+                    images.append(nil)
+                    failure = failure ?? error.localizedDescription
+                }
+            }
+            sheets[paper.id] = SheetSet(images: images, failure: failure)
+            return
+        }
+
+        do {
+            let resolved = try await TemplateStore.shared.resolve(id: paper.templateID)
+            var images: [UIImage?] = []
+            for slot in pages.indices {
+                guard let page = resolved.pages[safe: slot] else { images.append(nil); continue }
+                // Through the id where there is one, so a stack of forty
+                // legacy papers shares one decode per side like every other
+                // path here — `page.master` is a fresh decode each time.
+                if let imageID = page.imageID {
+                    images.append(try? await TemplateStore.shared.master(imageID: imageID))
+                } else {
+                    images.append(page.master)
+                }
+            }
+            sheets[paper.id] = SheetSet(images: images, failure: nil)
+        } catch {
+            sheets[paper.id] = SheetSet(images: pages.map { _ in nil },
+                                        failure: error.localizedDescription)
+        }
+    }
+}
+
+private extension Array {
+    /// Reading past the end here means the record and the pictures disagree
+    /// about how many sides there are, which is a thing to draw around rather
+    /// than crash on.
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 

@@ -174,7 +174,8 @@ final class DemoData {
                                 title: title,
                                 pages: [ResolvedTemplate.Page(index: 0,
                                                               master: master,
-                                                              questions: questions)],
+                                                              questions: questions,
+                                                              imageID: nil)],
                                 scriptedAnswers: bundled.written)
     }
 
