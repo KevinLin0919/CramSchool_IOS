@@ -554,48 +554,80 @@ struct ResultsView: View {
         do {
             let resolved = try await TemplateStore.shared.resolve(id: paper.templateID)
 
-            // The template has to still be the shape this paper was graded
-            // against, or its pages are not the ones this record means.
+            // Position in the template is not evidence of anything.
             //
-            // A paper filed when this exam was one sheet, against a template
-            // that now has two, does not get page 0 — that page is whatever
-            // was added in front, and drawing a back page's boxes on it puts
-            // every cell somewhere plausible and wrong. This exact case is
-            // sitting on the device already: the papers graded against the
-            // single-sided version of an exam that has since grown a front.
-            //
-            // Matching counts is the only signal an old record leaves. It
-            // does not catch a page whose picture was swapped in place, which
-            // nothing here can — but that one is far rarer than a template
-            // gaining a side.
-            guard resolved.pages.count == pages.count else {
-                sheets[paper.id] = SheetSet(
-                    images: pages.map { _ in nil },
-                    failure: "這份考卷後來從 \(pages.count) 面改成 \(resolved.pages.count) 面，"
-                           + "已經無法確定當初批改的是哪一面，所以不顯示底圖。\n"
-                           + "下方各題的作答與判定仍然是正確的。")
-                return
-            }
-
+            // A paper filed when this exam was one sheet — the back of it,
+            // graded on its own — would take page 0 of a template that has
+            // since grown a front, and every box would land somewhere
+            // plausible and wrong. What the record does carry is the boxes it
+            // graded, in the coordinates of the page they were measured on.
+            // Ask which page still has those boxes.
             var images: [UIImage?] = []
+            var unmatched = 0
             for slot in pages.indices {
-                guard let page = resolved.pages[safe: slot] else { images.append(nil); continue }
+                let answers = paper.answers.filter { $0.page == slot }
+                guard let matched = Self.page(matching: answers, in: resolved) else {
+                    images.append(nil)
+                    unmatched += 1
+                    continue
+                }
                 // Through the id where there is one, so a stack of forty
                 // legacy papers shares one decode per side like every other
                 // path here — `page.master` is a fresh decode each time.
-                if let imageID = page.imageID {
+                if let imageID = matched.imageID {
                     images.append(try? await TemplateStore.shared.master(imageID: imageID))
                 } else {
-                    images.append(page.master)
+                    images.append(matched.master)
                 }
             }
             guard !Task.isCancelled else { return }
-            sheets[paper.id] = SheetSet(images: images, failure: nil)
+            sheets[paper.id] = SheetSet(
+                images: images,
+                failure: unmatched == 0 ? nil
+                    : "這份考卷的題目位置已經和目前的「\(paper.templateTitle)」對不上了，"
+                    + "無法確定當初批改的是哪一面，所以不顯示底圖。\n"
+                    + "下方各題的作答與判定仍然是正確的。")
         } catch {
             guard !Task.isCancelled else { return }
             sheets[paper.id] = SheetSet(images: pages.map { _ in nil },
                                         failure: error.localizedDescription)
         }
+    }
+}
+
+extension ResultsView {
+    /// The page whose boxes are these boxes.
+    ///
+    /// A record written before papers described themselves names no image,
+    /// but it still carries every box it graded, and those are in the
+    /// coordinates of the page they were measured on. If the template still
+    /// has a page holding them, that page is the sheet this paper was marked
+    /// against — established rather than assumed.
+    ///
+    /// Ambiguity is treated as no answer. Two pages that both hold every box
+    /// would mean the paper genuinely could have been either, and picking one
+    /// would be the guess this exists to avoid.
+    static func page(matching answers: [StoredAnswer],
+                     in resolved: ResolvedTemplate) -> ResolvedTemplate.Page? {
+        let rects = answers.compactMap(\.rect)
+        guard !rects.isEmpty else { return nil }
+
+        let matches = resolved.pages.filter { page in
+            rects.allSatisfy { rect in
+                page.questions.contains { near($0.box, rect) }
+            }
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    /// Fractions of a master sheet, so the tolerance is in those terms:
+    /// 0.002 is about five pixels across a 2573px page. The numbers came from
+    /// the same server and survive only a JSON round trip, so anything that
+    /// is the same box agrees far more closely than this.
+    private static func near(_ a: CGRect, _ b: CGRect) -> Bool {
+        let t: CGFloat = 0.002
+        return abs(a.minX - b.minX) < t && abs(a.minY - b.minY) < t
+            && abs(a.width - b.width) < t && abs(a.height - b.height) < t
     }
 }
 
