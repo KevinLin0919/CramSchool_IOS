@@ -152,9 +152,18 @@ struct ResultsView: View {
     }
 
 
+    /// Moves the pager, and lets the pager decide how.
+    ///
+    /// Not wrapped in `withAnimation`. A paged `TabView` is a
+    /// `UIPageViewController` underneath and runs its own transition; an
+    /// explicit animation transaction around the selection write leaves the
+    /// two disagreeing — `index` moves, the page does not, and every tap
+    /// after that is computed from a number the screen is not showing. The
+    /// arrows stopped working the moment the swipe pager replaced the old
+    /// threshold gesture, and this is why.
     private func goTo(_ target: Int) {
         guard papers.papers.indices.contains(target), target != index else { return }
-        withAnimation(.easeInOut(duration: 0.28)) { index = target }
+        index = target
     }
 
     // MARK: - Top: the master sheet with boxes
@@ -489,6 +498,13 @@ struct ResultsView: View {
             Image(systemName: icon)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(enabled ? AG.brand : AG.fg4)
+                // A 15pt glyph is a 15pt target, which is a third of what a
+                // finger needs. Widened to the bar's own height, and no
+                // further: this sits in an overlay centred over 繼續掃描 on
+                // the left, and a target wide enough to reach it would start
+                // eating that button's taps instead.
+                .frame(width: 32, height: 44)
+                .contentShape(Rectangle())
         }
         .disabled(!enabled)
     }
