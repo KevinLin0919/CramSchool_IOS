@@ -170,6 +170,29 @@ enum RecognitionSelfTest {
                   "\(cleanHits)/\(real.cells.count)  " + detail.joined(separator: " "))
             check("real.filterHelps", cleanHits > rawHits,
                   "\(rawHits) → \(cleanHits) once the box border is erased")
+
+            // Every one of these cells is a multiple-choice answer — 二 and 七
+            // off the paper this was built from — so all six are exactly the
+            // case `choice` exists for. Measured on the real ink rather than a
+            // synthetic pair of blobs, because the claim being tested is that
+            // dropping a stray group helps on cells that actually occur.
+            var singleHits = 0, dropped = 0
+            var singleDetail: [String] = []
+            for cell in real.cells {
+                let patch = CellPatch(width: cell.width, height: cell.height,
+                                      intensity: cell.intensity).withoutPrintedMarks()
+                let result = try? recognizer.recognize(patch, arity: .single)
+                if result?.text == cell.truth { singleHits += 1 }
+                dropped += result?.discarded ?? 0
+                singleDetail.append("\(cell.label):\(cell.truth)→\(result?.text ?? "-")"
+                                    + ((result?.discarded ?? 0) > 0 ? "+\(result!.discarded)" : "")
+                                    + (result?.text == cell.truth ? "" : "✗"))
+            }
+            print("RECOG INFO real.singleArity dropped \(dropped) stray group(s)")
+            // Never worse: the constraint may only remove readings that could
+            // not have matched a one-character answer anyway.
+            check("real.choiceNeverHurts", singleHits >= cleanHits,
+                  "\(cleanHits) → \(singleHits)  " + singleDetail.joined(separator: " "))
         } else {
             check("real.printedMarksRemoved", false, "cannot read \(realPath)")
         }

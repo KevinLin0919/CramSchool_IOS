@@ -113,7 +113,7 @@ final class DigitRecognizer {
         // that only saw one blob until neither reaches a majority.
         if arity == .single, groups.count > 1 {
             let byArea = groups
-                .map { (mask: $0, area: $0.reduce(0) { $1 ? $0 + 1 : $0 }) }
+                .map { mask in (mask: mask, area: mask.lazy.filter { $0 }.count) }
                 .sorted { $0.area > $1.area }
             let winner = byArea[0], runnerUp = byArea[1]
             // Only when the winner is clearly the winner. Similar sizes mean
