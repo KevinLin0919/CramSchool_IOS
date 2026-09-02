@@ -197,6 +197,40 @@ enum RecognitionSelfTest {
             check("real.printedMarksRemoved", false, "cannot read \(realPath)")
         }
 
+        // Real ink, and the reason this file changed.
+        //
+        // Ten cells off a 康軒 社會4上 worksheet. Every ○ on it is an open
+        // arc — the children draw a gap of a third to a half of the diameter —
+        // which is the case the enclosure test could not see and scored 5/10
+        // on, one of them confidently wrong. A confident wrong mark flips a
+        // right answer to wrong on a child's paper, so that number is the one
+        // this check exists to hold down.
+        let marksPath = (referencePath as NSString).deletingLastPathComponent
+            + "/real_marks.json"
+        if let data = FileManager.default.contents(atPath: marksPath),
+           let marks = try? JSONDecoder().decode(RealCells.self, from: data) {
+            var hits = 0, confidentlyWrong = 0
+            var detail: [String] = []
+            for cell in marks.cells {
+                let patch = CellPatch(width: cell.width, height: cell.height,
+                                      intensity: cell.intensity)
+                let read = MarkRecognizer.recognize(patch)
+                let got = read?.mark.rawValue ?? "-"
+                if got == cell.truth { hits += 1 }
+                else if (read?.confidence ?? 0) >= 0.7 { confidentlyWrong += 1 }
+                detail.append("\(cell.label):\(cell.truth)→\(got)"
+                              + (got == cell.truth ? "" : "✗"))
+            }
+            check("mark.realInk", hits >= 9,
+                  "\(hits)/\(marks.cells.count)  " + detail.joined(separator: " "))
+            // The one that matters more than the score. Unsure is a fine
+            // answer here; wrong-and-sure is not.
+            check("mark.noConfidentMisread", confidentlyWrong == 0,
+                  "\(confidentlyWrong) confident misreads")
+        } else {
+            check("mark.realInk", false, "cannot read \(marksPath)")
+        }
+
         // MARK: topology
 
         check("mark.closedCircle",
@@ -224,13 +258,21 @@ enum RecognitionSelfTest {
               String(format: "seals gaps up to %.0f° (%.1f px of a %d px cell)",
                      widestSealed, gapPixels, Shapes.size))
 
-        // The failure that must never be silent: a gap too wide to seal should
-        // come back as low confidence, not as a confident cross.
+        // A ring open by 90° is still a ring, and the probe says so: nothing
+        // runs through its middle however wide the gap.
+        //
+        // This assertion used to be the opposite — that such a ring came back
+        // as LOW confidence — because under the enclosure test an unsealed
+        // ring was indistinguishable from a cross, and admitting uncertainty
+        // was the best it could do. That was a description of the method's
+        // limit, not of the right answer, and the method it described is gone.
         if let wide = MarkRecognizer.recognize(Shapes.ring(gapDegrees: 90)) {
-            check("mark.tooOpenIsUnsure", wide.confidence <= 0.3,
-                  String(format: "confidence %.2f", wide.confidence))
+            check("mark.wideOpenRingIsStillACircle",
+                  wide.mark == .circle && wide.confidence >= 0.5,
+                  String(format: "%@ at %.2f, %d probe crossings",
+                         wide.mark.rawValue, wide.confidence, wide.crossings))
         } else {
-            check("mark.tooOpenIsUnsure", false, "no reading at all")
+            check("mark.wideOpenRingIsStillACircle", false, "no reading at all")
         }
 
         // MARK: MNIST normalisation

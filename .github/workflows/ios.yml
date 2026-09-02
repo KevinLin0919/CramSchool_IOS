@@ -79,6 +79,12 @@ jobs:
           # the fact that the filter is still doing something.
           grep -q "RECOG PASS real.printedMarksRemoved" recog.log
           grep -q "RECOG PASS real.filterHelps" recog.log
+          # Real ○/✗ off a worksheet. Named explicitly rather than left to the
+          # blanket FAIL check below, because the way this one breaks is the
+          # fixture going missing — and a check that never ran leaves no FAIL
+          # line to catch.
+          grep -q "RECOG PASS mark.realInk" recog.log
+          grep -q "RECOG PASS mark.noConfidentMisread" recog.log
           # Recognition reads cells out of the capture buffer, where CoreImage's
           # origin is bottom-left and every quad here is top-left. A wrong flip
           # would sample the mirror image and fail silently.

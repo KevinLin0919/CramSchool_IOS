@@ -116,6 +116,13 @@ final class AnswerRecognizer {
         /// source.
         var discarded: Int = 0
 
+        /// Marks only: how many times a probe circle round the middle met ink.
+        /// The number the circle-or-cross decision was made on, carried so the
+        /// diagnostic overlay can show it — the tuning was measured on flatbed
+        /// scans and the camera is a different picture, so this is what says
+        /// whether it still holds there.
+        var probeCrossings: Int = 0
+
         /// Whether this frame is trustworthy enough to vote with. A reading
         /// that fails this is still evidence that *something* is written — it
         /// just isn't evidence of what.
@@ -168,7 +175,8 @@ final class AnswerRecognizer {
         case .mark:
             guard let result = MarkRecognizer.recognize(clean) else { return nil }
             return Reading(text: result.mark.rawValue, confidence: result.confidence,
-                           margin: result.confidence, kind: .mark)
+                           margin: result.confidence, kind: .mark,
+                           probeCrossings: result.crossings)
         case .digits, .choice:
             guard let digits,
                   let result = try? digits.recognize(clean, arity: kind == .choice ? .single : .any)

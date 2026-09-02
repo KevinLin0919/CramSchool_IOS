@@ -598,7 +598,7 @@ struct CameraPreviewView: UIViewRepresentable {
             // report, so excluding greens would hide it exactly where it
             // matters.
             let worthLabelling = box.verdict == .wrong || box.verdict == .unsure
-                || (showsReading && box.discarded > 0)
+                || (showsReading && (box.discarded > 0 || box.probeCrossings > 0))
             guard worthLabelling, !expected.isEmpty else {
                 labelLayers[id]?.removeFromSuperlayer()
                 labelLayers[id] = nil
@@ -610,6 +610,11 @@ struct CameraPreviewView: UIViewRepresentable {
                 // Diagnostic mode: a red box alone cannot tell you whether the
                 // student was wrong or the model was. This can.
                 text = "\(read)→\(expected)"
+            }
+            if showsReading, box.probeCrossings > 0 {
+                // The number the circle-or-cross call was made on. Four means
+                // strokes ran through the middle; zero means nothing did.
+                text += " ⌀\(box.probeCrossings)"
             }
             if showsReading, box.discarded > 0 {
                 // Something else was in the cell and got dropped for being

@@ -1,19 +1,26 @@
 import Foundation
 
-// Circle-or-cross recognition by topology rather than by appearance.
+// Circle-or-cross recognition by geometry rather than by appearance.
 //
-// A circle encloses a region; a cross does not. That property survives every
-// way a student can distort the shape — squashed, tilted, oversized, drawn
-// counter-clockwise — because it asks "is anything enclosed?" instead of
-// "does this look like an O?". No model, no training data, no inference cost.
+// The question is "does anything run through the middle?", not "is anything
+// enclosed?". A cross's strokes radiate from where they meet, so a circle
+// drawn around that point is crossed four times whatever its radius. A circle
+// — or an arc, or a C, or a U — is empty inside, so the same probe finds
+// nothing. That holds however wide the student left the gap, which is the
+// whole point.
 //
-// The one thing it is fragile about is connectivity: topologically, a circle
-// whose ends miss each other by a single pixel is identical to one that misses
-// by a mile — neither encloses anything. Students routinely leave that gap, so
-// the morphological closing below is not an optimisation, it is the load-bearing
-// step. Everything else here is guarding the two failure modes that remain:
-// a gap too wide to seal, and a scribbled cross that accidentally encloses
-// a speck.
+// It replaces an enclosure test, and the replacement was not a refinement.
+// Measured against ten real cells off a 康軒 社會4上 worksheet, counting
+// enclosed regions scored 5/10 and got one of them confidently wrong — a
+// student's ○ reported as ✗ at full confidence, which flips a right answer
+// to wrong. The reason is visible the moment you look at the ink: these
+// children do not draw closed circles with a small gap, they draw open arcs.
+// The opening is 30–50% of the diameter, and no morphological closing can
+// bridge that without also filling in the hole it was meant to preserve.
+//
+// The enclosure test survives as a fast path, because when a circle IS closed
+// that is the cheapest and most certain evidence there is. It just no longer
+// decides the cases it was getting wrong.
 
 enum Mark: String {
     case circle = "O"
@@ -30,6 +37,10 @@ enum MarkRecognizer {
         let holeCount: Int
         /// Largest enclosed region as a fraction of the cell.
         let holeArea: Double
+        /// Most times a probe circle round the mark's middle met ink. Four for
+        /// a well-drawn cross, zero for anything hollow. Reported so the
+        /// diagnostic overlay can show the number the decision came from.
+        var crossings: Int = 0
     }
 
     enum Tuning {
@@ -44,12 +55,23 @@ enum MarkRecognizer {
         static let minHoleAreaRatio = 0.015
         /// A hole at least this big is unambiguous.
         static let confidentHoleAreaRatio = 0.08
-        /// Ink share of the middle of the mark. A cross runs through its own
-        /// centre; a circle is empty there.
-        static let crossCentreDensity = 0.15
-        /// Below this the centre is empty, which for something with no hole
-        /// means an unclosed circle far more often than it means a cross.
-        static let openCircleCentreDensity = 0.05
+
+        /// Radii of the probe circles, as fractions of the mark's shorter
+        /// side. Three of them, and the largest count wins.
+        ///
+        /// One circle is not enough: a cross whose strokes meet off-centre is
+        /// missed by a probe drawn round the middle of its bounding box, and
+        /// measured on real ink that happened — a single 0.20 probe found one
+        /// crossing where three found four. They stop at 0.30 because beyond
+        /// that a small tight ○ starts being met by its own ring.
+        static let probeRadiusRatios = [0.18, 0.24, 0.30]
+        /// Points sampled round each circle. 180 puts a sample every 2°, which
+        /// is finer than any pen stroke is thin at these cell sizes.
+        static let probeSamples = 180
+        /// At or above this, strokes are running through the middle.
+        static let crossCrossings = 3
+        /// At or below this, the middle is hollow.
+        static let circleCrossings = 1
     }
 
     /// Returns nil when the cell holds no mark at all — blank, or so dark the
@@ -79,20 +101,77 @@ enum MarkRecognizer {
                           holeArea: largest)
         }
 
-        // No hole. Usually a cross — but an unclosed circle looks identical to
-        // the hole count, so ask whether anything is actually drawn through the
-        // middle before committing.
-        let density = centreDensity(closed, width: w, height: h)
-        let confidence: Double
-        if density >= Tuning.crossCentreDensity {
-            confidence = 1
-        } else if density <= Tuning.openCircleCentreDensity {
-            confidence = 0.2
-        } else {
-            confidence = 0.2 + 0.8 * (density - Tuning.openCircleCentreDensity)
-                / (Tuning.crossCentreDensity - Tuning.openCircleCentreDensity)
+        // Nothing enclosed, which says almost nothing on its own — an arc and
+        // a cross both enclose nothing. Ask the probe instead.
+        let crossings = maxProbeCrossings(closed, width: w, height: h)
+
+        if crossings >= Tuning.crossCrossings {
+            return Result(mark: .cross, confidence: 1, holeCount: 0, holeArea: 0,
+                          crossings: crossings)
         }
-        return Result(mark: .cross, confidence: confidence, holeCount: 0, holeArea: 0)
+        if crossings <= Tuning.circleCrossings {
+            // Hollow, and not closed: an arc, a C, a U. Every open ○ in the
+            // sample landed here, and the old code called all of them crosses.
+            return Result(mark: .circle, confidence: 0.85, holeCount: 0, holeArea: 0,
+                          crossings: crossings)
+        }
+        // Two crossings. A cross drawn so faintly that a stroke was missed, or
+        // a ○ small enough that the outer probe met its own ring. Answer, but
+        // at a confidence the accumulator will not vote on alone.
+        return Result(mark: .cross, confidence: 0.3, holeCount: 0, holeArea: 0,
+                      crossings: crossings)
+    }
+
+    /// Most times a circle drawn round the mark's middle meets ink.
+    ///
+    /// Centred on the bounding box rather than the ink's centre of mass: a
+    /// cross with one long tail pulls its centroid off the crossing point,
+    /// which is the one place the probe has to be. Sized from the mark, not
+    /// the cell, so a small mark in a large cell is still probed through its
+    /// own middle.
+    static func maxProbeCrossings(_ mask: [Bool], width: Int, height: Int) -> Int {
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        for y in 0..<height {
+            for x in 0..<width where mask[y * width + x] {
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return 0 }
+
+        let cx = Double(minX + maxX) / 2, cy = Double(minY + maxY) / 2
+        let side = Double(min(maxX - minX, maxY - minY))
+
+        var best = 0
+        for ratio in Tuning.probeRadiusRatios {
+            let r = side * ratio
+            guard r >= 2 else { continue }
+            best = max(best, crossings(mask, width: width, height: height,
+                                       cx: cx, cy: cy, radius: r))
+        }
+        return best
+    }
+
+    /// Runs of ink met while walking once round a circle. Counts the starts of
+    /// runs, not the samples, so a thick stroke is one crossing rather than
+    /// several — and the walk wraps, so a run straddling 0° is not counted
+    /// twice.
+    private static func crossings(_ mask: [Bool], width: Int, height: Int,
+                                  cx: Double, cy: Double, radius: Double) -> Int {
+        let n = Tuning.probeSamples
+        var samples = [Bool](repeating: false, count: n)
+        for i in 0..<n {
+            let t = 2 * Double.pi * Double(i) / Double(n)
+            let x = Int((cx + radius * cos(t)).rounded())
+            let y = Int((cy + radius * sin(t)).rounded())
+            guard x >= 0, x < width, y >= 0, y < height else { continue }
+            samples[i] = mask[y * width + x]
+        }
+        var runs = 0
+        for i in 0..<n where samples[i] && !samples[(i + n - 1) % n] { runs += 1 }
+        return runs
     }
 
     /// Areas of the background regions that cannot reach the border — the holes.
@@ -122,34 +201,5 @@ enum MarkRecognizer {
         for label in labels where label > 0 { areas[label] += 1 }
 
         return (1...count).compactMap { touchesBorder[$0] ? nil : areas[$0] }
-    }
-
-    /// Ink share of the middle third of the mark's own bounding box — not of
-    /// the cell, so an off-centre mark is still measured through its middle.
-    private static func centreDensity(_ mask: [Bool], width: Int, height: Int) -> Double {
-        var minX = width, minY = height, maxX = -1, maxY = -1
-        for y in 0..<height {
-            for x in 0..<width where mask[y * width + x] {
-                if x < minX { minX = x }
-                if x > maxX { maxX = x }
-                if y < minY { minY = y }
-                if y > maxY { maxY = y }
-            }
-        }
-        guard maxX >= minX, maxY >= minY else { return 0 }
-
-        let w = maxX - minX + 1, h = maxY - minY + 1
-        let x0 = minX + w / 3, x1 = minX + (2 * w) / 3
-        let y0 = minY + h / 3, y1 = minY + (2 * h) / 3
-        guard x1 >= x0, y1 >= y0 else { return 0 }
-
-        var ink = 0, total = 0
-        for y in y0...y1 {
-            for x in x0...x1 {
-                total += 1
-                if mask[y * width + x] { ink += 1 }
-            }
-        }
-        return total == 0 ? 0 : Double(ink) / Double(total)
     }
 }

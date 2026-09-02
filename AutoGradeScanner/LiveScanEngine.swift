@@ -34,6 +34,8 @@ final class LiveScanEngine {
         /// Zero for everything else. Surfaced so a stray blob that is now
         /// silently discarded is still visible as a thing to fix at source.
         let discarded: Int
+        /// Marks only: probe crossings behind the circle-or-cross call.
+        let probeCrossings: Int
     }
 
     /// One side of the paper, as the scanner chrome needs it.
@@ -173,6 +175,8 @@ final class LiveScanEngine {
     private var recognizedText: [Int: String] = [:]
     /// The most ink groups any frame dropped for a cell. See `Box.discarded`.
     private var discardedGroups: [Int: Int] = [:]
+    /// Last probe-crossing count seen for a mark cell. See `Box.probeCrossings`.
+    private var probeCrossings: [Int: Int] = [:]
     private var blankStreak: [Int: Int] = [:]
 
     /// The crop each question was last read from, kept so a teacher reviewing
@@ -327,6 +331,7 @@ final class LiveScanEngine {
         accumulators = [:]
         recognizedText = [:]
         discardedGroups = [:]
+        probeCrossings = [:]
         blankStreak = [:]
         cellImages = [:]
         lastCellPixels = 0
@@ -637,6 +642,7 @@ final class LiveScanEngine {
                     if reading.discarded > 0 {
                         discardedGroups[i] = max(discardedGroups[i] ?? 0, reading.discarded)
                     }
+                    if reading.kind == .mark { probeCrossings[i] = reading.probeCrossings }
                     var votes = accumulators[i] ?? AnswerAccumulator()
                     votes.add(reading)
                     accumulators[i] = votes
@@ -778,7 +784,8 @@ final class LiveScanEngine {
                 templateRect: boxes[i], verdict: verdicts[i],
                 expectedText: i < expected.count ? expected[i] : "",
                 readText: recognizedText[i],
-                discarded: discardedGroups[i] ?? 0)
+                discarded: discardedGroups[i] ?? 0,
+                probeCrossings: probeCrossings[i] ?? 0)
         }
         let pages = template.pages.indices.map { page -> PageState in
             let slots = slotsByPage[page]
