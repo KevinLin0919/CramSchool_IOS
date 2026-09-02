@@ -1,5 +1,4 @@
 import SwiftUI
-import ARKit
 
 // Screen 2 — full-bleed camera scanner.
 //
@@ -33,25 +32,7 @@ struct ScannerView: View {
     @State private var leftBehind: LiveScanEngine.LeftBehind?
     @StateObject private var papers = GradingStore.shared
 
-    // Experimental ARKit world-tracking backbone (Phase 3). When enabled and
-    // supported, ARKit owns the camera and pins the boxes in world space.
-    // The ARKit backbone is a parked experiment: it never picked up Plan
-    // B/C's rounded, One-Euro-smoothed rendering, so it still draws the old
-    // sharp quads and still twitches. A switch for it in Settings meant one
-    // tap could silently drop someone onto that old overlay — which is what
-    // happened in the field. The code stays compiled for later, but off
-    // outside DEBUG, and under a fresh key so a device that already enabled
-    // it comes back off rather than being stuck with no way to turn it off.
-    @AppStorage("scan.arBackbone.v2") private var arBackbone = false
     @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
-
-    private var useARBackbone: Bool {
-        #if DEBUG
-        arBackbone && ARWorldTrackingConfiguration.isSupported && liveEngine != nil
-        #else
-        false
-        #endif
-    }
 
     /// Names the pages, not just the fact that some exist. "背面還有 10 題沒批改"
     /// can be acted on; "還有題目沒批改" sends someone hunting.
@@ -86,11 +67,7 @@ struct ScannerView: View {
         .onAppear {
             if let template = model.selectedTemplate {
                 startLiveSession(for: template)
-                // ARKit owns the camera in AR mode; starting the AVCapture
-                // session too would fight it for the device.
-                if !useARBackbone {
-                    camera.checkPermissionAndStart()
-                }
+                camera.checkPermissionAndStart()
             }
         }
         .onDisappear {
@@ -135,10 +112,7 @@ struct ScannerView: View {
 
     @ViewBuilder
     private var backdrop: some View {
-        if useARBackbone, let engine = liveEngine {
-            ARScanContainer(engine: engine, live: liveUpdate)
-                .ignoresSafeArea()
-        } else if camera.isAuthorized {
+        if camera.isAuthorized {
             CameraPreviewView(session: camera.session, live: liveUpdate, pose: camera.pose,
                               showsReading: showsReading,
                               onOrientationChange: { camera.setOrientation($0) })

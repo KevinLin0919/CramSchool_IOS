@@ -250,7 +250,10 @@ final class LiveScanEngine {
         let master = template.pages[page].master
         Task.detached(priority: .userInitiated) { [weak self] in
             let built = try? XFeatTemplateMatcher(template: master)
-            await MainActor.run {
+            // The inner closure captures `self` again rather than reaching
+            // for the outer `weak var` — referencing that from concurrent
+            // code is an error under Swift 6.
+            await MainActor.run { [weak self] in
                 guard let self else { return }
                 // A page that failed to build is simply left unbuilt: it has
                 // no matcher, so `isReady` reports false for it and switching
@@ -286,7 +289,10 @@ final class LiveScanEngine {
             let started = CACurrentMediaTime()
             let tracked = try? matcher.alignTracked(scan: frame, hint: hint)
             let millis = (CACurrentMediaTime() - started) * 1000
-            await MainActor.run {
+            // The inner closure captures `self` again rather than reaching
+            // for the outer `weak var` — referencing that from concurrent
+            // code is an error under Swift 6.
+            await MainActor.run { [weak self] in
                 guard let self else { return }
                 // Released first, so a frame dropped for being stale cannot
                 // wedge the pipeline.
