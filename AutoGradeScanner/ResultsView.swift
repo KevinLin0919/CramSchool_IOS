@@ -401,8 +401,17 @@ struct ResultsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 5))
 
                 HStack(spacing: 3) {
-                    Text(answer.effectiveVerdict == .unsure && answer.teacherValue == nil
-                         ? "？" : displayValue(answer))
+                    // What the model read, even when it was not confident
+                    // enough to act on it. `unsure` covers two different
+                    // things — a cell nothing could be read from, and one
+                    // read several ways across frames without agreement —
+                    // and only the second has a reading worth showing. It is
+                    // the one piece of evidence that says whether the cell
+                    // was misread or the crop was sampled off the answer, and
+                    // hiding it behind a question mark left the crop below
+                    // with nothing to compare against. Yellow already says
+                    // "not settled"; the glyph does not have to.
+                    Text(displayValue(answer))
                         .font(.system(size: 15, weight: .bold).monospaced())
                         .foregroundStyle(color)
                     Text("→")
@@ -425,8 +434,11 @@ struct ResultsView: View {
     }
 
     private func displayValue(_ answer: StoredAnswer) -> String {
-        let value = answer.teacherValue ?? answer.recognized
-        return value.isEmpty ? "—" : value
+        if let teacher = answer.teacherValue, !teacher.isEmpty { return teacher }
+        if !answer.recognized.isEmpty { return answer.recognized }
+        // Nothing was read at all — a different state from "read, unsure",
+        // and the only one the question mark honestly describes.
+        return answer.effectiveVerdict == .unsure ? "？" : "—"
     }
 
     // MARK: - Nav
