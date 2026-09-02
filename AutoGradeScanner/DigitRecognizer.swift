@@ -51,6 +51,16 @@ final class DigitRecognizer {
         /// shakiest character.
         let margin: Double
         let digits: [DigitReading]
+        /// Ink groups dropped because the cell holds one character.
+        var discarded: Int = 0
+    }
+
+    /// How many characters the cell can hold.
+    enum Arity {
+        /// However many are written — a fill-in blank, 12 or 144.
+        case any
+        /// Exactly one, because the cell is a multiple-choice answer.
+        case single
     }
 
     enum Tuning {
@@ -65,6 +75,13 @@ final class DigitRecognizer {
         /// More blobs than any plausible answer means the segmentation has
         /// fallen apart; recognising 9 fragments would just produce noise.
         static let maxDigits = 6
+        /// In a single-character cell, the runner-up blob has to be clearly
+        /// smaller than the winner before the winner can be called the answer.
+        /// Two blobs of similar size mean the cell genuinely holds something
+        /// this cannot resolve, and picking the larger would be a coin flip
+        /// dressed up as a reading — better to keep the old behaviour and let
+        /// the cell settle as unsure.
+        static let ambiguousAreaRatio = 0.6
         /// MNIST's own normalisation: fit the ink into 20px, centre in 28px.
         static let inkBox = 20.0
         static let canvas = 28
@@ -82,11 +99,32 @@ final class DigitRecognizer {
     }
 
     /// Returns nil when the cell is blank or nothing survives segmentation.
-    func recognize(_ patch: CellPatch) throws -> Result? {
+    func recognize(_ patch: CellPatch, arity: Arity = .any) throws -> Result? {
         guard !patch.isBlank, patch.coverage <= CellPatch.Tuning.maxCoverage else { return nil }
 
-        let groups = Self.segment(patch)
+        var groups = Self.segment(patch)
         guard !groups.isEmpty, groups.count <= Tuning.maxDigits else { return nil }
+
+        var discarded = 0
+        // A multiple-choice cell holds one character, so a second blob is
+        // something else that got into the crop — printed rule, a neighbour's
+        // stroke, a speck. Reading it as a second digit produces a string that
+        // can never match the answer key, and splits the vote with the frames
+        // that only saw one blob until neither reaches a majority.
+        if arity == .single, groups.count > 1 {
+            let byArea = groups
+                .map { (mask: $0, area: $0.reduce(0) { $1 ? $0 + 1 : $0 }) }
+                .sorted { $0.area > $1.area }
+            let winner = byArea[0], runnerUp = byArea[1]
+            // Only when the winner is clearly the winner. Similar sizes mean
+            // this cannot tell which one is the answer, and the honest result
+            // of that is the unsure it would have reached anyway.
+            if runnerUp.area == 0
+                || Double(runnerUp.area) / Double(winner.area) < Tuning.ambiguousAreaRatio {
+                discarded = groups.count - 1
+                groups = [winner.mask]
+            }
+        }
 
         var readings: [DigitReading] = []
         for group in groups {
@@ -98,7 +136,8 @@ final class DigitRecognizer {
         return Result(text: readings.map { String($0.digit) }.joined(),
                       confidence: readings.map(\.confidence).min() ?? 0,
                       margin: readings.map(\.margin).min() ?? 0,
-                      digits: readings)
+                      digits: readings,
+                      discarded: discarded)
     }
 
     /// Runs one 28x28 grid (0 = paper, 1 = ink) through the model.

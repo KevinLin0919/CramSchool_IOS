@@ -289,9 +289,17 @@ struct NewTemplateView: View {
     /// Which recogniser a cell will need. Derived from the standard answer,
     /// which is the same signal `AnswerKind.infer` uses at scan time, so the
     /// stored type and the runtime routing cannot disagree.
+    ///
+    /// Never `choice`, and that is the point. Whether a cell is
+    /// multiple-choice is a fact about the question, and the answer written
+    /// in it cannot carry that fact — a one-digit answer belongs equally to a
+    /// fill-in blank. The costs are not symmetric either: a cell wrongly
+    /// marked `choice` grades on one of the two things a student wrote, while
+    /// one wrongly left `digit` only behaves the way everything does today.
+    /// It has to be stated by whoever labels the paper.
     private static func answerType(for answer: String) -> String {
         switch AnswerKind.infer(expected: answer) {
-        case .digits: return "digit"
+        case .digits, .choice: return "digit"
         case .mark: return "mark"
         case .unsupported: return "text"
         }

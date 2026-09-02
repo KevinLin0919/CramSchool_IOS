@@ -30,6 +30,10 @@ final class LiveScanEngine {
         let verdict: Verdict?     // nil while pending (not yet decided)
         let expectedText: String  // the template's answer, shown on wrong/unsure boxes
         let readText: String?     // what the model actually read, for the debug overlay
+        /// Ink groups a single-character cell dropped, most any frame saw.
+        /// Zero for everything else. Surfaced so a stray blob that is now
+        /// silently discarded is still visible as a thing to fix at source.
+        let discarded: Int
     }
 
     /// One side of the paper, as the scanner chrome needs it.
@@ -93,6 +97,8 @@ final class LiveScanEngine {
     private let template: ResolvedTemplate
     private let boxes: [CGRect]
     private let expected: [String]
+    /// What the template says each cell is, parallel to `expected`.
+    private let answerTypes: [String]
 
     /// Which page each flat question slot belongs to, and the reverse lookup.
     /// The flat slot stays the index space the whole session works in — every
@@ -165,6 +171,8 @@ final class LiveScanEngine {
     private let recognizer = AnswerRecognizer()
     private var accumulators: [Int: AnswerAccumulator] = [:]
     private var recognizedText: [Int: String] = [:]
+    /// The most ink groups any frame dropped for a cell. See `Box.discarded`.
+    private var discardedGroups: [Int: Int] = [:]
     private var blankStreak: [Int: Int] = [:]
 
     /// The crop each question was last read from, kept so a teacher reviewing
@@ -200,6 +208,7 @@ final class LiveScanEngine {
         let questions = template.questions
         self.boxes = questions.map(\.box)
         self.expected = questions.map(\.answer)
+        self.answerTypes = questions.map(\.answerType)
         self.pageOf = questions.map(\.pageIndex)
 
         var slots = Array(repeating: [Int](), count: template.pages.count)
@@ -311,6 +320,7 @@ final class LiveScanEngine {
         seenStreak = [:]
         accumulators = [:]
         recognizedText = [:]
+        discardedGroups = [:]
         blankStreak = [:]
         cellImages = [:]
         lastCellPixels = 0
@@ -613,9 +623,14 @@ final class LiveScanEngine {
                 let pageAspect = masterAspect.indices.contains(currentPage)
                     ? masterAspect[currentPage] : 1
                 let aspect = box.height > 0 ? (box.width * pageAspect) / box.height : 1
+                let type = i < answerTypes.count ? answerTypes[i] : nil
                 if let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
-                                                 aspect: aspect, expected: exp) {
+                                                 aspect: aspect, expected: exp,
+                                                 declaredType: type) {
                     blankStreak[i] = 0
+                    if reading.discarded > 0 {
+                        discardedGroups[i] = max(discardedGroups[i] ?? 0, reading.discarded)
+                    }
                     var votes = accumulators[i] ?? AnswerAccumulator()
                     votes.add(reading)
                     accumulators[i] = votes
@@ -756,7 +771,8 @@ final class LiveScanEngine {
             Box(id: i, quad: visibleQuads[i]!, rect: visibleRects[i] ?? .zero,
                 templateRect: boxes[i], verdict: verdicts[i],
                 expectedText: i < expected.count ? expected[i] : "",
-                readText: recognizedText[i])
+                readText: recognizedText[i],
+                discarded: discardedGroups[i] ?? 0)
         }
         let pages = template.pages.indices.map { page -> PageState in
             let slots = slotsByPage[page]

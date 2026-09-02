@@ -27,6 +27,16 @@ struct ResolvedTemplate {
         let box: CGRect          // normalized within its own page's master
         let answer: String
         let pageIndex: Int       // which sheet side this cell is printed on
+
+        /// What the server says this cell is: `digit`, `choice`, `mark`,
+        /// `chinese`, `text`.
+        ///
+        /// Carried rather than re-derived. The server has always sent it and
+        /// this client has always decoded it and thrown it away, then guessed
+        /// the same thing back from the answer key's own text — which cannot
+        /// tell a one-digit multiple-choice cell from a one-digit fill-in
+        /// blank, because that is a fact about the question.
+        let answerType: String
     }
 
     /// One physical side of the paper: its own master image and its own cells.
@@ -390,7 +400,8 @@ final class TemplateStore: ObservableObject {
                 .map { ResolvedTemplate.Question(number: $0.questionNo,
                                                  box: $0.rect,
                                                  answer: $0.answer,
-                                                 pageIndex: page.pageIndex) }
+                                                 pageIndex: page.pageIndex,
+                                                 answerType: $0.answerType) }
             pages.append(ResolvedTemplate.Page(index: page.pageIndex,
                                                master: master,
                                                questions: questions,

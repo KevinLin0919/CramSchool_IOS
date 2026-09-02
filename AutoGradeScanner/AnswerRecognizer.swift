@@ -18,10 +18,35 @@ import Foundation
 enum AnswerKind {
     /// One or more handwritten digits.
     case digits
+    /// Exactly one handwritten digit, because the cell is a multiple-choice
+    /// answer and cannot hold more.
+    ///
+    /// The constraint buys accuracy less by discarding a stray blob than by
+    /// letting the votes agree: unconstrained, one frame reads 「4」 and the
+    /// next reads 「41」, those are two separate keys competing for the same
+    /// 75% majority, neither gets it, and the cell gives up as unsure.
+    case choice
     /// Circle or cross.
     case mark
     /// Chinese, mixed text, anything else — stays on the server for now.
     case unsupported
+
+    /// What the template declared, when it declared anything.
+    ///
+    /// The server has always sent `answer_type` and this client has always
+    /// thrown it away and guessed the same thing back from the answer text.
+    /// That guess cannot produce `choice` and should not: a one-digit answer
+    /// belongs equally to a fill-in blank, so whether the cell is
+    /// multiple-choice is something only the template knows.
+    static func declared(_ type: String?) -> AnswerKind? {
+        switch type {
+        case "choice":  return .choice
+        case "digit":   return .digits
+        case "mark":    return .mark
+        case "chinese", "text": return .unsupported
+        default:        return nil        // absent, or a value added since
+        }
+    }
 
     private static let circleForms: Set<String> = ["O", "o", "○", "◯", "圈"]
     private static let crossForms: Set<String> = ["X", "x", "×", "✗", "叉"]
@@ -32,6 +57,8 @@ enum AnswerKind {
         "⑤": "5", "⑥": "6", "⑦": "7", "⑧": "8", "⑨": "9",
     ]
 
+    /// Falls back to reading the answer key's own text. Used for the bundled
+    /// demo and for anything synced before templates declared a type.
     static func infer(expected: String) -> AnswerKind {
         let trimmed = canonical(expected)
         guard !trimmed.isEmpty else { return .unsupported }
@@ -82,13 +109,24 @@ final class AnswerRecognizer {
         let margin: Double
         let kind: AnswerKind
 
+        /// Ink groups this reading dropped because the cell holds one
+        /// character. Non-zero means something else was in the cell — kept so
+        /// the diagnostic overlay can say so, because a stray blob that is
+        /// silently discarded is still there and still worth fixing at its
+        /// source.
+        var discarded: Int = 0
+
         /// Whether this frame is trustworthy enough to vote with. A reading
         /// that fails this is still evidence that *something* is written — it
         /// just isn't evidence of what.
         var isConfident: Bool {
             switch kind {
-            case .digits: return confidence >= Confidence.minSoftmax
-                              && margin >= Confidence.minMargin
+            // Same thresholds either way: the arity changes how many groups
+            // are read, not how sure the model has to be about the one it
+            // keeps.
+            case .digits, .choice:
+                return confidence >= Confidence.minSoftmax
+                    && margin >= Confidence.minMargin
             case .mark: return confidence >= Confidence.minMark
             case .unsupported: return false
             }
@@ -113,8 +151,11 @@ final class AnswerRecognizer {
     /// Returns nil for a blank cell, an unsupported answer type, or a reading
     /// that could not be formed — all of which mean "no answer from this
     /// frame", not "wrong".
-    func read(_ patch: CellPatch, expected: String) -> Reading? {
-        let kind = AnswerKind.infer(expected: expected)
+    func read(_ patch: CellPatch, expected: String,
+              declaredType: String? = nil) -> Reading? {
+        // The template's word first; the answer text only when it said
+        // nothing.
+        let kind = AnswerKind.declared(declaredType) ?? AnswerKind.infer(expected: expected)
         guard kind != .unsupported else { return nil }
 
         // Strip the box border / parentheses before anything looks at the ink.
@@ -128,10 +169,13 @@ final class AnswerRecognizer {
             guard let result = MarkRecognizer.recognize(clean) else { return nil }
             return Reading(text: result.mark.rawValue, confidence: result.confidence,
                            margin: result.confidence, kind: .mark)
-        case .digits:
-            guard let digits, let result = try? digits.recognize(clean) else { return nil }
+        case .digits, .choice:
+            guard let digits,
+                  let result = try? digits.recognize(clean, arity: kind == .choice ? .single : .any)
+            else { return nil }
             return Reading(text: result.text, confidence: result.confidence,
-                           margin: result.margin, kind: .digits)
+                           margin: result.margin, kind: .digits,
+                           discarded: result.discarded)
         case .unsupported:
             return nil
         }
@@ -141,9 +185,10 @@ final class AnswerRecognizer {
     ///
     /// `quad` is the cell's projected corners in the frame's pixel coordinates
     /// (tl, tr, br, bl); `aspect` is its true width/height on the master sheet.
-    func read(frame: GrayBitmap, quad: [CGPoint], aspect: CGFloat, expected: String) -> Reading? {
+    func read(frame: GrayBitmap, quad: [CGPoint], aspect: CGFloat, expected: String,
+              declaredType: String? = nil) -> Reading? {
         guard let patch = CellPatch(bitmap: frame, quad: quad, aspect: aspect) else { return nil }
-        return read(patch, expected: expected)
+        return read(patch, expected: expected, declaredType: declaredType)
     }
 }
 

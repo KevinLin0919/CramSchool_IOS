@@ -584,15 +584,21 @@ struct CameraPreviewView: UIViewRepresentable {
         }
 
         /// The expected answer, pinned just outside the box's top-left corner.
-        ///
-        /// Only wrong and unsure boxes get one. A green box would be labelled
-        /// with the answer the teacher already knows is there, so the label
-        /// would be pure noise — and leaving greens bare is what makes the
-        /// annotated cells the ones your eye goes to.
         private func updateLabel(id: Int, box: LiveScanEngine.Box,
                                  boxPath: CGPath, color: UIColor) {
             let expected = box.expectedText.trimmingCharacters(in: .whitespaces)
-            guard box.verdict == .wrong || box.verdict == .unsure, !expected.isEmpty else {
+            // Greens stay bare — labelling a cell with the answer the teacher
+            // already knows is there is noise, and bare greens are what makes
+            // the annotated cells the ones your eye goes to.
+            //
+            // One exception, and only while diagnosing: a cell that dropped a
+            // blob to read its one character is now green precisely because
+            // the blob was dropped. That is the case the count exists to
+            // report, so excluding greens would hide it exactly where it
+            // matters.
+            let worthLabelling = box.verdict == .wrong || box.verdict == .unsure
+                || (showsReading && box.discarded > 0)
+            guard worthLabelling, !expected.isEmpty else {
                 labelLayers[id]?.removeFromSuperlayer()
                 labelLayers[id] = nil
                 return
@@ -603,6 +609,14 @@ struct CameraPreviewView: UIViewRepresentable {
                 // Diagnostic mode: a red box alone cannot tell you whether the
                 // student was wrong or the model was. This can.
                 text = "\(read)→\(expected)"
+            }
+            if showsReading, box.discarded > 0 {
+                // Something else was in the cell and got dropped for being
+                // smaller than the answer. The reading is right and the cell
+                // is still wrong — the crop is picking up ink that is not the
+                // student's, and that is fixed at the box or the printed-mark
+                // filter, not here.
+                text += " +\(box.discarded)"
             }
 
             let label = labelLayers[id] ?? makeLabelLayer(id: id)

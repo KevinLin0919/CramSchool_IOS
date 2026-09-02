@@ -14,6 +14,12 @@ struct BundledDemoTemplate {
     let imageName: String     // master sheet image in the app bundle
     let boxes: [CGRect]       // answer boxes, normalized (0...1) in the master image
     let written: [String]     // canned "recognized" student answers, one per box
+
+    /// What the server would call these cells. Stated rather than inferred,
+    /// for the same reason a real template states it — and so the self-test,
+    /// which is the only regression protection this project has, exercises
+    /// both arities instead of just the one.
+    let answerType: String
 }
 
 final class DemoData {
@@ -67,7 +73,10 @@ final class DemoData {
                 CGRect(x: 0.62083, y: 0.74125, width: 0.15833, height: 0.06250),
             ],
             // The demo student wrote Q4 and Q6 wrong.
-            written: ["12", "5", "36", "9", "144", "1", "20", "9"]),
+            written: ["12", "5", "36", "9", "144", "1", "20", "9"],
+            // Genuinely multi-digit — 12, 36, 144 — so this sheet is what
+            // keeps the unconstrained path covered.
+            answerType: "digit"),
 
         // A six-question multiple-choice sheet built for live recognition
         // (scratchpad/gen_9007.py). Two things are deliberate. The answer cells
@@ -95,7 +104,10 @@ final class DemoData {
             // What the student wrote — Q4 and Q5 miss. Only used if a cell
             // reads blank, which on this sheet means the scan never got close
             // enough to see the ink.
-            written: ["2", "3", "1", "1", "2", "3"]),
+            written: ["2", "3", "1", "1", "2", "3"],
+            // A six-question multiple-choice sheet: one character per cell,
+            // and the demo that covers the constrained path.
+            answerType: "choice"),
 
         // A template built from a real 南一版 exam page lived here. Its master
         // image is a page of copyrighted teaching material, so it cannot ship
@@ -162,7 +174,8 @@ final class DemoData {
             ResolvedTemplate.Question(number: index + 1,
                                       box: box,
                                       answer: index < answers.count ? answers[index] : "",
-                                      pageIndex: 0)
+                                      pageIndex: 0,
+                                      answerType: bundled.answerType)
         }
         let title = shared.templateList(search: nil).first { $0.id == id }?.fullTitle
             ?? "示範考卷"
