@@ -285,6 +285,5 @@ AutoGradeScanner/
 ├── XFeat.mlmodel               XFeat 特徵模型
 ├── XFeatEngine.swift           XFeat 推論
 ├── XFeatMatcher.swift          特徵匹配 + RANSAC homography
-├── ARScanView.swift            ⚠️ 已停用的 ARKit 實驗，待移除
 └── PoseProvider.swift          陀螺儀（**主路徑在用**：靜止時降低送幀頻率）
 ```

@@ -247,7 +247,8 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
 // alignment updates arrive smoothly instead of snapping, and small rotations
 // are damped to upright. This is the "calm like the old overlay, accurate like
 // the new one" path; gyro propagation is off here (it pushed boxes the wrong
-// way under translation) and reserved for the ARKit backbone.
+// way under translation) and unused today; the overlay works from the
+// sheet quad instead.
 // Projective map from the unit square to a convex quad given as (tl, tr, br,
 // bl) — the images of (0,0), (1,0), (1,1), (0,1). Lets the overlay take one
 // smoothed sheet quad and place every box on it from its template
