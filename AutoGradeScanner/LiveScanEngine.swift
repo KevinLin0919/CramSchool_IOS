@@ -76,6 +76,29 @@ final class LiveScanEngine {
         /// Around 1080 means the device fell back from 4K, which caps every
         /// cell on it regardless of how the paper is framed.
         let framePixels: Int
+
+        /// Typical cell width, in camera pixels, across the cells read so far.
+        /// 0 before anything has been read. Steadier than `cellPixels`, which
+        /// is whichever cell the last frame happened to measure.
+        let typicalCellPixels: Int
+        /// Cells looked at repeatedly without reaching an answer. Something is
+        /// stopping them, and it is usually not the model.
+        let stuckCells: Int
+
+        /// What, if anything, is worth telling the teacher about the framing.
+        ///
+        /// Cell size and blur are different problems with different fixes, and
+        /// a hint that names the wrong one is worse than none — someone who
+        /// moves closer because they were told to, and sees no improvement,
+        /// stops believing the next hint too.
+        enum Framing { case fine, tooFar, tooShaky }
+
+        var framing: Framing {
+            guard aligned, typicalCellPixels > 0 else { return .fine }
+            if typicalCellPixels < Sampling.minUsefulCellPixels { return .tooFar }
+            // Cells big enough to read, still not being read.
+            return stuckCells > 0 ? .tooShaky : .fine
+        }
     }
 
     var onUpdate: ((Update) -> Void)?
@@ -187,6 +210,9 @@ final class LiveScanEngine {
     /// Sharpness of the crop currently held for each cell, so a later frame
     /// only replaces it by being better.
     private var cellSharpness: [Int: Double] = [:]
+    /// Whether the crop currently held came from a frame that could be read.
+    /// A readable frame is never displaced by an unreadable one.
+    private var cellCropReadable: [Int: Bool] = [:]
     /// How wide each cell was, in camera pixels, on the frame its crop was
     /// kept from. The basis for the sampling-quality check at the end.
     private var cellSampledPixels: [Int: Int] = [:]
@@ -341,6 +367,7 @@ final class LiveScanEngine {
         blankStreak = [:]
         cellImages = [:]
         cellSharpness = [:]
+        cellCropReadable = [:]
         cellSampledPixels = [:]
         lastCellPixels = 0
         lastFramePixels = 0
@@ -450,16 +477,6 @@ final class LiveScanEngine {
         var isEmpty: Bool { pages.isEmpty }
     }
 
-    /// A paper that was read off cells too small to read reliably.
-    ///
-    /// Nil when there is nothing to say, which is most of the time.
-    struct PoorSampling {
-        /// Median cell width, in camera pixels, across the cells that were read.
-        let medianPixels: Int
-        /// Cells the reading did not settle on, or settled wrongly.
-        let doubtful: Int
-    }
-
     enum Sampling {
         /// Measured on real papers: at 64px across a cell the recogniser got
         /// 3 of 6, at 96px it got 6 of 6. The fall-off is steep and it is not
@@ -467,25 +484,11 @@ final class LiveScanEngine {
         /// tell a box border from ink, because the border is one or two pixels
         /// wide. Warning below 80 puts the line inside the bad half.
         static let minUsefulCellPixels = 80
-    }
-
-    /// Whether this paper is worth re-scanning before moving on.
-    ///
-    /// Two conditions, and both are needed. Small cells alone are not a
-    /// problem — a paper read entirely correctly off 60px cells has nothing
-    /// wrong with it, and warning about it would teach the teacher to dismiss
-    /// this without reading. Wrong answers alone are not evidence either;
-    /// students do get things wrong. It is the pair that says the machine may
-    /// have failed rather than the child.
-    var poorSampling: PoorSampling? {
-        let sizes = cellSampledPixels.values.sorted()
-        guard !sizes.isEmpty else { return nil }
-        let median = sizes[sizes.count / 2]
-        guard median < Sampling.minUsefulCellPixels else { return nil }
-
-        let doubtful = verdicts.values.filter { $0 != .correct }.count
-        guard doubtful > 0 else { return nil }
-        return PoorSampling(medianPixels: median, doubtful: doubtful)
+        /// Looks at a cell this many times without settling and something is
+        /// stopping it — motion, focus, glare. `givesUpAfter` is 8, so this
+        /// fires while there is still time to act rather than after the cell
+        /// has already been written off.
+        static let stuckSamples = 5
     }
 
     var pagesLeftBehind: LeftBehind {
@@ -675,31 +678,32 @@ final class LiveScanEngine {
 
             if let source, let quad = rawQuads[i],
                let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
-                // Keep the sharpest look at this cell, not the last one.
-                //
-                // This crop is the evidence the teacher is shown when a
-                // verdict looks wrong, and it is the image uploaded as a
-                // labelled training sample when they correct it. Overwriting
-                // it every frame until the vote settled meant both were
-                // whichever frame happened to be last — so a blurred crop
-                // could make a correct reading look like a misread, and a
-                // correction could teach the model that a smear means "4".
-                if verdicts[i] == nil {
-                    let sharp = cut.bitmap.sharpness()
-                    if sharp > (cellSharpness[i] ?? -1) {
-                        cellSharpness[i] = sharp
-                        cellImages[i] = cut.bitmap.makeImage()
-                        cellSampledPixels[i] = Self.sampledSide(of: quad, in: framePixels)
-                    }
-                }
                 let box = boxes[i]
                 let pageAspect = masterAspect.indices.contains(currentPage)
                     ? masterAspect[currentPage] : 1
                 let aspect = box.height > 0 ? (box.width * pageAspect) / box.height : 1
                 let type = i < answerTypes.count ? answerTypes[i] : nil
-                if let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
-                                                 aspect: aspect, expected: exp,
-                                                 declaredType: type) {
+                let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
+                                              aspect: aspect, expected: exp,
+                                              declaredType: type)
+                // Keep the best look at this cell, judged after trying to read
+                // it rather than before.
+                //
+                // This crop is the evidence a teacher is shown when a verdict
+                // looks wrong, and the image uploaded as a labelled sample
+                // when they correct it. Ranking frames by sharpness alone
+                // picked the wrong ones: a crop that had slipped off the cell
+                // onto a shadow edge scores enormously on a Laplacian, and
+                // three of them made it into a real scan. A frame that
+                // produced a reading is a frame that was actually on the cell,
+                // so those compete first and the rest are only a fallback —
+                // because a cell nothing could read still has to show the
+                // teacher something.
+                if verdicts[i] == nil {
+                    keepCrop(i, cut: cut, quad: quad, framePixels: framePixels,
+                             readable: reading != nil)
+                }
+                if let reading {
                     blankStreak[i] = 0
                     if reading.discarded > 0 {
                         discardedGroups[i] = max(discardedGroups[i] ?? 0, reading.discarded)
@@ -745,6 +749,41 @@ final class LiveScanEngine {
         visibleRects = nowRects
         publish(aligned: true)
         scheduleAdvanceIfPageDone()
+    }
+
+    /// Records this frame's crop if it is the best look at the cell so far.
+    ///
+    /// Two tiers, not one score. Whether the frame could be read at all
+    /// outranks how sharp it is, because sharpness answers "is there a hard
+    /// edge here" and a crop that has slid onto the paper's shadow answers
+    /// that emphatically while containing none of the answer. Within a tier,
+    /// sharpness decides.
+    private func keepCrop(_ i: Int, cut: (bitmap: GrayBitmap, quad: [CGPoint]),
+                          quad: [CGPoint], framePixels: CGSize, readable: Bool) {
+        let held = cellCropReadable[i] ?? false
+        if held && !readable { return }
+        let sharp = cut.bitmap.sharpness()
+        // A newly readable frame replaces an unreadable one whatever its
+        // sharpness — being on the cell is the more important fact.
+        let better = (readable && !held) || sharp > (cellSharpness[i] ?? -1)
+        guard better else { return }
+        cellSharpness[i] = sharp
+        cellCropReadable[i] = readable
+        cellImages[i] = cut.bitmap.makeImage()
+        cellSampledPixels[i] = Self.sampledSide(of: quad, in: framePixels)
+    }
+
+    /// Median width of the cells read so far, in camera pixels.
+    private var typicalCellPixels: Int {
+        let sizes = cellSampledPixels.values.sorted()
+        return sizes.isEmpty ? 0 : sizes[sizes.count / 2]
+    }
+
+    /// Cells on this page seen enough times to have settled, that have not.
+    private var stuckCells: Int {
+        currentSlots.filter { i in
+            verdicts[i] == nil && (accumulators[i]?.samples ?? 0) >= Sampling.stuckSamples
+        }.count
     }
 
     /// Flat question slots printed on the page currently being scanned.
@@ -870,6 +909,8 @@ final class LiveScanEngine {
                          intrinsics: anchorIntrinsics,
                          sheetQuad: anchorSheetQuad,
                          cellPixels: lastCellPixels,
-                         framePixels: lastFramePixels))
+                         framePixels: lastFramePixels,
+                         typicalCellPixels: typicalCellPixels,
+                         stuckCells: stuckCells))
     }
 }

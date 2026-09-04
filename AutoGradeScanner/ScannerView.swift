@@ -30,7 +30,7 @@ struct ScannerView: View {
     /// Pages the teacher would abandon by finishing now. Non-nil while the
     /// confirmation is up.
     @State private var leftBehind: LiveScanEngine.LeftBehind?
-    @State private var poorSampling: LiveScanEngine.PoorSampling?
+    @State private var confirmingRescan = false
     @StateObject private var papers = GradingStore.shared
 
     @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
@@ -90,13 +90,9 @@ struct ScannerView: View {
             // one when nothing is left, so the two never race.
             guard let graded, let live = liveUpdate,
                   live.totalCount > 0, graded == live.totalCount,
-                  completedPaper == nil, leftBehind == nil, poorSampling == nil
-            else { return }
-            // Through the same gate as the button, not straight to filing.
-            // This is the path a fully graded paper actually takes, so
-            // filing directly here is filing without the sampling check on
-            // exactly the papers that reached a verdict on every cell — which
-            // is where a verdict reached off a 55px cell hides.
+                  completedPaper == nil, leftBehind == nil else { return }
+            // Through the same gate as the button rather than filing directly,
+            // so there is one place that decides whether finishing is allowed.
             attemptFinish()
         }
         .confirmationDialog(leftBehindTitle,
@@ -113,33 +109,20 @@ struct ScannerView: View {
         } message: {
             Text("現在完成的話，那些題目會記成未作答。")
         }
-        .confirmationDialog("答案區太小了",
-                            isPresented: Binding(get: { poorSampling != nil },
-                                                 set: { if !$0 { poorSampling = nil } }),
+        // Asked for, so it confirms — discarding a part-graded paper on a
+        // stray tap is the failure this guards. That is a different thing from
+        // the dialog this replaced, which arrived uninvited and stood between
+        // the teacher and a finished paper.
+        .confirmationDialog("重新掃描這一份？",
+                            isPresented: $confirmingRescan,
                             titleVisibility: .visible) {
-            Button("重新掃描這一份") {
-                poorSampling = nil
+            Button("重新掃描", role: .destructive) {
+                confirmingRescan = false
                 liveEngine?.reset()
             }
-            Button("就這樣完成", role: .destructive) { finishLiveSession() }
         } message: {
-            Text(poorSamplingMessage)
+            Text("這一份已批改的結果會清除，重新開始掃描。")
         }
-    }
-
-    /// Says what to do, and only mentions the measurement while diagnosing.
-    ///
-    /// The number is what a developer needs and what a teacher has no use for,
-    /// so it rides on the switch that already exists for exactly that
-    /// distinction rather than being written into the sentence.
-    private var poorSamplingMessage: String {
-        guard let poor = poorSampling else { return "" }
-        var text = "有 \(poor.doubtful) 題沒有讀準，可能是拍得太遠。"
-            + "請靠近一點讓答案看得更清楚，再重新掃描這一份。"
-        if showsReading {
-            text += "\n（答案格 \(poor.medianPixels)px，建議 80px 以上）"
-        }
-        return text
     }
 
     // MARK: - Backdrop (live camera)
@@ -391,6 +374,14 @@ struct ScannerView: View {
         }
     }
 
+    private static func framingAdvice(_ framing: LiveScanEngine.Update.Framing) -> String? {
+        switch framing {
+        case .fine:      return nil
+        case .tooFar:    return "靠近一點"
+        case .tooShaky:  return "拿穩一點"
+        }
+    }
+
     private func livePill(_ live: LiveScanEngine.Update) -> some View {
         HStack(spacing: 8) {
             if !live.boxes.isEmpty {
@@ -399,6 +390,37 @@ struct ScannerView: View {
                     .foregroundStyle(Color(hex: 0x6FCF97))
                 Text("已對位・批改 \(live.gradedCount)/\(live.totalCount)" + debugSuffix(live))
                     .monospacedDigit()
+
+                // Framing advice, in the line that is already changing.
+                //
+                // Not a dialog and not a button: it says what would help and
+                // stays out of the way, because a paper the model cannot read
+                // is still a paper the teacher can finish and correct. The two
+                // cases are named separately — someone told to move closer who
+                // sees no improvement stops believing the next hint too.
+                if let advice = Self.framingAdvice(live.framing) {
+                    Text("・" + advice)
+                        .foregroundStyle(AG.warn)
+
+                    // Only offered while something is actually wrong, and only
+                    // once anything has been graded — there is nothing to
+                    // restart before that, and an always-present button next
+                    // to a live camera is a button that gets caught by a
+                    // thumb.
+                    if live.gradedCount > 0 {
+                        Button {
+                            confirmingRescan = true
+                        } label: {
+                            Text("重掃")
+                                .font(.system(size: 13, weight: .semibold))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(.white.opacity(0.18)))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.white)
+                    }
+                }
                 if showsReading, live.cellPixels > 0 {
                     // How many pixels the answer cell is actually worth. This
                     // is the number that decides whether a digit is readable —
@@ -620,14 +642,16 @@ struct ScannerView: View {
     private func attemptFinish() {
         guard let engine = liveEngine else { return }
         let pending = engine.pagesLeftBehind
-        guard pending.isEmpty else { leftBehind = pending; return }
-        // A second thing worth stopping for, and only ever one at a time: an
-        // unturned page is the more urgent of the two, and stacking dialogs
-        // would train someone to tap through both.
-        if let poor = engine.poorSampling {
-            poorSampling = poor
-        } else {
+        // The only thing that stops a paper being filed, and it stops one
+        // because finishing would put a wrong mark on a child's work: cells on
+        // a side nobody turned to file as unanswered. Sampling quality is not
+        // in that category — the grade can be corrected on the results screen,
+        // and a teacher held up by a warning about it would learn to tap past
+        // this one too.
+        if pending.isEmpty {
             finishLiveSession()
+        } else {
+            leftBehind = pending
         }
     }
 
@@ -637,7 +661,6 @@ struct ScannerView: View {
     @MainActor
     private func finishLiveSession() {
         leftBehind = nil
-        poorSampling = nil
         guard let engine = liveEngine, let result = engine.finish() else { return }
         let paper = GradingStore.record(from: result,
                                         templateID: engine.templateIdentifier,

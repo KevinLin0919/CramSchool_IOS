@@ -93,6 +93,7 @@ final class CameraController: NSObject, ObservableObject {
            let input = try? AVCaptureDeviceInput(device: device),
            session.canAddInput(input) {
             session.addInput(input)
+            configureFocus(device)
         }
 
         // The .photo preset gives the *photo* output full sensor resolution but
@@ -124,6 +125,40 @@ final class CameraController: NSObject, ObservableObject {
         }
 
         session.commitConfiguration()
+    }
+
+    /// Tell the lens it is looking at a page on a desk, not a room.
+    ///
+    /// Nothing here was configured before, which meant continuous autofocus
+    /// across the full range. Reading a cell needs the camera close, close is
+    /// where depth of field is thinnest, and a lens hunting through infinity
+    /// on every small movement produces exactly what the crops showed: soft,
+    /// low-contrast ink that no recogniser can be blamed for failing on.
+    ///
+    /// Restricting the range is the whole intervention. Locking focus is
+    /// deliberately not done: `isStationary` says the phone is still, not that
+    /// the distance is unchanged, and a lock taken at the wrong moment leaves
+    /// every later frame blurred with no way back — worse than hunting, and
+    /// harder to notice.
+    private func configureFocus(_ device: AVCaptureDevice) {
+        guard (try? device.lockForConfiguration()) != nil else { return }
+        defer { device.unlockForConfiguration() }
+
+        if device.isAutoFocusRangeRestrictionSupported {
+            device.autoFocusRangeRestriction = .near
+        }
+        if device.isFocusModeSupported(.continuousAutoFocus) {
+            device.focusMode = .continuousAutoFocus
+        }
+        // Smooth focus is meant for video, where a rack focus is distracting.
+        // It matters here for a different reason: it damps the overshoot that
+        // makes a handful of frames badly soft each time the lens moves.
+        if device.isSmoothAutoFocusSupported {
+            device.isSmoothAutoFocusEnabled = true
+        }
+        if device.isExposureModeSupported(.continuousAutoExposure) {
+            device.exposureMode = .continuousAutoExposure
+        }
     }
 }
 
