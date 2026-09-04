@@ -184,6 +184,12 @@ final class LiveScanEngine {
     /// question is held — a cell is sampled dozens of times and keeping them
     /// all would be memory spent on frames nobody will ever look at.
     private var cellImages: [Int: UIImage] = [:]
+    /// Sharpness of the crop currently held for each cell, so a later frame
+    /// only replaces it by being better.
+    private var cellSharpness: [Int: Double] = [:]
+    /// How wide each cell was, in camera pixels, on the frame its crop was
+    /// kept from. The basis for the sampling-quality check at the end.
+    private var cellSampledPixels: [Int: Int] = [:]
     /// One entry per page — a booklet's sides need not share a shape.
     private let masterAspect: [CGFloat]
     /// Long side, in pixels, of the last cell handed to recognition. Surfaced
@@ -334,6 +340,8 @@ final class LiveScanEngine {
         probeCrossings = [:]
         blankStreak = [:]
         cellImages = [:]
+        cellSharpness = [:]
+        cellSampledPixels = [:]
         lastCellPixels = 0
         lastFramePixels = 0
         pageKeyframes = [:]
@@ -440,6 +448,44 @@ final class LiveScanEngine {
         let remaining: Int
 
         var isEmpty: Bool { pages.isEmpty }
+    }
+
+    /// A paper that was read off cells too small to read reliably.
+    ///
+    /// Nil when there is nothing to say, which is most of the time.
+    struct PoorSampling {
+        /// Median cell width, in camera pixels, across the cells that were read.
+        let medianPixels: Int
+        /// Cells the reading did not settle on, or settled wrongly.
+        let doubtful: Int
+    }
+
+    enum Sampling {
+        /// Measured on real papers: at 64px across a cell the recogniser got
+        /// 3 of 6, at 96px it got 6 of 6. The fall-off is steep and it is not
+        /// the model — below about this width the printed-rule filter cannot
+        /// tell a box border from ink, because the border is one or two pixels
+        /// wide. Warning below 80 puts the line inside the bad half.
+        static let minUsefulCellPixels = 80
+    }
+
+    /// Whether this paper is worth re-scanning before moving on.
+    ///
+    /// Two conditions, and both are needed. Small cells alone are not a
+    /// problem — a paper read entirely correctly off 60px cells has nothing
+    /// wrong with it, and warning about it would teach the teacher to dismiss
+    /// this without reading. Wrong answers alone are not evidence either;
+    /// students do get things wrong. It is the pair that says the machine may
+    /// have failed rather than the child.
+    var poorSampling: PoorSampling? {
+        let sizes = cellSampledPixels.values.sorted()
+        guard !sizes.isEmpty else { return nil }
+        let median = sizes[sizes.count / 2]
+        guard median < Sampling.minUsefulCellPixels else { return nil }
+
+        let doubtful = verdicts.values.filter { $0 != .correct }.count
+        guard doubtful > 0 else { return nil }
+        return PoorSampling(medianPixels: median, doubtful: doubtful)
     }
 
     var pagesLeftBehind: LeftBehind {
@@ -629,7 +675,23 @@ final class LiveScanEngine {
 
             if let source, let quad = rawQuads[i],
                let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
-                if verdicts[i] == nil { cellImages[i] = cut.bitmap.makeImage() }
+                // Keep the sharpest look at this cell, not the last one.
+                //
+                // This crop is the evidence the teacher is shown when a
+                // verdict looks wrong, and it is the image uploaded as a
+                // labelled training sample when they correct it. Overwriting
+                // it every frame until the vote settled meant both were
+                // whichever frame happened to be last — so a blurred crop
+                // could make a correct reading look like a misread, and a
+                // correction could teach the model that a smear means "4".
+                if verdicts[i] == nil {
+                    let sharp = cut.bitmap.sharpness()
+                    if sharp > (cellSharpness[i] ?? -1) {
+                        cellSharpness[i] = sharp
+                        cellImages[i] = cut.bitmap.makeImage()
+                        cellSampledPixels[i] = Self.sampledSide(of: quad, in: framePixels)
+                    }
+                }
                 let box = boxes[i]
                 let pageAspect = masterAspect.indices.contains(currentPage)
                     ? masterAspect[currentPage] : 1

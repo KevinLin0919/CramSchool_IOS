@@ -66,6 +66,34 @@ struct GrayBitmap {
         }
     }
 
+    /// How much detail this buffer holds — the variance of its Laplacian.
+    ///
+    /// A sharp edge produces a large second derivative; a blurred one spreads
+    /// the same ink over more pixels and flattens it. Taking the variance
+    /// rather than the mean is what makes the number comparable between cells:
+    /// the mean is dominated by how much ink there is, the variance by how
+    /// abruptly it starts and stops.
+    ///
+    /// Not an absolute measure of anything. It is only ever used to rank two
+    /// crops of the same cell, where the ink is the same and only the focus
+    /// and the sampling differ.
+    func sharpness() -> Double {
+        guard width >= 3, height >= 3 else { return 0 }
+        var sum = 0.0, sumSq = 0.0, n = 0.0
+        for y in 1..<(height - 1) {
+            for x in 1..<(width - 1) {
+                let i = y * width + x
+                let lap = 4.0 * Double(pixels[i])
+                    - Double(pixels[i - 1]) - Double(pixels[i + 1])
+                    - Double(pixels[i - width]) - Double(pixels[i + width])
+                sum += lap; sumSq += lap * lap; n += 1
+            }
+        }
+        guard n > 0 else { return 0 }
+        let mean = sum / n
+        return sumSq / n - mean * mean
+    }
+
     /// Bilinear sample in pixel coordinates, clamped at the edges. 0 = black, 1 = white.
     func sample(_ x: CGFloat, _ y: CGFloat) -> Double {
         let fx = min(max(Double(x) - 0.5, 0), Double(width - 1))

@@ -30,6 +30,7 @@ struct ScannerView: View {
     /// Pages the teacher would abandon by finishing now. Non-nil while the
     /// confirmation is up.
     @State private var leftBehind: LiveScanEngine.LeftBehind?
+    @State private var poorSampling: LiveScanEngine.PoorSampling?
     @StateObject private var papers = GradingStore.shared
 
     @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
@@ -89,8 +90,14 @@ struct ScannerView: View {
             // one when nothing is left, so the two never race.
             guard let graded, let live = liveUpdate,
                   live.totalCount > 0, graded == live.totalCount,
-                  completedPaper == nil else { return }
-            finishLiveSession()
+                  completedPaper == nil, leftBehind == nil, poorSampling == nil
+            else { return }
+            // Through the same gate as the button, not straight to filing.
+            // This is the path a fully graded paper actually takes, so
+            // filing directly here is filing without the sampling check on
+            // exactly the papers that reached a verdict on every cell — which
+            // is where a verdict reached off a 55px cell hides.
+            attemptFinish()
         }
         .confirmationDialog(leftBehindTitle,
                             isPresented: Binding(get: { leftBehind != nil },
@@ -106,6 +113,33 @@ struct ScannerView: View {
         } message: {
             Text("現在完成的話，那些題目會記成未作答。")
         }
+        .confirmationDialog("答案區太小了",
+                            isPresented: Binding(get: { poorSampling != nil },
+                                                 set: { if !$0 { poorSampling = nil } }),
+                            titleVisibility: .visible) {
+            Button("重新掃描這一份") {
+                poorSampling = nil
+                liveEngine?.reset()
+            }
+            Button("就這樣完成", role: .destructive) { finishLiveSession() }
+        } message: {
+            Text(poorSamplingMessage)
+        }
+    }
+
+    /// Says what to do, and only mentions the measurement while diagnosing.
+    ///
+    /// The number is what a developer needs and what a teacher has no use for,
+    /// so it rides on the switch that already exists for exactly that
+    /// distinction rather than being written into the sentence.
+    private var poorSamplingMessage: String {
+        guard let poor = poorSampling else { return "" }
+        var text = "有 \(poor.doubtful) 題沒有讀準，可能是拍得太遠。"
+            + "請靠近一點讓答案看得更清楚，再重新掃描這一份。"
+        if showsReading {
+            text += "\n（答案格 \(poor.medianPixels)px，建議 80px 以上）"
+        }
+        return text
     }
 
     // MARK: - Backdrop (live camera)
@@ -586,10 +620,14 @@ struct ScannerView: View {
     private func attemptFinish() {
         guard let engine = liveEngine else { return }
         let pending = engine.pagesLeftBehind
-        if pending.isEmpty {
-            finishLiveSession()
+        guard pending.isEmpty else { leftBehind = pending; return }
+        // A second thing worth stopping for, and only ever one at a time: an
+        // unturned page is the more urgent of the two, and stacking dialogs
+        // would train someone to tap through both.
+        if let poor = engine.poorSampling {
+            poorSampling = poor
         } else {
-            leftBehind = pending
+            finishLiveSession()
         }
     }
 
@@ -599,6 +637,7 @@ struct ScannerView: View {
     @MainActor
     private func finishLiveSession() {
         leftBehind = nil
+        poorSampling = nil
         guard let engine = liveEngine, let result = engine.finish() else { return }
         let paper = GradingStore.record(from: result,
                                         templateID: engine.templateIdentifier,
