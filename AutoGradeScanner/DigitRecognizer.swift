@@ -186,7 +186,9 @@ final class DigitRecognizer {
             }
         }
 
-        let minArea = Double(patch.width * patch.height) * Tuning.minComponentAreaRatio
+        // Against the printed cell, so "too small to be a digit" keeps meaning
+        // what it was measured to mean when the sampler read the cell exactly.
+        let minArea = patch.printedArea * Tuning.minComponentAreaRatio
         var groups: [(labels: Set<Int>, minX: Int, maxX: Int)] = []
         for label in 1...count where Double(areas[label]) >= minArea {
             groups.append(([label], minX[label], maxX[label]))

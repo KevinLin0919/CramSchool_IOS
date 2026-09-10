@@ -123,6 +123,9 @@ struct CellPatch {
     /// 1200px frame, so it costs sampling work but never invents detail.
     static let defaultMaxSide = 128
 
+    /// `printedBounds` for a patch sampled exactly on the printed cell.
+    static let wholePatch = CGRect(x: 0, y: 0, width: 1, height: 1)
+
     let width: Int
     let height: Int
 
@@ -142,11 +145,37 @@ struct CellPatch {
     /// `intensity > threshold`.
     let mask: [Bool]
 
+    /// Where the *printed* answer cell sits inside this patch, as fractions of
+    /// it. The whole patch, unless a caller sampled wider than the cell.
+    ///
+    /// Every threshold in this file and in the two recognisers is a fraction
+    /// of "the cell" — how much ink makes it non-blank, how big a hole has to
+    /// be to count, how close to an edge a stroke has to run before it is
+    /// printed furniture. Those numbers were measured against the printed box,
+    /// so when the sampler reads past it — which it does, because children
+    /// write over the lines — the ratios have to keep being taken against the
+    /// box, or every one of them silently tightens by the square of however
+    /// much wider the window got.
+    let printedBounds: CGRect
+
+    /// Area of the printed cell in patch pixels. The denominator for anything
+    /// expressed as a share of the cell.
+    var printedArea: Double {
+        Double(width) * printedBounds.width * Double(height) * printedBounds.height
+    }
+
+    /// The printed cell's shorter side, in patch pixels.
+    var printedSide: Double {
+        min(Double(width) * printedBounds.width, Double(height) * printedBounds.height)
+    }
+
     /// A cell with too little ink, or with no real dark/light split, holds no
     /// answer. Recognising it anyway would confidently return a wrong digit,
     /// so both recognisers bail out on this first.
     var isBlank: Bool {
-        separation < Tuning.minSeparation || coverage < Tuning.minCoverage
+        let inked = coverage * Double(width * height)
+        return separation < Tuning.minSeparation
+            || inked < Tuning.minCoverage * printedArea
     }
 
     enum Tuning {
@@ -207,6 +236,7 @@ struct CellPatch {
     /// would stretch the digit inside it, which is exactly what MNIST's
     /// aspect-preserving normalisation is trying to avoid.
     init?(bitmap: GrayBitmap, quad: [CGPoint], aspect: CGFloat,
+          printedBounds: CGRect = CellPatch.wholePatch,
           maxSide: Int = CellPatch.defaultMaxSide) {
         guard quad.count == 4, aspect.isFinite, aspect > 0,
               let map = UnitQuad(quad: quad) else { return nil }
@@ -225,14 +255,16 @@ struct CellPatch {
             }
         }
 
-        self.init(width: w, height: h, intensity: values)
+        self.init(width: w, height: h, intensity: values, printedBounds: printedBounds)
     }
 
     /// Direct construction, for tests and for callers that already hold a patch.
-    init(width: Int, height: Int, intensity: [Double]) {
+    init(width: Int, height: Int, intensity: [Double],
+         printedBounds: CGRect = CellPatch.wholePatch) {
         let otsu = CellPatch.otsu(intensity)
         self.init(width: width, height: height, intensity: intensity,
-                  threshold: otsu.threshold, separation: otsu.separation)
+                  threshold: otsu.threshold, separation: otsu.separation,
+                  printedBounds: printedBounds)
     }
 
     /// Rebuilds with a threshold decided elsewhere. `withoutPrintedMarks` needs
@@ -240,13 +272,17 @@ struct CellPatch {
     /// fresh Otsu would move the ink/paper split even though nothing about the
     /// handwriting changed.
     private init(width: Int, height: Int, intensity: [Double],
-                 threshold: Double, separation: Double) {
+                 threshold: Double, separation: Double,
+                 printedBounds: CGRect = CellPatch.wholePatch) {
         precondition(intensity.count == width * height, "intensity must be width * height")
         self.width = width
         self.height = height
         self.intensity = intensity
         self.threshold = threshold
         self.separation = separation
+        let clamped = printedBounds.intersection(CellPatch.wholePatch)
+        self.printedBounds = (clamped.isNull || clamped.isEmpty)
+            ? CellPatch.wholePatch : clamped
 
         let flags = intensity.map { $0 > threshold }
         mask = flags
@@ -289,8 +325,22 @@ struct CellPatch {
             }
         }
 
-        let cellArea = Double(width * height)
-        let band = Tuning.printedEdgeBand
+        // Everything below is measured against the PRINTED cell, not the patch.
+        // The furniture this removes — the box border, the ruled line, the
+        // parentheses — sits on the printed cell's own edges, so when the
+        // sampler reads wider than the cell those edges are no longer the
+        // patch's edges. Looking for them at the patch border finds nothing and
+        // hands the recogniser the box outline as part of the answer, which is
+        // the single largest error source this function exists to remove.
+        let cellW = Double(width) * printedBounds.width
+        let cellH = Double(height) * printedBounds.height
+        let cellArea = cellW * cellH
+        let leftEdge = Double(width) * printedBounds.minX
+        let rightEdge = Double(width) * printedBounds.maxX
+        let topEdge = Double(height) * printedBounds.minY
+        let bottomEdge = Double(height) * printedBounds.maxY
+        let bandX = Tuning.printedEdgeBand * cellW
+        let bandY = Tuning.printedEdgeBand * cellH
         var drop = [Bool](repeating: false, count: count + 1)
         for label in 1...count {
             if Double(area[label]) / cellArea < Tuning.minSpeckArea { drop[label] = true; continue }
@@ -299,25 +349,25 @@ struct CellPatch {
             let h = maxY[label] - minY[label] + 1
 
             let horizontal = Double(w) > Tuning.printedElongation * Double(h)
-                && (Double(minY[label]) < band * Double(height)
-                    || Double(maxY[label]) > (1 - band) * Double(height))
+                && (Double(minY[label]) < topEdge + bandY
+                    || Double(maxY[label]) > bottomEdge - bandY)
 
             let vertical = Double(h) > Tuning.printedElongation * Double(w)
-                && Double(h) >= Tuning.printedVerticalSpan * Double(height)
-                && (Double(minX[label]) < band * Double(width)
-                    || Double(maxX[label]) > (1 - band) * Double(width))
+                && Double(h) >= Tuning.printedVerticalSpan * cellH
+                && (Double(minX[label]) < leftEdge + bandX
+                    || Double(maxX[label]) > rightEdge - bandX)
 
             // A closed rectangle around the answer is one component roughly as
             // wide as it is tall, so neither elongation test fires on it — and
             // it is the commonest way an answer box is printed.
             var edges = 0
-            if Double(minY[label]) < band * Double(height) { edges += 1 }
-            if Double(maxY[label]) > (1 - band) * Double(height) { edges += 1 }
-            if Double(minX[label]) < band * Double(width) { edges += 1 }
-            if Double(maxX[label]) > (1 - band) * Double(width) { edges += 1 }
+            if Double(minY[label]) < topEdge + bandY { edges += 1 }
+            if Double(maxY[label]) > bottomEdge - bandY { edges += 1 }
+            if Double(minX[label]) < leftEdge + bandX { edges += 1 }
+            if Double(maxX[label]) > rightEdge - bandX { edges += 1 }
             let fill = Double(area[label]) / Double(max(1, w * h))
-            let frame = Double(w) >= Tuning.frameSpan * Double(width)
-                && Double(h) >= Tuning.frameSpan * Double(height)
+            let frame = Double(w) >= Tuning.frameSpan * cellW
+                && Double(h) >= Tuning.frameSpan * cellH
                 && edges >= Tuning.frameEdgesTouched
                 && fill < Tuning.frameMaxFill
 
@@ -329,7 +379,8 @@ struct CellPatch {
         var cleaned = intensity
         for i in 0..<cleaned.count where drop[labels[i]] { cleaned[i] = 0 }
         return CellPatch(width: width, height: height, intensity: cleaned,
-                         threshold: threshold, separation: separation)
+                         threshold: threshold, separation: separation,
+                         printedBounds: printedBounds)
     }
 
     /// Otsu's method over a 256-bin histogram: pick the split that maximises

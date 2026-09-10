@@ -193,9 +193,15 @@ final class AnswerRecognizer {
     ///
     /// `quad` is the cell's projected corners in the frame's pixel coordinates
     /// (tl, tr, br, bl); `aspect` is its true width/height on the master sheet.
+    ///
+    /// `printedBounds` says where the printed cell sits inside that quad, for
+    /// callers that deliberately sample wider than the cell so a mark written
+    /// over the lines is not cut in half. Defaults to the whole quad.
     func read(frame: GrayBitmap, quad: [CGPoint], aspect: CGFloat, expected: String,
-              declaredType: String? = nil) -> Reading? {
-        guard let patch = CellPatch(bitmap: frame, quad: quad, aspect: aspect) else { return nil }
+              declaredType: String? = nil,
+              printedBounds: CGRect = CellPatch.wholePatch) -> Reading? {
+        guard let patch = CellPatch(bitmap: frame, quad: quad, aspect: aspect,
+                                    printedBounds: printedBounds) else { return nil }
         return read(patch, expected: expected, declaredType: declaredType)
     }
 }

@@ -121,6 +121,21 @@ final class LiveScanEngine {
 
     private let template: ResolvedTemplate
     private let boxes: [CGRect]
+    /// The same cells, widened — for reading only, never for drawing.
+    ///
+    /// `boxes` says where the answer is *printed*: it is what gets drawn over
+    /// the paper, and what the results page matches a stored answer against.
+    /// But children do not write inside the lines. Measured over 65 real
+    /// answers lifted off a flatbed scan, sampling the box itself clipped 43
+    /// of them, and cut away a sixth of the ink in the median case.
+    ///
+    /// A clipped mark is not a smaller mark, it is a different shape. A closed
+    /// ○ with its top cut off is an arc, and the enclosure test that would
+    /// have settled it finds nothing; a ✕ missing two of its four endpoints
+    /// reads as two strokes meeting rather than four. Nine of the ten cells
+    /// the recogniser got confidently wrong on that scan were circles with
+    /// their tops outside the box.
+    private let readBoxes: [CGRect]
     private let expected: [String]
     /// What the template says each cell is, parallel to `expected`.
     private let answerTypes: [String]
@@ -231,6 +246,17 @@ final class LiveScanEngine {
     /// paper stops costing anything here.
     private static let cellRenderSide = 256
 
+    /// How far past its own edge a cell is read, as a fraction of its size.
+    ///
+    /// Swept over 65 hand-marked cells: sampling the bare box lost a sixth of
+    /// the ink in the median case, 10% still lost 2.2%, and by 20% the median
+    /// cell lost none. Past that the gain is only in the tail — 17 cells still
+    /// lost something at 20%, 11 at 30% — while every extra pixel is another
+    /// chance to pick up ink belonging to someone else, which nothing
+    /// downstream can currently reject. 25% clears the median with a little
+    /// room and stops short of the greedy end.
+    private static let readPad: CGFloat = 0.25
+
     private let minInliers: Int
     private let minRatio: Double
 
@@ -242,10 +268,13 @@ final class LiveScanEngine {
     init(template: ResolvedTemplate) {
         self.template = template
         let questions = template.questions
-        self.boxes = questions.map(\.box)
+        let rects = questions.map(\.box)
+        let pages = questions.map(\.pageIndex)
+        self.boxes = rects
+        self.readBoxes = Self.widened(rects, pageOf: pages)
         self.expected = questions.map(\.answer)
         self.answerTypes = questions.map(\.answerType)
-        self.pageOf = questions.map(\.pageIndex)
+        self.pageOf = pages
 
         var slots = Array(repeating: [Int](), count: template.pages.count)
         for (slot, question) in questions.enumerated() {
@@ -607,6 +636,7 @@ final class LiveScanEngine {
         var nowQuads: [Int: [CGPoint]] = [:]
         var nowRects: [Int: CGRect] = [:]
         var rawQuads: [Int: [CGPoint]] = [:]
+        var readQuads: [Int: [CGPoint]] = [:]
         var confirmedNow = Set<Int>()
         // Only this page's cells. The homography maps THIS page's master onto
         // the frame, so projecting another side's boxes through it would scatter
@@ -618,6 +648,11 @@ final class LiveScanEngine {
             // stop the drawn overlay twitching, and applying it here would
             // feed the model a cell lagging behind where the paper actually is.
             rawQuads[i] = corners
+            // Reading gets its own quad. The gate, the overlay and the
+            // cell-size readout all stay on the printed box: widening is a
+            // fact about how much paper the model needs to see, not about
+            // where the answer is or how big it looks on screen.
+            readQuads[i] = h.projectedCorners(of: readBoxes[i])
             let xs = corners.map(\.x), ys = corners.map(\.y)
             let rect = CGRect(x: xs.min()!, y: ys.min()!,
                               width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
@@ -676,16 +711,22 @@ final class LiveScanEngine {
             let exp = i < expected.count ? expected[i] : ""
             guard !exp.isEmpty else { continue }
 
-            if let source, let quad = rawQuads[i],
+            if let source, let quad = readQuads[i],
                let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
-                let box = boxes[i]
+                // The widened box, because that is the region being sampled —
+                // passing the printed box's ratio here would squash the crop
+                // by whatever the two differ, which is exactly the distortion
+                // `aspect` exists to prevent.
+                let box = readBoxes[i]
                 let pageAspect = masterAspect.indices.contains(currentPage)
                     ? masterAspect[currentPage] : 1
                 let aspect = box.height > 0 ? (box.width * pageAspect) / box.height : 1
                 let type = i < answerTypes.count ? answerTypes[i] : nil
                 let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
                                               aspect: aspect, expected: exp,
-                                              declaredType: type)
+                                              declaredType: type,
+                                              printedBounds: Self.printedBounds(
+                                                  of: boxes[i], within: box))
                 // Keep the best look at this cell, judged after trying to read
                 // it rather than before.
                 //
@@ -700,8 +741,15 @@ final class LiveScanEngine {
                 // because a cell nothing could read still has to show the
                 // teacher something.
                 if verdicts[i] == nil {
-                    keepCrop(i, cut: cut, quad: quad, framePixels: framePixels,
-                             readable: reading != nil)
+                    // Measured on the printed box, not the widened one. This
+                    // number drives the 靠近一點 hint, and it means "how much
+                    // of the sensor is the answer cell using" — widening the
+                    // read window does not put a single extra pixel on the
+                    // answer, so letting it inflate the figure would move the
+                    // advice while the thing it is advising about is
+                    // unchanged.
+                    keepCrop(i, cut: cut, quad: rawQuads[i] ?? quad,
+                             framePixels: framePixels, readable: reading != nil)
                 }
                 if let reading {
                     blankStreak[i] = 0
@@ -789,6 +837,83 @@ final class LiveScanEngine {
     /// Flat question slots printed on the page currently being scanned.
     private var currentSlots: [Int] {
         slotsByPage.indices.contains(currentPage) ? slotsByPage[currentPage] : []
+    }
+
+    /// Widens every cell for reading, but never past halfway to its nearest
+    /// neighbour on that side.
+    ///
+    /// Halfway, so two adjacent cells meet along the midline between them and
+    /// neither ever reaches into the other's box. Today's papers are nowhere
+    /// near that limit — the 是非題 rows sit 48px apart with 48px boxes, so
+    /// the cap costs nothing and every cell gets the full pad — but a 寫國字
+    /// sheet is a grid of touching squares, and there a fixed pad would read
+    /// the neighbour's character as part of this one. The cap is what lets the
+    /// same number be safe on both, instead of being tuned per worksheet.
+    ///
+    /// Each of the four edges is capped on its own: a row that is tight above
+    /// and open below should still grow downwards. Only cells on the same page
+    /// are neighbours — the other side of a booklet is not adjacent to
+    /// anything here, however close its coordinates look.
+    ///
+    /// Note this cannot stop ink that has *already* left the neighbour's box
+    /// from drifting in; nothing decided from one cell's geometry can. That
+    /// needs the page's ink assigning to cells as a whole, which is a larger
+    /// change and is not what a dense sheet needs first.
+    private static func widened(_ boxes: [CGRect], pageOf: [Int],
+                                pad: CGFloat = readPad) -> [CGRect] {
+        let page = CGRect(x: 0, y: 0, width: 1, height: 1)
+        return boxes.indices.map { i in
+            let box = boxes[i]
+            var top = box.height * pad, bottom = box.height * pad
+            var left = box.width * pad, right = box.width * pad
+
+            for j in boxes.indices where j != i && pageOf[j] == pageOf[i] {
+                let other = boxes[j]
+                // A vertical neighbour is one sharing a column — overlapping
+                // horizontally — and the horizontal case is the transpose.
+                if other.maxX > box.minX, other.minX < box.maxX {
+                    if other.maxY <= box.minY {
+                        top = min(top, (box.minY - other.maxY) / 2)
+                    } else if other.minY >= box.maxY {
+                        bottom = min(bottom, (other.minY - box.maxY) / 2)
+                    } else {
+                        // The two boxes already overlap. Widening can only
+                        // make that worse, so this cell reads its own bounds.
+                        top = 0
+                        bottom = 0
+                    }
+                }
+                if other.maxY > box.minY, other.minY < box.maxY {
+                    if other.maxX <= box.minX {
+                        left = min(left, (box.minX - other.maxX) / 2)
+                    } else if other.minX >= box.maxX {
+                        right = min(right, (other.minX - box.maxX) / 2)
+                    } else {
+                        left = 0
+                        right = 0
+                    }
+                }
+            }
+
+            let widened = CGRect(x: box.minX - left, y: box.minY - top,
+                                 width: box.width + left + right,
+                                 height: box.height + top + bottom)
+            // Clamped to the sheet: sampling past the master's edge reads
+            // paper that was never photographed.
+            let clamped = widened.intersection(page)
+            return clamped.isNull || clamped.isEmpty ? box : clamped
+        }
+    }
+
+    /// Where the printed cell falls inside the widened one, in fractions of
+    /// the widened one. What `CellPatch` needs in order to keep every "share
+    /// of the cell" threshold meaning a share of the printed cell.
+    private static func printedBounds(of printed: CGRect, within read: CGRect) -> CGRect {
+        guard read.width > 0, read.height > 0 else { return CellPatch.wholePatch }
+        return CGRect(x: (printed.minX - read.minX) / read.width,
+                      y: (printed.minY - read.minY) / read.height,
+                      width: printed.width / read.width,
+                      height: printed.height / read.height)
     }
 
     /// What `CellPixelSource.cell` would hand back for this quad, without

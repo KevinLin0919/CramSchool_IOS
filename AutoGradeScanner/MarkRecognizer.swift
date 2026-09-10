@@ -79,7 +79,10 @@ enum MarkRecognizer {
     static func recognize(_ patch: CellPatch) -> Result? {
         guard !patch.isBlank, patch.coverage <= CellPatch.Tuning.maxCoverage else { return nil }
 
-        let radius = max(1, Int((Double(min(patch.width, patch.height))
+        // Sized from the printed cell, not the patch: the stroke gap this has
+        // to bridge is a fact about the pen and the box it was drawn in, and
+        // does not grow because the sampler read a wider window.
+        let radius = max(1, Int((patch.printedSide
                                  * Tuning.closingRadiusRatio).rounded()))
         // Pad before closing so a mark touching the cell edge is not eroded
         // away, and so the flood fill below is guaranteed a background border
@@ -90,7 +93,10 @@ enum MarkRecognizer {
         let closed = Morphology.close(padded, width: w, height: h, radius: radius)
 
         let holes = enclosedRegions(in: closed, width: w, height: h)
-        let cellArea = Double(patch.width * patch.height)
+        // The printed cell's area. A ○ encloses a share of the box it was
+        // drawn in; reading a wider window does not make the hole smaller, so
+        // the denominator has to stay the box.
+        let cellArea = patch.printedArea
         let significant = holes.filter { Double($0) / cellArea >= Tuning.minHoleAreaRatio }
         let largest = Double(significant.max() ?? 0) / cellArea
 
