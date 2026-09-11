@@ -94,10 +94,16 @@ final class AnswerRecognizer {
         /// Lead over the runner-up. A digit can score a high softmax and still
         /// be a coin flip between two classes; the margin is what catches that.
         static let minMargin = 0.20
-        /// Topology has no runner-up to measure, so marks are judged on the
-        /// single number MarkRecognizer already reports — which is low exactly
-        /// when a circle was left too open to tell from a cross.
-        static let minMark = 0.5
+        /// Marks are judged on the forest's agreement — the share of its fifty
+        /// trees that voted for the winning class.
+        ///
+        /// This number cannot fall below 0.5 in a two-class vote, so the 0.5
+        /// this used to be let every reading through and the threshold did
+        /// nothing at all. Measured on the crops the phone uploaded, 0.75 is
+        /// where it starts earning its place: of the readable cells it commits
+        /// to, every one was right, and of the 23 a person could barely make
+        /// out, it commits to none.
+        static let minMark = 0.75
     }
 
     struct Reading {

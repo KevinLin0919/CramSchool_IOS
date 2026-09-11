@@ -85,6 +85,13 @@ jobs:
           # line to catch.
           grep -q "RECOG PASS mark.realInk" recog.log
           grep -q "RECOG PASS mark.noConfidentMisread" recog.log
+          # The circle/cross forest was fitted off-device. If the feature
+          # extraction here drifts from the one that trained it, the model is
+          # silently fed a distribution it never saw — accuracy falls and
+          # nothing else in this suite goes red. Named explicitly for the same
+          # reason as the two above: a check that never ran leaves no FAIL line.
+          grep -q "RECOG PASS mark.featuresMatchTrainer" recog.log
+          grep -q "RECOG PASS mark.forestMatchesTrainer" recog.log
           # Recognition reads cells out of the capture buffer, where CoreImage's
           # origin is bottom-left and every quad here is top-left. A wrong flip
           # would sample the mirror image and fail silently.

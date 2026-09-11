@@ -47,6 +47,38 @@ enum RecognitionSelfTest {
         let cells: [Cell]
     }
 
+    /// The circle-or-cross model's contract with the code that trained it.
+    ///
+    /// `maskBits` is the binarised cell, row-major, one bit per pixel, packed
+    /// most-significant-bit first and base64'd — the same representation
+    /// `numpy.packbits` produces, so the two sides are comparing the identical
+    /// input rather than two renderings of it.
+    private struct ForestFixture: Decodable {
+        struct Cell: Decodable {
+            let label: String
+            let truth: String
+            let width: Int
+            let height: Int
+            let maskBits: String
+            let found: Bool
+            let features: [Double]
+            let probX: Double
+
+            func unpackedMask() -> [Bool]? {
+                guard let bytes = Data(base64Encoded: maskBits) else { return nil }
+                let wanted = width * height
+                guard bytes.count * 8 >= wanted else { return nil }
+                var mask = [Bool](repeating: false, count: wanted)
+                for index in 0..<wanted {
+                    let byte = bytes[bytes.startIndex + index / 8]
+                    mask[index] = (byte >> (7 - UInt8(index % 8))) & 1 == 1
+                }
+                return mask
+            }
+        }
+        let cells: [Cell]
+    }
+
     @MainActor
     private static func run(referencePath: String) {
         var passed = 0, total = 0
@@ -231,7 +263,55 @@ enum RecognitionSelfTest {
             check("mark.realInk", false, "cannot read \(marksPath)")
         }
 
-        // MARK: topology
+        // MARK: the contract with the trainer
+        //
+        // `MarkForest` was fitted in Python. If the feature extraction here and
+        // the feature extraction there ever drift apart, the model is being fed
+        // a distribution it never saw, accuracy falls, and absolutely nothing
+        // goes red — the app still returns marks, they are just worse. That is
+        // the failure this suite would otherwise miss entirely.
+        //
+        // So the fixture stores the exact input each side starts from (the
+        // binarised mask after `withoutPrintedMarks`, bit-packed) alongside the
+        // fourteen ratios and the probability Python computed from them. The
+        // pipeline deliberately contains no resampling, so this is asserted as
+        // equality within floating-point noise rather than to some tolerance
+        // wide enough to hide a real divergence.
+        let forestPath = (referencePath as NSString).deletingLastPathComponent
+            + "/mark_forest.json"
+        if let data = FileManager.default.contents(atPath: forestPath),
+           let fixture = try? JSONDecoder().decode(ForestFixture.self, from: data) {
+            var worstFeature = 0.0, worstProbability = 0.0
+            var missing = 0, checked = 0
+            for cell in fixture.cells {
+                guard let mask = cell.unpackedMask() else { missing += 1; continue }
+                guard let blob = MarkFeatures.isolate(mask: mask, width: cell.width,
+                                                      height: cell.height) else {
+                    if cell.found { missing += 1 }
+                    continue
+                }
+                guard cell.found else { missing += 1; continue }
+                let features = MarkFeatures.extract(mark: blob, width: cell.width,
+                                                    height: cell.height)
+                guard features.count == cell.features.count else { missing += 1; continue }
+                checked += 1
+                for (mine, theirs) in zip(features, cell.features) {
+                    worstFeature = max(worstFeature, abs(mine - theirs))
+                }
+                worstProbability = max(worstProbability,
+                                       abs(MarkForest.probabilityOfCross(features) - cell.probX))
+            }
+            check("mark.featuresMatchTrainer",
+                  missing == 0 && checked == fixture.cells.count && worstFeature < 1e-9,
+                  String(format: "%d/%d cells, worst feature delta %.3g",
+                         checked, fixture.cells.count, worstFeature))
+            check("mark.forestMatchesTrainer", worstProbability < 1e-9,
+                  String(format: "worst P(cross) delta %.3g", worstProbability))
+        } else {
+            check("mark.featuresMatchTrainer", false, "cannot read \(forestPath)")
+        }
+
+        // MARK: shapes
 
         check("mark.closedCircle",
               MarkRecognizer.recognize(Shapes.ring(gapDegrees: 0))?.mark == .circle)
