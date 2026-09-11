@@ -79,8 +79,39 @@ enum XFeatMatcher {
         // Content projected from outside it is extrapolation, not evidence.
         let sourceInlierBounds: CGRect
 
+        // Where the evidence actually sits, and how far it spreads. The bounds
+        // above answer "was this box inside the observed region"; these answer
+        // the question that turned out to matter more — *how far from the
+        // evidence* a box is, in units of how spread out that evidence is.
+        //
+        // A homography's angular error shows up as position error multiplied by
+        // distance from where it was fitted. Measured on 社會1-1, the 選擇題
+        // column sits 0.023 from the keypoint centroid and the 是非題 column
+        // 0.454 — a twentyfold lever on the same fit. That is the whole reason
+        // one of them holds still and the other slides off the page, and it is
+        // not visible in a containment test: both columns are inside the
+        // bounds.
+        let sourceInlierCentroid: CGPoint
+        /// RMS distance of the inliers from their own centroid, per axis.
+        let sourceInlierSpread: CGSize
+
         var inlierRatio: Double {
             matchCount > 0 ? Double(inlierCount) / Double(matchCount) : 0
+        }
+
+        /// How far a point in template space sits from the evidence, measured
+        /// in spreads. Zero at the centre of the keypoints; one means "as far
+        /// out as the evidence itself typically reaches".
+        ///
+        /// Reported rather than acted on for now: the constant that would turn
+        /// this into a weight has no data behind it yet, and guessing it would
+        /// bury a real effect under an invented one.
+        func leverage(of point: CGPoint) -> Double {
+            let sx = max(1e-4, Double(sourceInlierSpread.width))
+            let sy = max(1e-4, Double(sourceInlierSpread.height))
+            let dx = Double(point.x - sourceInlierCentroid.x) / sx
+            let dy = Double(point.y - sourceInlierCentroid.y) / sy
+            return (dx * dx + dy * dy).squareRoot()
         }
 
         func project(_ point: CGPoint) -> CGPoint {
@@ -190,17 +221,30 @@ enum XFeatMatcher {
         var inlierCount = 0
         var minX = Double.infinity, minY = Double.infinity
         var maxX = -Double.infinity, maxY = -Double.infinity
+        var sumX = 0.0, sumY = 0.0
+        var sumXX = 0.0, sumYY = 0.0
         for i in 0..<src.count where reprojectionErrorSq(refined, src[i], dst[i]) < thresholdSq {
             inlierCount += 1
             minX = min(minX, src[i].x); maxX = max(maxX, src[i].x)
             minY = min(minY, src[i].y); maxY = max(maxY, src[i].y)
+            sumX += src[i].x; sumY += src[i].y
+            sumXX += src[i].x * src[i].x; sumYY += src[i].y * src[i].y
         }
         guard inlierCount >= 4 else { return nil }
+        // Second moments in the same pass — the spread is wanted every frame
+        // and a second loop over a thousand correspondences is not free.
+        let n = Double(inlierCount)
+        let meanX = sumX / n, meanY = sumY / n
+        let varX = max(0, sumXX / n - meanX * meanX)
+        let varY = max(0, sumYY / n - meanY * meanY)
         return Homography(matrix: refined, inlierCount: inlierCount,
                           matchCount: src.count,
                           sourceInlierBounds: CGRect(x: minX, y: minY,
                                                      width: maxX - minX,
-                                                     height: maxY - minY))
+                                                     height: maxY - minY),
+                          sourceInlierCentroid: CGPoint(x: meanX, y: meanY),
+                          sourceInlierSpread: CGSize(width: varX.squareRoot(),
+                                                     height: varY.squareRoot()))
     }
 
     // Direct linear transform with h33 fixed to 1, solved via normal
@@ -386,7 +430,12 @@ final class XFeatTemplateMatcher {
         #endif
         guard let h else { return nil }
 
+        // The window's own statistics are in window coordinates; lift them back
+        // to the whole template so a caller comparing a box against them is
+        // comparing like with like. The spread scales but does not translate.
         let b = h.sourceInlierBounds
+        let c = h.sourceInlierCentroid
+        let s = h.sourceInlierSpread
         let composed = XFeatMatcher.Homography(
             matrix: h.matrix * a,
             inlierCount: h.inlierCount,
@@ -394,7 +443,11 @@ final class XFeatTemplateMatcher {
             sourceInlierBounds: CGRect(x: b.minX * window.width + window.minX,
                                        y: b.minY * window.height + window.minY,
                                        width: b.width * window.width,
-                                       height: b.height * window.height))
+                                       height: b.height * window.height),
+            sourceInlierCentroid: CGPoint(x: c.x * window.width + window.minX,
+                                          y: c.y * window.height + window.minY),
+            sourceInlierSpread: CGSize(width: s.width * window.width,
+                                       height: s.height * window.height))
         return TrackedAlignment(homography: composed, windowIndex: index)
     }
 

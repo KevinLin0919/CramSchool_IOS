@@ -36,6 +36,17 @@ final class LiveScanEngine {
         let discarded: Int
         /// Marks only: probe crossings behind the circle-or-cross call.
         let probeCrossings: Int
+        /// How far this cell sits from the keypoints the alignment was fitted
+        /// to, in units of how far those keypoints spread.
+        ///
+        /// A homography's angular error becomes position error in proportion
+        /// to this, which is why the 是非題 column slides off the page while
+        /// the 選擇題 column beside it holds still: measured on 社會1-1 the
+        /// two sit 0.454 and 0.023 from the keypoint centroid. Shown, not yet
+        /// acted on — the number it would be turned into a weight by has no
+        /// measurement behind it, and inventing one would hide the effect
+        /// under a guess.
+        let leverage: Double
     }
 
     /// One side of the paper, as the scanner chrome needs it.
@@ -62,6 +73,14 @@ final class LiveScanEngine {
         let isReady: Bool         // template features loaded
         let alignMillis: Double   // last alignment wall time (0 until first result)
         let inlierCount: Int      // last alignment inliers (0 when missed)
+        /// Share of matched keypoints the last homography kept. A fit built
+        /// from sixteen inliers at 0.3 and one built from two hundred at 0.8
+        /// are treated identically today; this is the number that says which
+        /// one you are looking at.
+        let inlierRatio: Double
+        /// Median leverage over the cells on this page — how far they sit from
+        /// the evidence, in spreads. See `Box.leverage`.
+        let medianLeverage: Double
         let frameTimestamp: TimeInterval      // capture time of the anchor frame (0 = none)
         let intrinsics: simd_double3x3?       // upright-normalized K of the anchor frame
         // The whole master sheet projected through the anchor homography.
@@ -180,6 +199,7 @@ final class LiveScanEngine {
     private var advanceTask: Task<Void, Never>?
     private var lastAlignMillis: Double = 0
     private var lastInlierCount = 0
+    private var lastInlierRatio = 0.0
     private var anchorTimestamp: TimeInterval = 0
     private var anchorIntrinsics: simd_double3x3?
     private var anchorSheetQuad: [CGPoint]?
@@ -215,6 +235,8 @@ final class LiveScanEngine {
     private var discardedGroups: [Int: Int] = [:]
     /// Last probe-crossing count seen for a mark cell. See `Box.probeCrossings`.
     private var probeCrossings: [Int: Int] = [:]
+    /// Alignment leverage at each cell on the most recent aligned frame.
+    private var cellLeverage: [Int: Double] = [:]
     private var blankStreak: [Int: Int] = [:]
 
     /// The crop each question was last read from, kept so a teacher reviewing
@@ -393,6 +415,7 @@ final class LiveScanEngine {
         recognizedText = [:]
         discardedGroups = [:]
         probeCrossings = [:]
+        cellLeverage = [:]
         blankStreak = [:]
         cellImages = [:]
         cellSharpness = [:]
@@ -425,6 +448,7 @@ final class LiveScanEngine {
         trackingHint = nil
         missStreak = 0
         lastInlierCount = 0
+        lastInlierRatio = 0
         anchorTimestamp = 0
         anchorIntrinsics = nil
         anchorSheetQuad = nil
@@ -613,6 +637,7 @@ final class LiveScanEngine {
         missStreak = 0
         trackingHint = (tracked.windowIndex, h.matrix)
         lastInlierCount = h.inlierCount
+        lastInlierRatio = h.inlierRatio
         lastFrame = frame
         lastFrameSize = frame.size
         anchorTimestamp = timestamp
@@ -653,6 +678,7 @@ final class LiveScanEngine {
             // fact about how much paper the model needs to see, not about
             // where the answer is or how big it looks on screen.
             readQuads[i] = h.projectedCorners(of: readBoxes[i])
+            cellLeverage[i] = h.leverage(of: CGPoint(x: box.midX, y: box.midY))
             let xs = corners.map(\.x), ys = corners.map(\.y)
             let rect = CGRect(x: xs.min()!, y: ys.min()!,
                               width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
@@ -821,6 +847,13 @@ final class LiveScanEngine {
         cellSampledPixels[i] = Self.sampledSide(of: quad, in: framePixels)
     }
 
+    /// Median leverage across the cells currently on screen. Zero before the
+    /// first aligned frame.
+    private var medianLeverage: Double {
+        let values = currentSlots.compactMap { cellLeverage[$0] }.sorted()
+        return values.isEmpty ? 0 : values[values.count / 2]
+    }
+
     /// Median width of the cells read so far, in camera pixels.
     private var typicalCellPixels: Int {
         let sizes = cellSampledPixels.values.sorted()
@@ -971,6 +1004,7 @@ final class LiveScanEngine {
 
     private func miss() {
         lastInlierCount = 0
+        lastInlierRatio = 0
         missStreak += 1
         // At tracking cadence a brief motion-blur dropout burns through
         // misses in a fraction of a second; clearing too eagerly strobes the
@@ -1011,7 +1045,8 @@ final class LiveScanEngine {
                 expectedText: i < expected.count ? expected[i] : "",
                 readText: recognizedText[i],
                 discarded: discardedGroups[i] ?? 0,
-                probeCrossings: probeCrossings[i] ?? 0)
+                probeCrossings: probeCrossings[i] ?? 0,
+                leverage: cellLeverage[i] ?? 0)
         }
         let pages = template.pages.indices.map { page -> PageState in
             let slots = slotsByPage[page]
@@ -1030,6 +1065,8 @@ final class LiveScanEngine {
                          isReady: matchers[currentPage] != nil,
                          alignMillis: lastAlignMillis,
                          inlierCount: lastInlierCount,
+                         inlierRatio: lastInlierRatio,
+                         medianLeverage: medianLeverage,
                          frameTimestamp: anchorTimestamp,
                          intrinsics: anchorIntrinsics,
                          sheetQuad: anchorSheetQuad,

@@ -633,7 +633,8 @@ struct CameraPreviewView: UIViewRepresentable {
             // report, so excluding greens would hide it exactly where it
             // matters.
             let worthLabelling = box.verdict == .wrong || box.verdict == .unsure
-                || (showsReading && (box.discarded > 0 || box.probeCrossings > 0))
+                || (showsReading && (box.discarded > 0 || box.probeCrossings > 0
+                                     || box.leverage > 0))
             guard worthLabelling, !expected.isEmpty else {
                 labelLayers[id]?.removeFromSuperlayer()
                 labelLayers[id] = nil
@@ -650,6 +651,15 @@ struct CameraPreviewView: UIViewRepresentable {
                 // The number the circle-or-cross call was made on. Four means
                 // strokes ran through the middle; zero means nothing did.
                 text += " ⌀\(box.probeCrossings)"
+            }
+            if showsReading, box.leverage > 0 {
+                // How far this cell is from the keypoints the alignment was
+                // fitted to, in spreads. The number to compare between a
+                // 是非題 column at the page edge and a 選擇題 column beside
+                // the text — on the master sheet they measure 0.45 and 0.02,
+                // and if that gap survives on the camera it is the reason one
+                // of them drifts.
+                text += String(format: " ⇢%.1f", box.leverage)
             }
             if showsReading, box.discarded > 0 {
                 // Something else was in the cell and got dropped for being

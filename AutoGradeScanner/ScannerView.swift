@@ -440,6 +440,30 @@ struct ScannerView: View {
                             .monospacedDigit()
                             .foregroundStyle(Self.frameSizeTint(live.framePixels))
                     }
+
+                    // How good the alignment behind those boxes actually is.
+                    // Until now there was no way to tell a fit from two hundred
+                    // agreeing keypoints from one scraped together out of
+                    // sixteen — both draw boxes that look equally confident,
+                    // and only one of them is.
+                    if live.inlierRatio > 0 {
+                        Text(String(format: "・內點 %d/%.0f%%",
+                                    live.inlierCount, live.inlierRatio * 100))
+                            .monospacedDigit()
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+
+                    // Median distance from this page's cells to the keypoints
+                    // the fit was built on, in spreads. The lever that turns a
+                    // small angular error into a box sitting on the wrong part
+                    // of the paper — and the number that should differ sharply
+                    // between the 是非題 column and the 選擇題 column if that
+                    // is really what is happening on the camera too.
+                    if live.medianLeverage > 0 {
+                        Text(String(format: "・槓桿 %.2f", live.medianLeverage))
+                            .monospacedDigit()
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
                 }
             } else if !live.isReady {
                 ProgressView()
