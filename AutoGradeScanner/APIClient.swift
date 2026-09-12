@@ -162,6 +162,25 @@ final class APIClient {
         let device_name: String
     }
 
+    struct MicrosoftPayload: Encodable {
+        let id_token: String
+        let device_name: String
+    }
+
+    /// Swaps a Microsoft ID token for this device's token.
+    ///
+    /// The ID token goes no further than the server, which verifies its
+    /// signature, issuer, audience and tenant before trusting a word of it —
+    /// the app is in no position to do any of that, and a client that checked
+    /// its own credentials would be checking nothing.
+    func signInWithMicrosoft(idToken: String, deviceName: String) async throws -> TokenResponse {
+        var request = try makeRequest(path: "/api/v1/auth/microsoft",
+                                      method: "POST",
+                                      authenticated: false)
+        try json(&request, body: MicrosoftPayload(id_token: idToken, device_name: deviceName))
+        return try decode(TokenResponse.self, from: try await send(request))
+    }
+
     /// Swaps a single-use invite code for this device's token.
     func redeemInvite(code: String, deviceName: String) async throws -> TokenResponse {
         var request = try makeRequest(path: "/api/v1/auth/token",
