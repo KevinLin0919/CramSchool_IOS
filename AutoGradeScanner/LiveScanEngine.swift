@@ -542,6 +542,22 @@ final class LiveScanEngine {
         /// fires while there is still time to act rather than after the cell
         /// has already been written off.
         static let stuckSamples = 5
+        /// Consecutive clear looks that yielded nothing before a cell is
+        /// written off as holding no answer.
+        ///
+        /// Was two. Two is what a cell entering or leaving frame during a pan
+        /// produces on its own, so a box the camera merely swept past was
+        /// retired on the strength of never having been looked at properly —
+        /// and retired permanently, because a verdict is what stops the cell
+        /// being read again. The teacher's experience of that is an app which
+        /// glanced twice, gave up, and then ignored the cell no matter how
+        /// steadily they held the camera on it.
+        ///
+        /// Six is the same order as `givesUpAfter`'s eight, and for the same
+        /// reason: at tracking cadence it is a fraction of a second, which is
+        /// long enough to outlast a pan and short enough that a genuinely
+        /// empty cell still settles while the page is on screen.
+        static let blankLooks = 6
     }
 
     var pagesLeftBehind: LeftBehind {
@@ -730,7 +746,15 @@ final class LiveScanEngine {
         }
 
         for i in currentSlots {
-            guard confirmedNow.contains(i) else { seenStreak[i] = 0; continue }
+            guard confirmedNow.contains(i) else {
+                seenStreak[i] = 0
+                // A streak that was interrupted is not a streak. Without this
+                // the count survives the cell leaving frame, so two separate
+                // bad glimpses on two separate passes add up to a verdict —
+                // which is how a box the camera only swept past got retired.
+                blankStreak[i] = 0
+                continue
+            }
             seenStreak[i, default: 0] += 1
             guard seenStreak[i, default: 0] >= 2, verdicts[i] == nil else { continue }
 
@@ -800,10 +824,11 @@ final class LiveScanEngine {
                 blankStreak[i, default: 0] += 1
             }
 
-            // Nothing legible after two clear looks. Two matches the "seen
-            // twice, then decide" rule the rest of this loop already uses; a
-            // longer streak would outlast a quick pan across the page.
-            if blankStreak[i, default: 0] >= 2 {
+            // Nothing legible after several consecutive clear looks at the
+            // same cell. Consecutive is the point: the count resets the moment
+            // the cell leaves frame, so this only fires on a cell the camera
+            // actually held on to and still could not read.
+            if blankStreak[i, default: 0] >= Sampling.blankLooks {
                 if let scripted = scriptedAnswer(i) {
                     // Demo only: the bundled master is a blank answer sheet
                     // with no ink on it at all, so the script is the only
