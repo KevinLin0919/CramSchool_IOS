@@ -53,7 +53,13 @@ jobs:
       - name: Live-scan self-test (partial views, pan across the page)
         run: |
           F="$PWD/TestFixtures"
-          SIMCTL_CHILD_DEMO_SELFTEST_LIVE="$F/scan_top.jpg,$F/scan_top.jpg,$F/scan_bottom.jpg,$F/scan_bottom.jpg,$F/scan_full.jpg,$F/scan_full.jpg" \
+          # Pan across the page, then hold on it. The tail of repeated
+          # whole-page frames is not padding: a cell is only written off after
+          # several CONSECUTIVE looks that read nothing, and six frames total
+          # is fewer looks than a teacher gives a page in the first second.
+          # Feeding only the pan tested the engine under a condition the real
+          # flow never produces.
+          SIMCTL_CHILD_DEMO_SELFTEST_LIVE="$F/scan_top.jpg,$F/scan_top.jpg,$F/scan_bottom.jpg,$F/scan_bottom.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg" \
           SIMCTL_CHILD_DEMO_SELFTEST_OUT="$PWD/selftest_live.png" \
           xcrun simctl launch --terminate-running-process --console-pty "$UDID" \
             com.cramschool.autogradescanner | tee live.log
