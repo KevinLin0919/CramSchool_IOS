@@ -80,16 +80,22 @@ enum MicrosoftSignIn {
         !Config.clientID.isEmpty && !Config.tenantID.isEmpty
     }
 
-    /// Derived from the bundle identifier rather than written down.
+    /// Fixed, and deliberately NOT derived from the bundle identifier.
     ///
-    /// This is the one string that has to match a value typed into someone
-    /// else's Azure portal, and the bundle id is not settled — it moves when
-    /// the developer account is. Deriving it means a rename shows up as a
-    /// sign-in that fails immediately and visibly, instead of a constant
-    /// somewhere that still says the old name.
-    static var callbackScheme: String {
-        "msauth." + (Bundle.main.bundleIdentifier ?? "com.cramschool.autogradescanner")
-    }
+    /// Deriving it was the first thing tried, on the reasoning that the bundle
+    /// id is not settled and a constant would quietly go stale. That reasoning
+    /// ignored how this app is actually installed: sideloading rewrites the
+    /// bundle id on every install, appending the signing team — the build in
+    /// hand identifies itself as `com.cramschool.autogradescanner.8NV6MG8FR6`
+    /// — so a derived URI matched nothing and Microsoft answered AADSTS50011
+    /// on the first real attempt.
+    ///
+    /// A fixed scheme is safe because `ASWebAuthenticationSession` intercepts
+    /// the redirect itself. The scheme is a rendezvous between this process and
+    /// the browser sheet it opened; it is never resolved by the system, never
+    /// routed to a bundle id, and so has no need to resemble one. The only
+    /// thing it must match is the string in the tenant's app registration.
+    static let callbackScheme = "msauth.com.cramschool.autogradescanner"
 
     static var redirectURI: String { callbackScheme + "://auth" }
 
