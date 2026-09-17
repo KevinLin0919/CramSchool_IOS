@@ -47,6 +47,29 @@ final class UploadQueue: ObservableObject {
         Task { await run() }
     }
 
+    /// One drain the caller can wait for, ignoring the backoff clock.
+    ///
+    /// Everything else here is deliberately invisible and deliberately
+    /// patient. This is the one moment that is neither: the teacher is
+    /// standing there about to sign out, and after that their unsent papers
+    /// are deleted — the queue authenticates as whoever holds the credential,
+    /// so a paper left behind belongs to nobody who can send it.
+    ///
+    /// The backoff reset is the point. A queue that failed four minutes ago is
+    /// sitting out the next quarter of an hour, and "wait for the upload to
+    /// finish" is advice a teacher cannot act on when nothing on screen says
+    /// the queue is asleep.
+    func flush() async {
+        guard !isDraining else { return }
+        guard Credentials.isEnrolled, !DemoData.isEnabled else { return }
+        guard ServerConfig.isConfigured else { return }
+        guard store.papers.contains(where: \.needsUpload) else { return }
+
+        failureStreak = 0
+        nextAttempt = nil
+        await run()
+    }
+
     private func run() async {
         isDraining = true
         defer { isDraining = false }

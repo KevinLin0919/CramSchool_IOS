@@ -24,7 +24,14 @@ struct AutoGradeScannerApp: App {
             // whatever was in flight when the app left, and since every upload
             // is idempotent on a UUID the device minted, resuming is just
             // trying again.
-            if phase == .active { UploadQueue.shared.drain() }
+            if phase == .active {
+                UploadQueue.shared.drain()
+                // The mirror of the drain, and for the same reason: signing in
+                // is usually the moment a device has the worst network it will
+                // have all day, and a restore that failed then has no other
+                // way to be retried. Does nothing once one has succeeded.
+                Task { await GradingRestore.runIfNeeded() }
+            }
         }
     }
 }

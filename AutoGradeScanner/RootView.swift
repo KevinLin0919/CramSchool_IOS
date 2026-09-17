@@ -54,8 +54,13 @@ private struct TabBarView: View {
         HStack(spacing: 8) {
             tabButton(screen: .templates, icon: "folder", label: "考卷")
             scanButton
+            // Reachable while a restore is still running, even though the
+            // stack is momentarily empty. The results screen is where the
+            // restore reports itself, and a tab greyed out until it finishes
+            // leaves a teacher who has just signed in with nowhere to see
+            // that their work is on its way back.
             tabButton(screen: .results, icon: "chart.bar", label: "結果",
-                      disabled: papers.papers.isEmpty)
+                      disabled: papers.papers.isEmpty && !papers.isRestoring)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, AG.tabBarPadding)

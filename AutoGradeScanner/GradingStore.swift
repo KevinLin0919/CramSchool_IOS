@@ -151,6 +151,27 @@ final class GradingStore: ObservableObject {
     /// and are reviewed together once the stack is done.
     @Published private(set) var papers: [StoredPaper] = []
 
+    /// True while the server's copy of this teacher's grading is being pulled
+    /// back down. Only the empty state reads it, and only to say "fetching"
+    /// rather than "you have never graded anything" — which is the wrong thing
+    /// to tell someone who has just signed back in with a term's work behind
+    /// them.
+    @Published private(set) var isRestoring = false
+
+    /// Whose grading is on this device.
+    ///
+    /// Deliberately NOT in `Credentials`: that is cleared the instant a token
+    /// dies, and this has to outlive the token to be worth anything. Its job
+    /// is to answer one question at sign-in — are these papers the papers of
+    /// the person now signing in? — and a 401 must not erase the answer, or
+    /// every expired token would look like a new teacher.
+    private static let ownerKey = "grading.ownerTeacherID"
+
+    var ownerTeacherID: Int? {
+        let stored = UserDefaults.standard.integer(forKey: Self.ownerKey)
+        return stored > 0 ? stored : nil
+    }
+
     private init() {
         load()
     }
@@ -209,6 +230,13 @@ final class GradingStore: ObservableObject {
             try? png.write(to: cellURL(paper.id, question: question), options: .atomic)
         }
         writeRecord(paper)
+        // Claim the stack for whoever graded it. Stamped here rather than only
+        // at sign-in so the record predates the next sign-in rather than being
+        // written by it — a device whose token expired mid-stack still knows
+        // whose papers these are when it comes back.
+        if let teacherID = Credentials.teacherID {
+            UserDefaults.standard.set(teacherID, forKey: Self.ownerKey)
+        }
 
         if let index = papers.firstIndex(where: { $0.id == paper.id }) {
             papers[index] = paper
@@ -285,7 +313,70 @@ final class GradingStore: ObservableObject {
         try? FileManager.default.removeItem(at: root)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         papers = []
+        UserDefaults.standard.removeObject(forKey: Self.ownerKey)
     }
+
+    // MARK: - Handover
+
+    /// Hands the stack to whoever just signed in, clearing it first if it
+    /// belonged to somebody else.
+    ///
+    /// Signing out clears this device already, which covers the orderly
+    /// handover. This covers the rest, and the rest is most of it: a token
+    /// that expired and was replaced by a colleague's, an iPad passed on
+    /// without anyone pressing 登出, an app reinstalled over a container the
+    /// system kept. Grading is filed to disk and drawn from disk, so without
+    /// this the previous teacher's papers are simply what the next teacher
+    /// sees — scoping the API changed what the server hands out and nothing
+    /// about what is already on the device.
+    ///
+    /// An unclaimed stack is adopted rather than destroyed. Papers written by
+    /// a build that did not record an owner cannot be attributed, and between
+    /// deleting a teacher's unsent work and showing it to them again, showing
+    /// it is the recoverable mistake.
+    ///
+    /// - Returns: whether anything was discarded.
+    @discardableResult
+    func adopt(teacherID: Int) -> Bool {
+        let previous = ownerTeacherID
+        let handover = previous != nil && previous != teacherID
+        if handover { clearAll() }
+        UserDefaults.standard.set(teacherID, forKey: Self.ownerKey)
+        return handover
+    }
+
+    // MARK: - Restoring
+
+    /// Files a paper that came back from the server rather than off the
+    /// camera. Distinct from `store` in the two ways that matter: there are no
+    /// crops to write, and it must not wake the upload queue — this paper is
+    /// already on the server, and re-sending it would be the device arguing
+    /// with the copy it just downloaded.
+    func restore(_ paper: StoredPaper) {
+        writeRecord(paper)
+        if let index = papers.firstIndex(where: { $0.id == paper.id }) {
+            papers[index] = paper
+        } else {
+            papers.append(paper)
+        }
+        papers.sort { $0.scannedAt < $1.scannedAt }
+    }
+
+    /// The crop for one question, filed under a paper that already exists.
+    func restoreCell(_ id: UUID, question: Int, png: Data) {
+        try? FileManager.default.createDirectory(at: folder(id), withIntermediateDirectories: true)
+        try? png.write(to: cellURL(id, question: question), options: .atomic)
+        // Nothing in `papers` changed, but the view is drawing from the
+        // filesystem and has no way to notice a file appearing beside it.
+        objectWillChange.send()
+    }
+
+    func beginRestoring() { isRestoring = true }
+    func endRestoring() { isRestoring = false }
+
+    /// The uuids already on this device, so a restore fetches only what is
+    /// missing rather than re-downloading a term of work on every sign-in.
+    var knownIDs: Set<UUID> { Set(papers.map(\.id)) }
 
     // MARK: - Conversion
 

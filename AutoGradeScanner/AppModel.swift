@@ -70,8 +70,27 @@ final class AppModel: ObservableObject {
                     // The symptom is a template that quietly shows the wrong
                     // sheet, which is worse than showing nothing.
                     TemplateStore.shared.purge()
+
+                    // And check whose grading is lying on this device. Signing
+                    // out clears it, but signing out is the path nobody takes
+                    // when a token expires or an iPad changes hands mid-term —
+                    // and the papers are on disk, so the next person simply
+                    // sees them. Scoping the API decided what the server hands
+                    // out; this decides what the device already has.
+                    if let teacherID = Credentials.teacherID {
+                        GradingStore.shared.adopt(teacherID: teacherID)
+                    }
                 }
-                Task { await self?.loadTemplates() }
+                Task {
+                    await self?.loadTemplates()
+                    // After the templates, never before: a restored record
+                    // arrives with its answers but without the geometry to
+                    // draw them, and the template is where that comes back
+                    // from.
+                    if Credentials.isEnrolled {
+                        await GradingRestore.run()
+                    }
+                }
             }
             .store(in: &cancellables)
     }
@@ -186,6 +205,14 @@ final class AppModel: ObservableObject {
         // The answer keys came down with a credential that no longer exists;
         // they should not outlive it on a shared device.
         TemplateStore.shared.purge()
+        // And so should the grading. This is the whole point of signing out on
+        // a device two teachers share: what was graded this afternoon is a
+        // list of one teacher's students and how each of them did, and it was
+        // sitting on disk for whoever picked the iPad up next. Everything that
+        // reached the server comes back on the next sign-in — the papers that
+        // do not are the ones the confirmation dialog has to name, which is
+        // why it counts them before getting here.
+        GradingStore.shared.clearAll()
         selectedTemplateID = nil
         lastResult = nil
         Task { await loadTemplates() }

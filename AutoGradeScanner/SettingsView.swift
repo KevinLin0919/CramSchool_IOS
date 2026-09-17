@@ -178,6 +178,13 @@ struct SettingsView: View {
         let wasMicrosoft = method == .microsoft
 
         isSigningOut = true
+        // One last attempt to send what is waiting, while the credential that
+        // authorises it still exists. After this the token is revoked and the
+        // papers are deleted, so anything still in the outbox is gone for
+        // good — and the queue may well have been sitting out a backoff that
+        // nothing on this screen was ever going to mention.
+        await UploadQueue.shared.flush()
+
         var failed = false
         do {
             try await APIClient.shared.revokeThisDevice()
@@ -200,7 +207,7 @@ struct SettingsView: View {
     private var deviceFooter: String {
         if enrolled {
             return method == .microsoft
-                ? "登出後已下載的考卷會一併移除，重新登入即可再同步。"
+                ? "登出後已下載的考卷與批改紀錄會一併移除，重新登入即可再同步。"
                 : "這台裝置是用邀請碼註冊的。登出後需要向管理員索取新的邀請碼才能再次使用。"
         }
         if model.isExplicitDemo {
@@ -217,20 +224,27 @@ struct SettingsView: View {
         method == .microsoft ? "登出" : "登出並取消註冊"
     }
 
-    /// Names the unrecoverable part first, and the graded papers that stay
-    /// behind second — on a shared device those are the previous teacher's,
-    /// and they have not been uploaded anywhere yet.
+    /// Says what is destroyed, then what comes back, then what does not.
+    ///
+    /// The order is the order someone deciding needs them in. Grading is now
+    /// cleared from the device on sign-out — it has to be, since the next
+    /// person to pick up a shared iPad should not be reading a colleague's
+    /// class — and "cleared" is a much stronger word than the "cannot be
+    /// uploaded" this used to say. Whatever reached the server returns on the
+    /// next sign-in, which is the sentence that makes the first one bearable.
+    /// Whatever did not is the number worth counting.
     private var signOutMessage: String {
         var lines = [method == .microsoft
                      ? "已下載的考卷與標準答案會一併刪除，重新登入後可再次同步。"
                      : "已下載的考卷與標準答案會一併刪除，且需要新的邀請碼才能再次註冊。"]
-        // Not "how many papers are here" — how many would be stranded. Once
-        // the token is revoked nothing on this device can send them, and no
-        // later sign-in helps: the queue authenticates as whoever holds the
-        // credential now.
+        lines.append("這台裝置上的批改紀錄也會清除；已上傳的部分會在下次登入時自動還原。")
+        // Not "how many papers are here" — how many would be lost. Once the
+        // token is revoked nothing on this device can send them, and no later
+        // sign-in helps: the queue authenticates as whoever holds the
+        // credential now, so these have nowhere left to go.
         let pending = papers.pendingUploadCount
         if pending > 0 {
-            lines.append("有 \(pending) 份批改結果還沒上傳，登出後將無法再上傳。")
+            lines.append("其中 \(pending) 份還沒上傳，登出後就會消失，無法復原。")
         }
         return lines.joined(separator: "\n")
     }
