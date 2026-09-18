@@ -175,6 +175,12 @@ jobs:
           chmod 700 "$RUNNER_TEMP/keys"
           printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
           chmod 600 "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          # altool does not take a path; it searches a fixed list of
+          # directories, and RUNNER_TEMP is not on it. Same key, second home.
+          mkdir -p ~/.appstoreconnect/private_keys
+          chmod 700 ~/.appstoreconnect/private_keys
+          cp "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" ~/.appstoreconnect/private_keys/
+          chmod 600 ~/.appstoreconnect/private_keys/"AuthKey_$ASC_KEY_ID.p8"
           # Say whether it arrived intact without echoing a byte of it.
           head -1 "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
             | grep -q 'BEGIN PRIVATE KEY' && echo "key looks well-formed"
@@ -312,6 +318,26 @@ jobs:
             "$RUNNER_TEMP/unpacked/Payload/AutoGradeScanner.app/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' \
             "$RUNNER_TEMP/unpacked/Payload/AutoGradeScanner.app/Info.plist"
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          IPA=$(ls "$RUNNER_TEMP/export"/*.ipa)
+
+          # Validate before uploading. A rejected upload and a rejected build
+          # look the same from here — both come back as a failed step — but
+          # only one of them has already spent a build number, and Apple never
+          # accepts that number again.
+          xcrun altool --validate-app -f "$IPA" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+          echo "Uploaded build ${{ github.run_number }}. App Store Connect"
+          echo "processes it for a few minutes before TestFlight shows it."
 
       - name: Upload the signed .ipa as an artifact
         uses: actions/upload-artifact@v4
