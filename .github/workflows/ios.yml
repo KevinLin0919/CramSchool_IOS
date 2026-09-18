@@ -190,13 +190,17 @@ jobs:
           # the upload. DEVELOPMENT_TEAM is passed here rather than written
           # into the project, so the unsigned job above stays unsigned.
           #
-          # CODE_SIGN_IDENTITY is the difference between this working and
-          # not. Automatic signing defaults to Apple Development, and a
-          # development profile cannot exist until the team has registered a
-          # physical device — so archiving on a machine that is not a device,
-          # for a team with none, fails with "your team has no devices". A
-          # distribution profile has no such requirement, and distribution is
-          # what an upload needs anyway.
+          # This step signs for DEVELOPMENT, and that is correct even though
+          # the build is going to App Store Connect. Archiving under automatic
+          # signing always uses a development identity; the distribution
+          # identity is applied by the export step below, which re-signs.
+          # Naming `CODE_SIGN_IDENTITY=Apple Distribution` here does not move
+          # that forward, it just makes Xcode refuse the contradiction.
+          #
+          # The consequence is that the team must have at least one registered
+          # device, because a development profile is defined as being pinned
+          # to devices. That is the whole of what "your team has no devices"
+          # was telling us.
           #
           # CURRENT_PROJECT_VERSION is the build number, and Apple refuses a
           # repeat. A re-run of this workflow reuses its run number, so a
@@ -213,7 +217,6 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }}
 
       - name: Export a signed .ipa
