@@ -190,6 +190,14 @@ jobs:
           # the upload. DEVELOPMENT_TEAM is passed here rather than written
           # into the project, so the unsigned job above stays unsigned.
           #
+          # CODE_SIGN_IDENTITY is the difference between this working and
+          # not. Automatic signing defaults to Apple Development, and a
+          # development profile cannot exist until the team has registered a
+          # physical device — so archiving on a machine that is not a device,
+          # for a team with none, fails with "your team has no devices". A
+          # distribution profile has no such requirement, and distribution is
+          # what an upload needs anyway.
+          #
           # CURRENT_PROJECT_VERSION is the build number, and Apple refuses a
           # repeat. A re-run of this workflow reuses its run number, so a
           # rejected upload is re-driven by pushing a commit, not by pressing
@@ -205,6 +213,7 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }}
 
       - name: Export a signed .ipa
