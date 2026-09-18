@@ -116,6 +116,9 @@ jobs:
   ipa:
     name: Build unsigned .ipa for sideloading
     runs-on: macos-latest
+    # Kept after TestFlight exists, deliberately. Signing is the one step here
+    # that depends on Apple agreeing to something, and when it stops agreeing
+    # this is the path that still puts a build on a phone.
 
     steps:
       - name: Checkout
@@ -141,3 +144,115 @@ jobs:
         with:
           name: AutoGradeScanner-ipa
           path: AutoGradeScanner.ipa
+
+  testflight:
+    name: Sign and upload to TestFlight
+    runs-on: macos-latest
+    # main only for pushes. Every other branch is somebody's work in
+    # progress, and a build number spent on one is a build number Apple will
+    # never accept again. A manual dispatch is exempt because it is somebody
+    # deciding, which is the only way to test this job before main has it.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    needs: [build, selftest]
+
+    env:
+      TEAM_ID: 72QM8HTFG6
+      BUNDLE_ID: com.cramschool.autogradescanner
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Put the App Store Connect key where xcodebuild expects it
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          # Outside the workspace: the repo is public, and a key written into
+          # the checkout is one `actions/upload-artifact` away from being
+          # published. RUNNER_TEMP is wiped with the runner.
+          mkdir -p "$RUNNER_TEMP/keys"
+          chmod 700 "$RUNNER_TEMP/keys"
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          # Say whether it arrived intact without echoing a byte of it.
+          head -1 "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
+            | grep -q 'BEGIN PRIVATE KEY' && echo "key looks well-formed"
+
+      - name: Archive (Release, device, signed)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          # `-allowProvisioningUpdates` is what lets a machine with no
+          # certificates sign: Xcode asks App Store Connect for the
+          # certificate and profile, using the same key that will later do
+          # the upload. DEVELOPMENT_TEAM is passed here rather than written
+          # into the project, so the unsigned job above stays unsigned.
+          #
+          # CURRENT_PROJECT_VERSION is the build number, and Apple refuses a
+          # repeat. A re-run of this workflow reuses its run number, so a
+          # rejected upload is re-driven by pushing a commit, not by pressing
+          # re-run.
+          xcodebuild archive \
+            -project AutoGradeScanner.xcodeproj \
+            -scheme AutoGradeScanner \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/AutoGradeScanner.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }}
+
+      - name: Export a signed .ipa
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          # `sed` rather than a bare heredoc: the body has to be indented to
+          # satisfy YAML, and an XML declaration with whitespace in front of
+          # it is not a well-formed document.
+          sed 's/^[[:space:]]*//' > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>destination</key><string>export</string>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/AutoGradeScanner.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Show what was signed
+        run: |
+          # Exporting cannot tell you WHO signed the thing, and a build signed
+          # by the wrong identity fails at upload with a message about
+          # entitlements rather than about signing.
+          IPA=$(ls "$RUNNER_TEMP/export"/*.ipa)
+          unzip -qo "$IPA" -d "$RUNNER_TEMP/unpacked"
+          codesign -dv --verbose=2 "$RUNNER_TEMP/unpacked/Payload/AutoGradeScanner.app" 2>&1 \
+            | grep -E 'Authority|TeamIdentifier|Identifier='
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+            "$RUNNER_TEMP/unpacked/Payload/AutoGradeScanner.app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' \
+            "$RUNNER_TEMP/unpacked/Payload/AutoGradeScanner.app/Info.plist"
+
+      - name: Upload the signed .ipa as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoGradeScanner-signed-ipa
+          path: ${{ runner.temp }}/export/*.ipa
+
