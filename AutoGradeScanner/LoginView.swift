@@ -19,6 +19,7 @@ struct LoginView: View {
 
     @State private var status: Status = .idle
     @State private var showingInvite = false
+    @State private var showingServer = false
 
     private enum Status: Equatable {
         case idle
@@ -47,6 +48,7 @@ struct LoginView: View {
                     }
                     primaryButton
                     secondaryEntries
+                    serverEntry
                 }
                 .padding(.horizontal, 28)
                 .padding(.bottom, 32)
@@ -56,6 +58,7 @@ struct LoginView: View {
         }
         .background(AG.bg2)
         .sheet(isPresented: $showingInvite) { EnrolmentView() }
+        .sheet(isPresented: $showingServer) { ServerAddressSheet() }
         .animation(.spring(duration: 0.28), value: status)
         .task {
             // A device whose authorisation died lands here with no idea why.
@@ -129,6 +132,36 @@ struct LoginView: View {
         .font(.system(size: 14))
         .foregroundStyle(AG.fg2)
         .padding(.top, 4)
+    }
+
+    /// The way out of the one dead end this screen could produce.
+    ///
+    /// "尚未設定伺服器位址，請至設定填寫" was true and useless: Settings opens
+    /// from the template list, the template list is behind this screen, and
+    /// this screen cannot be passed until the address is set. A fresh install
+    /// had nowhere to go — which nobody noticed while every test device
+    /// already carried an address from an earlier install.
+    ///
+    /// Shown when something about reaching the server is wrong, and hidden
+    /// otherwise. A teacher who is simply signing in has no business being
+    /// offered a text field full of ports and IP addresses.
+    @ViewBuilder
+    private var serverEntry: some View {
+        if !ServerConfig.isConfigured || isFailed {
+            Button {
+                showingServer = true
+            } label: {
+                Label("伺服器設定", systemImage: "network")
+                    .font(.system(size: 14))
+                    .foregroundStyle(AG.fg2)
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private var isFailed: Bool {
+        if case .failed = status { return true }
+        return false
     }
 
     // MARK: - Sign in
