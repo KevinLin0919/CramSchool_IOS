@@ -34,3 +34,12 @@ Recordings/
 # the same as the PDFs above. Kept locally so demo template 9006 still builds
 # on this machine; must not reach the public repo.
 AutoGradeScanner/DemoMaster9006.png
+
+# Apple signing keys. The App Store Connect .p8 is downloadable exactly once and
+# grants upload rights to the school's whole account — and this repo is public.
+# The key itself lives outside the working tree; this is the second lock, so a
+# stray `git add .` cannot undo that decision.
+*.p8
+*.p12
+*.mobileprovision
+*.cer

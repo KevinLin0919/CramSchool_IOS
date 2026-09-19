@@ -7,6 +7,14 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<!-- Answered here rather than by hand on every upload. The question is
+	     about proprietary cryptography, and this app implements none: it makes
+	     ordinary network calls and stores a token in the Keychain, all of it
+	     the platform's own. Leaving the key out makes App Store Connect ask
+	     the same question about every single build before it can reach a
+	     tester, which is a manual gate on an otherwise automatic pipeline. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>需要使用相機掃描學生考卷，進行即時辨識與批改。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
