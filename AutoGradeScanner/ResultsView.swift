@@ -70,17 +70,31 @@ struct ResultsView: View {
         }
     }
 
+    /// Two different nothings. Someone who has never graded is being told
+    /// where to start; someone who just signed back in after a term is
+    /// watching their own work come down, and telling them there is none
+    /// would be both wrong and alarming.
     private var emptyState: some View {
         VStack(spacing: 12) {
-            Image(systemName: "chart.bar")
-                .font(.system(size: 34))
-                .foregroundStyle(AG.fg3)
-            Text("尚無批改結果")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(AG.fg1)
-            Text("先選擇考卷並掃描，結果會顯示在這裡")
-                .font(.system(size: 13))
-                .foregroundStyle(AG.fg2)
+            if papers.isRestoring {
+                ProgressView().tint(AG.brand)
+                Text("正在還原批改紀錄")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(AG.fg1)
+                Text("從伺服器取回你先前上傳的結果")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AG.fg2)
+            } else {
+                Image(systemName: "chart.bar")
+                    .font(.system(size: 34))
+                    .foregroundStyle(AG.fg3)
+                Text("尚無批改結果")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(AG.fg1)
+                Text("先選擇考卷並掃描，結果會顯示在這裡")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AG.fg2)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AG.bg2)

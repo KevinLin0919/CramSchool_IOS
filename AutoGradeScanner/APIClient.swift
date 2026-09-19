@@ -343,6 +343,62 @@ final class APIClient {
         _ = try await send(request)
     }
 
+    // MARK: - Grading results, coming back
+
+    /// One row of the teacher's own history, as the list endpoint returns it.
+    ///
+    /// Dates stay `String` on purpose. `decode` uses a stock `JSONDecoder`,
+    /// whose default date strategy reads a number of seconds, and the server
+    /// sends ISO-8601 with fractional seconds — which the `.iso8601` strategy
+    /// rejects outright. Every other DTO in this app keeps timestamps as text
+    /// for the same reason; parsing happens where the value is used.
+    struct SessionSummaryDTO: Decodable {
+        let client_uuid: UUID
+        let template_id: Int
+        let template_name: String?
+        let scanned_at: String
+        let correct_count: Int
+        let total_count: Int
+    }
+
+    struct SessionAnswerDTO: Decodable {
+        let question_no: Int
+        let expected: String
+        let recognized: String?
+        let verdict: String
+        let confidence: Double?
+        let teacher_value: String?
+        let cell_image_id: Int?
+    }
+
+    struct SessionDTO: Decodable {
+        let client_uuid: UUID
+        let template_id: Int
+        let template_name: String?
+        let scanned_at: String
+        let uploaded_at: String
+        let answers: [SessionAnswerDTO]
+    }
+
+    /// This teacher's grading, newest first. The server decides whose — the
+    /// token is the only thing that says who is asking, and the endpoint
+    /// filters on it.
+    func listSessions(limit: Int = 200) async throws -> [SessionSummaryDTO] {
+        let request = try makeRequest(path: "/api/v1/grading-sessions",
+                                      query: [URLQueryItem(name: "limit", value: "\(limit)")])
+        return try decode([SessionSummaryDTO].self, from: try await send(request))
+    }
+
+    /// One record in full, including its answers. The list deliberately does
+    /// not carry them: a term of grading is a few hundred rows, and fetching
+    /// every answer of every one of them to show a list of scores would make
+    /// signing in cost more the longer someone has been teaching.
+    func getSession(clientUUID: UUID) async throws -> SessionDTO {
+        let request = try makeRequest(
+            path: "/api/v1/grading-sessions/\(clientUUID.uuidString.lowercased())")
+        return try decode(SessionDTO.self, from: try await send(request))
+    }
+
     /// Bundle version and build, trimmed to what the server will store.
     static var appVersion: String {
         let info = Bundle.main.infoDictionary
