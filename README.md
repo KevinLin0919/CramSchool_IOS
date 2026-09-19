@@ -169,12 +169,28 @@ Application Support/TemplateCache/
 - `XFeatMatcher.swift` — mutual-NN 餘弦匹配（Accelerate）、RANSAC homography，
   以及快取模板特徵、可反覆對位相機串流的 `XFeatTemplateMatcher`
 
-### 辨識：MNIST CNN + 拓樸
+### 辨識：MNIST CNN + 決策森林
 
 - **數字** — `DigitRecognizer.swift`，權重與後端 `/ocr` 完全相同。
   重建了 MNIST 的正規化（ink 縮到 20px、依重心置中於 28×28），這是後端沒做的那一步
-- **圈叉** — `MarkRecognizer.swift`，數洞：圓圈圍出一個區域，叉沒有。
-  形態學閉運算是關鍵，因為學生的圈常常沒收口
+- **圈叉** — `MarkRecognizer.swift` + `MarkFeatures.swift` + `MarkForest.swift`。
+  先把離格子中心最近的那一團墨**隔離**出來，再描述成 14 個比例
+  （6 個同心環 + 8 個角度扇區），交給 50 棵樹投票。
+
+  問的還是「有沒有東西從中間穿過」，但改成在整團墨上積分，而不是在三個細圓環上
+  取樣 540 個點。舊做法在 65 格真實筆跡上只有 63%，錯誤全偏向同一邊
+  （17 個圈判成叉、只有 1 個反過來），其中 10 個是滿信心 —— 那是投票救不了的一種錯。
+
+  | | 平掃 65 格 | 手機可讀 | 手機勉強可讀 |
+  |---|---|---|---|
+  | 舊的探測環 | 63% | 43% | 0% |
+  | 森林 | **96%** | **90%** | 全部拒答 |
+
+  **隔離那一步比模型本身重要**：少了它，手機上是 43% 而不是 90%，因為被描述的
+  那團墨可能是括號、頁首標題，或隔壁列漏進來的筆畫。
+
+  模型只有 314 個節點、約 10KB，直接編進二進位檔 —— 沒有 Core ML、沒有模型檔要下載。
+  `TestFixtures/real_marks.json` 那 10 格**刻意排除在訓練外**，所以自測量的是泛化。
 - **投票** — `AnswerRecognizer.swift`。一格在鏡頭平移中會被看到幾十次，
   約每五幀有一幀的對位誤差足以讀錯，所以累積投票而非單幀決定
 
@@ -228,6 +244,11 @@ Application Support/TemplateCache/
 自測是唯一的回歸保護（沒有 Mac 可以本機跑），所以它斷言的是具體數字而非「有沒有 crash」：
 `SELFTEST LIVE final: 8 graded`、`RECOG PASS model.matchesReference — max prob delta 1.49e-07`。
 
+圈叉模型是在 Python 裡訓練的，所以自測多守一件事：`mark.featuresMatchTrainer`
+斷言 Swift 這邊算出的 14 個特徵與訓練時**完全相同**（差距 < 1e-9，不是寬鬆容差）。
+整條前處理刻意不含任何縮放或重採樣，每個值都是「像素數 ÷ 像素數」，兩邊才有辦法逐位吻合 ——
+少了這個檢查，兩邊一旦分岔，模型會被餵進沒見過的分佈，準確率下降而**沒有任何東西會變紅**。
+
 ---
 
 ## 伺服器設定
@@ -275,7 +296,9 @@ AutoGradeScanner/
 ├── CellPixelSource.swift       格子取樣來源：原始 buffer 或降採樣影像
 ├── CellPatch.swift             灰階取樣、Otsu、連通元件、印刷框線過濾
 ├── DigitRecognizer.swift       MNIST CNN（Core ML）
-├── MarkRecognizer.swift        圈叉：形態學閉運算 + 數洞
+├── MarkRecognizer.swift        圈叉：隔離墨團後交給森林
+├── MarkFeatures.swift          圈叉的 14 個徑向／角度比例特徵
+├── MarkForest.swift            50 棵決策樹，編進二進位檔（約 10KB）
 ├── AnswerRecognizer.swift      依答案型別路由 + 跨幀投票
 ├── DigitCNN.mlpackage          數字模型（與後端同權重）
 ├── LiveScanEngine.swift        即時批改：逐幀對位、追蹤、每頁 keyframe、自動換頁

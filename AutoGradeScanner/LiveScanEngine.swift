@@ -34,8 +34,6 @@ final class LiveScanEngine {
         /// Zero for everything else. Surfaced so a stray blob that is now
         /// silently discarded is still visible as a thing to fix at source.
         let discarded: Int
-        /// Marks only: probe crossings behind the circle-or-cross call.
-        let probeCrossings: Int
         /// How far this cell sits from the keypoints the alignment was fitted
         /// to, in units of how far those keypoints spread.
         ///
@@ -233,8 +231,6 @@ final class LiveScanEngine {
     private var recognizedText: [Int: String] = [:]
     /// The most ink groups any frame dropped for a cell. See `Box.discarded`.
     private var discardedGroups: [Int: Int] = [:]
-    /// Last probe-crossing count seen for a mark cell. See `Box.probeCrossings`.
-    private var probeCrossings: [Int: Int] = [:]
     /// Alignment leverage at each cell on the most recent aligned frame.
     private var cellLeverage: [Int: Double] = [:]
     private var blankStreak: [Int: Int] = [:]
@@ -414,7 +410,6 @@ final class LiveScanEngine {
         accumulators = [:]
         recognizedText = [:]
         discardedGroups = [:]
-        probeCrossings = [:]
         cellLeverage = [:]
         blankStreak = [:]
         cellImages = [:]
@@ -806,7 +801,6 @@ final class LiveScanEngine {
                     if reading.discarded > 0 {
                         discardedGroups[i] = max(discardedGroups[i] ?? 0, reading.discarded)
                     }
-                    if reading.kind == .mark { probeCrossings[i] = reading.probeCrossings }
                     var votes = accumulators[i] ?? AnswerAccumulator()
                     votes.add(reading)
                     accumulators[i] = votes
@@ -1070,7 +1064,6 @@ final class LiveScanEngine {
                 expectedText: i < expected.count ? expected[i] : "",
                 readText: recognizedText[i],
                 discarded: discardedGroups[i] ?? 0,
-                probeCrossings: probeCrossings[i] ?? 0,
                 leverage: cellLeverage[i] ?? 0)
         }
         let pages = template.pages.indices.map { page -> PageState in

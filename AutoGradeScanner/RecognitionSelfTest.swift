@@ -349,8 +349,7 @@ enum RecognitionSelfTest {
         if let wide = MarkRecognizer.recognize(Shapes.ring(gapDegrees: 90)) {
             check("mark.wideOpenRingIsStillACircle",
                   wide.mark == .circle && wide.confidence >= 0.5,
-                  String(format: "%@ at %.2f, %d probe crossings",
-                         wide.mark.rawValue, wide.confidence, wide.crossings))
+                  String(format: "%@ at %.2f", wide.mark.rawValue, wide.confidence))
         } else {
             check("mark.wideOpenRingIsStillACircle", false, "no reading at all")
         }

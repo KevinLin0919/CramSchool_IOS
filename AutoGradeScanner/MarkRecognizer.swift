@@ -50,10 +50,6 @@ enum MarkRecognizer {
         /// values mean the shape was ambiguous, not that the ink was faint —
         /// callers should prefer another frame over trusting this.
         let confidence: Double
-        /// Kept so the diagnostic overlay and `Reading` keep their shape. The
-        /// forest has no crossing count to report, so this is always zero and
-        /// the overlay's `⌀` annotation simply stops appearing.
-        var crossings: Int = 0
     }
 
     /// Returns nil when the cell holds no mark to read — blank, so dark the
