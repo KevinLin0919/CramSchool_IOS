@@ -20,6 +20,11 @@ struct LoginView: View {
     @State private var status: Status = .idle
     @State private var showingInvite = false
     @State private var showingServer = false
+    /// Observed, not read. The label below names the address, and without
+    /// this the login screen would still be showing the old one after the
+    /// sheet saved a new one — SwiftUI has no reason to redraw for a value
+    /// it was never watching.
+    @AppStorage(ServerConfig.apiKey) private var apiBase = ServerConfig.defaultAPI
 
     private enum Status: Equatable {
         case idle
@@ -142,26 +147,35 @@ struct LoginView: View {
     /// had nowhere to go — which nobody noticed while every test device
     /// already carried an address from an earlier install.
     ///
-    /// Shown when something about reaching the server is wrong, and hidden
-    /// otherwise. A teacher who is simply signing in has no business being
-    /// offered a text field full of ports and IP addresses.
-    @ViewBuilder
+    /// Always visible, and that is a correction. It first appeared only when
+    /// the address was missing or a sign-in had failed, on the reasoning that
+    /// a teacher simply signing in has no business being shown ports and IP
+    /// addresses. True of an app with one address. This school has two — the
+    /// cram school's own network and its tailnet — and which one works
+    /// depends on where the person is standing, so changing it is an ordinary
+    /// thing to need rather than a repair. Hiding it until something breaks
+    /// made "I walked home" into a failed login first and a fix second.
+    ///
+    /// It can go back to being conditional the day there is one address that
+    /// works everywhere.
     private var serverEntry: some View {
-        if !ServerConfig.isConfigured || isFailed {
-            Button {
-                showingServer = true
-            } label: {
-                Label("伺服器設定", systemImage: "network")
-                    .font(.system(size: 14))
-                    .foregroundStyle(AG.fg2)
-            }
-            .padding(.top, 2)
+        Button {
+            showingServer = true
+        } label: {
+            Label(serverEntryTitle, systemImage: "network")
+                .font(.system(size: 14))
+                .foregroundStyle(AG.fg2)
         }
+        .padding(.top, 2)
     }
 
-    private var isFailed: Bool {
-        if case .failed = status { return true }
-        return false
+    /// Names the current choice rather than the setting, so somebody who is
+    /// in the wrong place can see that they are without opening anything.
+    private var serverEntryTitle: String {
+        guard !apiBase.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return "設定伺服器位址"
+        }
+        return "伺服器：\(ServerAddressSheet.label(for: apiBase))"
     }
 
     // MARK: - Sign in

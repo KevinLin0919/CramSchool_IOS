@@ -36,10 +36,22 @@ struct ServerAddressSheet: View {
     /// The addresses this school actually answers on. Named by the situation
     /// rather than by the network, because "10.0.50.16" tells a teacher
     /// nothing and "在補習班" tells them everything.
-    private static let known: [(label: String, detail: String, url: String)] = [
+    static let known: [(label: String, detail: String, url: String)] = [
         ("在補習班", "連上補習班的 WiFi 時使用", "http://10.0.50.16:8085"),
         ("在外面", "需要開啟 Tailscale", "http://100.107.235.123:8085"),
     ]
+
+    /// What to call the address currently saved.
+    ///
+    /// The login screen shows this, so somebody who has walked home can see
+    /// that the app is still pointed at the cram school without opening
+    /// anything. A raw IP there would say nothing to the person who needs it
+    /// most.
+    static func label(for url: String) -> String {
+        let trimmed = url.trimmingCharacters(in: .whitespaces)
+        if let match = known.first(where: { $0.url == trimmed }) { return match.label }
+        return trimmed.isEmpty ? "未設定" : "自訂"
+    }
 
     var body: some View {
         NavigationStack {
