@@ -65,7 +65,7 @@ struct ResultsView: View {
         }
         .sheet(item: $correcting) { answer in
             if let paper = current {
-                CorrectionSheet(paper: paper, answer: answer)
+                CorrectionSheet(paperID: paper.id, startAt: answer.questionNo)
             }
         }
     }
@@ -692,92 +692,116 @@ private extension Array {
 
 // MARK: - Correction
 
-// The teacher's answer outranks the model's. Three buttons cover almost every
-// case: the model was right after all, it is the standard answer, or neither.
+// What the teacher is asked here is not "is this right" — it is "what did the
+// student write". Those are different jobs, and the screen used to do the
+// second while showing everything needed for the first: the standard answer
+// appeared three times, once as a green button labelled 改為正確.
+//
+// That button was the path of least resistance. A teacher holding a stack,
+// looking at an unreadable smudge, had one tap that made the problem go away
+// and agreed with the key — and the label it produced then went into
+// `exports/corrections` as evidence about handwriting. A label written while
+// looking at the expected answer is not evidence; worse, nothing afterwards
+// can tell which labels were clean.
+//
+// So the key is gone from this screen, the verdict is gone with it (the
+// results grid is already coloured, one gesture away), and the input is
+// whatever the question type actually needs.
 private struct CorrectionSheet: View {
-    let paper: StoredPaper
-    let answer: StoredAnswer
+    let paperID: UUID
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var papers = GradingStore.shared
+
+    /// Which cell is being looked at. A cursor, not a fixed answer: the
+    /// bottom button walks the queue without closing and reopening a sheet
+    /// for each cell.
+    @State private var questionNo: Int
+    /// Digits and free text, held until the teacher moves on. A keystroke is
+    /// not an answer — "2" on the way to "20" must not be filed as an answer
+    /// of two.
     @State private var typed = ""
+
+    init(paperID: UUID, startAt question: Int) {
+        self.paperID = paperID
+        _questionNo = State(initialValue: question)
+    }
+
+    /// Read live from the store, never from a snapshot. The sheet now stays
+    /// open across corrections, so a captured copy would be describing the
+    /// paper as it was when the sheet opened.
+    private var paper: StoredPaper? {
+        papers.papers.first { $0.id == paperID }
+    }
+
+    private var answer: StoredAnswer? {
+        paper?.answers.first { $0.questionNo == questionNo }
+    }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    evidence
-                    currentState
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("這格學生實際寫了什麼？")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(AG.fg2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        // Two candidates, each labelled with where it came
-                        // from and what picking it does. They used to be two
-                        // identical green buttons showing only a value, so
-                        // telling "what the device read" from "the standard
-                        // answer" meant matching digits against a caption row
-                        // somewhere else on the screen.
-                        HStack(spacing: 10) {
-                            if !answer.recognized.isEmpty {
-                                choice(answer.recognized, source: "裝置讀到")
-                            }
-                            if !answer.expected.isEmpty, answer.expected != answer.recognized {
-                                choice(answer.expected, source: "標準答案")
-                            }
-                        }
-
-                        HStack(spacing: 8) {
-                            TextField("其他答案", text: $typed)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 16).monospaced())
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                            Button("套用") { apply(typed) }
-                                .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
-                        }
-                    }
-
-                    if answer.teacherValue != nil {
-                        Button("清除修正，回到裝置判定", role: .destructive) { apply(nil) }
-                            .font(.system(size: 14))
-                    }
+            Group {
+                if let paper, let answer {
+                    sheet(paper, answer)
+                } else {
+                    // The paper was cleared while this was open.
+                    Color.clear.onAppear { dismiss() }
                 }
-                .padding(20)
             }
             .background(AG.bg2)
-            .navigationTitle("第 \(answer.questionNo) 題")
+            .navigationTitle("第 \(questionNo) 題")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button("完成") { commit(); dismiss() }
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
+        // Typing is only filed when the teacher leaves the cell, and swiping
+        // the sheet away is leaving it. Losing what someone just typed
+        // because they dismissed rather than pressed a button would be the
+        // app deciding their work did not count.
+        .onDisappear { commit() }
     }
 
-    /// The crop is the only evidence on this screen and everything else is a
-    /// judgement about it, so it gets the room. When there is none, say so —
-    /// a silent gap reads as a layout bug rather than as missing data.
+    private func sheet(_ paper: StoredPaper, _ answer: StoredAnswer) -> some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 18) {
+                    evidence(paper, answer)
+
+                    Text("這格學生寫了什麼？")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(AG.fg2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    input(answer)
+                    escapes(answer)
+                }
+                .padding(20)
+            }
+            nextBar(paper)
+        }
+    }
+
+    // MARK: - The crop
+
     @ViewBuilder
-    private var evidence: some View {
+    private func evidence(_ paper: StoredPaper, _ answer: StoredAnswer) -> some View {
         if let image = papers.cellImage(paper, question: answer.questionNo) {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFit()
                 .frame(maxWidth: .infinity)
-                .frame(height: 190)
+                .frame(height: 170)
                 .background(Color(hex: 0xF3EEE3))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(AG.border2, lineWidth: 1))
         } else {
             RoundedRectangle(cornerRadius: 14)
                 .fill(AG.bg1)
-                .frame(height: 120)
+                .frame(height: 110)
                 .overlay {
                     Text("這一格沒有留下裁切影像")
                         .font(.system(size: 13))
@@ -787,73 +811,207 @@ private struct CorrectionSheet: View {
         }
     }
 
-    private var currentState: some View {
-        let verdict = answer.effectiveVerdict
-        let tint = AG.color(for: verdict)
-        let corrected = answer.teacherValue != nil
-        return HStack(spacing: 8) {
-            Image(systemName: AG.glyph(for: verdict))
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 20, height: 20)
-                .background(tint)
-                .clipShape(Circle())
-            Text(corrected
-                 ? "老師已修正為 \(answer.teacherValue ?? "")"
-                 : "裝置判定：\(answer.recognized.isEmpty ? "沒有讀到" : answer.recognized)")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(AG.fg1)
-            Spacer()
-            Text("標準答案 \(answer.expected.isEmpty ? "—" : answer.expected)")
-                .font(.system(size: 13).monospaced())
-                .foregroundStyle(AG.fg2)
+    // MARK: - Input, by what the question actually is
+
+    @ViewBuilder
+    private func input(_ answer: StoredAnswer) -> some View {
+        switch answer.kind {
+        case .mark:
+            grid(["○", "✕"], columns: 2, current: answer.teacherValue)
+        case .choice:
+            // The template's own alphabet. Without one — an older record, or
+            // a paper with too few distinct answers to infer from — fall back
+            // to typing rather than inventing options that may not exist.
+            if let options = answer.options, options.count >= 3 {
+                grid(options, columns: min(options.count, 4), current: answer.teacherValue)
+            } else {
+                freeText(answer, keyboard: .default)
+            }
+        case .digits:
+            keypad(answer)
+        case .unsupported:
+            freeText(answer, keyboard: .default)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(tint.opacity(0.10))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    /// Says the value, where it came from, and what happens if it is chosen.
+    /// Big targets, one tap, filed immediately.
     ///
-    /// The consequence matters because the question being asked is not "is
-    /// this right" — it is "what did the student write". The verdict follows
-    /// from the answer, and showing which way it will fall is what stops the
-    /// teacher having to work that out from two bare numbers.
-    private func choice(_ value: String, source: String) -> some View {
-        let becomesCorrect = AnswerKind.canonical(value) == AnswerKind.canonical(answer.expected)
-        let tint = becomesCorrect ? AG.ok : AG.bad
-        let isCurrent = answer.teacherValue == value
-        return Button {
-            apply(value)
-        } label: {
-            VStack(spacing: 5) {
-                Text(value)
-                    .font(.system(size: 26, weight: .bold).monospaced())
-                    .foregroundStyle(AG.fg1)
-                Text(source)
-                    .font(.system(size: 11))
-                    .foregroundStyle(AG.fg2)
-                HStack(spacing: 3) {
-                    Image(systemName: becomesCorrect ? "checkmark" : "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                    Text(becomesCorrect ? "改為正確" : "仍算錯誤")
-                        .font(.system(size: 11, weight: .semibold))
+    /// Filed on tap rather than on leaving, because for a fixed set the tap
+    /// IS the whole answer — there is no half-typed state to protect.
+    private func grid(_ values: [String], columns: Int, current: String?) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10),
+                                 count: columns),
+                  spacing: 10) {
+            ForEach(values, id: \.self) { value in
+                let selected = current == value
+                Button {
+                    file(value)
+                } label: {
+                    Text(value)
+                        .font(.system(size: 34, weight: .bold).monospaced())
+                        .foregroundStyle(selected ? Color.white : AG.fg1)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 74)
+                        .background(selected ? AG.brand : AG.bg1)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16)
+                            .stroke(selected ? AG.brand : AG.borderStrong,
+                                    lineWidth: selected ? 2 : 1.5))
                 }
-                .foregroundStyle(tint)
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// Calculator order — 7 on top — because the hand reaching for digits
+    /// mid-marking is the one that uses a desk calculator, not the one that
+    /// dials. No confirm key: the bottom button already commits.
+    private func keypad(_ answer: StoredAnswer) -> some View {
+        VStack(spacing: 10) {
+            HStack {
+                Spacer()
+                Text(typed.isEmpty ? "輸入數字" : typed)
+                    .font(.system(size: 30, weight: .bold).monospaced())
+                    .foregroundStyle(typed.isEmpty ? AG.fg4 : AG.fg1)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
+            .frame(height: 58)
+            .padding(.horizontal, 14)
             .background(AG.bg1)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14)
-                .stroke(isCurrent ? tint : AG.border2, lineWidth: isCurrent ? 2 : 1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(AG.borderStrong, lineWidth: 1.5))
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
+                      spacing: 8) {
+                ForEach([7, 8, 9, 4, 5, 6, 1, 2, 3], id: \.self) { n in
+                    key("\(n)") { if typed.count < 6 { typed += "\(n)" } }
+                }
+                key("C", muted: true) { typed = "" }
+                key("0") { if typed.count < 6 { typed += "0" } }
+                key("⌫", muted: true) { typed = String(typed.dropLast()) }
+            }
+        }
+        .onAppear { typed = reservedFree(answer.teacherValue) ?? "" }
+    }
+
+    private func key(_ label: String, muted: Bool = false,
+                     action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: muted ? 20 : 24, weight: .bold).monospaced())
+                .foregroundStyle(muted ? AG.fg2 : AG.fg1)
+                .frame(maxWidth: .infinity)
+                .frame(height: 56)
+                .background(AG.bg1)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14)
+                    .stroke(AG.borderStrong, lineWidth: 1.5))
         }
         .buttonStyle(.plain)
     }
 
-    private func apply(_ value: String?) {
-        papers.correct(paper: paper, question: answer.questionNo, to: value)
-        dismiss()
+    private func freeText(_ answer: StoredAnswer, keyboard: UIKeyboardType) -> some View {
+        TextField("直接輸入", text: $typed)
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 20).monospaced())
+            .keyboardType(keyboard)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+            .onAppear { typed = reservedFree(answer.teacherValue) ?? "" }
+    }
+
+    // MARK: - The two things that are not a value
+
+    private func escapes(_ answer: StoredAnswer) -> some View {
+        HStack(spacing: 10) {
+            escape("沒有答案", value: TeacherMark.blank, current: answer.teacherValue)
+            escape("無法辨識", value: TeacherMark.unreadable, current: answer.teacherValue)
+        }
+    }
+
+    private func escape(_ label: String, value: String, current: String?) -> some View {
+        let selected = current == value
+        return Button {
+            file(value)
+        } label: {
+            Text(label)
+                .font(.system(size: 15, weight: selected ? .bold : .regular))
+                .foregroundStyle(selected ? AG.brand : AG.fg2)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(selected ? AG.brandSoft : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(selected ? AG.brand : AG.borderStrong,
+                                  style: StrokeStyle(lineWidth: selected ? 1.5 : 1,
+                                                     dash: selected ? [] : [4, 3])))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Walking the queue
+
+    private func nextBar(_ paper: StoredPaper) -> some View {
+        // Counted excluding this cell, because pressing the button leaves it.
+        let waiting = paper.answers.filter { $0.awaitsReview && $0.questionNo != questionNo }
+        return VStack(spacing: 0) {
+            Divider()
+            Button {
+                commit()
+                if let next = paper.nextAwaitingReview(after: questionNo) {
+                    questionNo = next.questionNo
+                    typed = ""
+                } else {
+                    dismiss()
+                }
+            } label: {
+                Text(waiting.isEmpty ? "完成" : "下一個待確認 (\(waiting.count))")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(waiting.isEmpty ? AG.brand : Color.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(waiting.isEmpty ? AG.bg1 : AG.brand)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14)
+                        .stroke(AG.brand, lineWidth: 1.5))
+            }
+            .buttonStyle(.plain)
+            .padding(16)
+        }
+        .background(AG.bg1)
+    }
+
+    // MARK: - Filing
+
+    /// A fixed-set answer, filed the moment it is chosen.
+    private func file(_ value: String) {
+        guard let paper else { return }
+        // Tapping the current choice again clears it, which is the only way
+        // back to "the device's reading" now that the explicit clear button
+        // is gone.
+        let current = answer?.teacherValue
+        papers.correct(paper: paper, question: questionNo,
+                       to: current == value ? nil : value)
+        typed = ""
+    }
+
+    /// Whatever is in the typing buffer, filed on the way out of this cell.
+    private func commit() {
+        guard let paper, let answer else { return }
+        guard answer.kind == .digits || answer.kind == .unsupported else { return }
+        let trimmed = typed.trimmingCharacters(in: .whitespaces)
+        // Unchanged buffers must not write: re-filing the same value would
+        // bump the revision and re-upload the paper for nothing.
+        let existing = reservedFree(answer.teacherValue) ?? ""
+        guard trimmed != existing else { return }
+        papers.correct(paper: paper, question: questionNo,
+                       to: trimmed.isEmpty ? nil : trimmed)
+    }
+
+    /// The stored value, unless it is one of the reserved dispositions —
+    /// those belong to the escape buttons, not to the text buffer.
+    private func reservedFree(_ value: String?) -> String? {
+        guard let value, !TeacherMark.isReserved(value) else { return nil }
+        return value
     }
 }

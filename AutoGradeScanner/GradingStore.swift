@@ -68,7 +68,20 @@ struct StoredPaper: Codable, Identifiable, Equatable {
     var unsureCount: Int { answers.filter { $0.effectiveVerdict == .unsure }.count }
     var total: Int { answers.count }
 
-    var needsReview: Bool { unsureCount > 0 }
+    var needsReview: Bool { reviewCount > 0 }
+
+    /// How many cells still want a person. Not `unsureCount`: a cell marked
+    /// unreadable stays uncounted in the score and out of this queue.
+    var reviewCount: Int { answers.filter(\.awaitsReview).count }
+
+    /// The next cell after `question` that still wants a person, wrapping
+    /// once so a teacher who started in the middle still reaches the rest.
+    func nextAwaitingReview(after question: Int?) -> StoredAnswer? {
+        let ordered = answers.sorted { $0.questionNo < $1.questionNo }
+        guard let question else { return ordered.first(where: \.awaitsReview) }
+        return ordered.first { $0.questionNo > question && $0.awaitsReview }
+            ?? ordered.first { $0.questionNo != question && $0.awaitsReview }
+    }
 
     // MARK: - Upload
 
@@ -98,6 +111,32 @@ struct StoredPaper: Codable, Identifiable, Equatable {
 
     var needsUpload: Bool {
         uploadedAt == nil && uploadBlocked != true && isDemo != true
+    }
+}
+
+/// The two things a teacher can say about a cell that are not a value.
+///
+/// Stored in `teacherValue` as reserved strings rather than as new columns,
+/// so nothing on either side of the upload has to change to carry them. They
+/// are deliberately unmistakable: no answer key contains a double underscore.
+enum TeacherMark {
+    /// The cell is empty. The student did not answer, and that is a result.
+    static let blank = "__blank__"
+    /// There is something there and a person could not read it either.
+    ///
+    /// Not the same as wrong. A cell nobody can read is not evidence that the
+    /// student got it wrong, and grading it as one would put a mark on a
+    /// child for the scanner's failure.
+    static let unreadable = "__unreadable__"
+
+    static let all: Set<String> = [blank, unreadable]
+
+    /// Whether this is a disposition rather than a transcription. The
+    /// training export filters on it: a crop labelled "unreadable" teaches
+    /// nothing about handwriting.
+    static func isReserved(_ value: String?) -> Bool {
+        guard let value else { return false }
+        return all.contains(value)
     }
 }
 
@@ -155,8 +194,24 @@ struct StoredAnswer: Codable, Equatable, Identifiable {
 
     var effectiveVerdict: GradingVerdict {
         guard let teacherValue, !teacherValue.isEmpty else { return parsedVerdict }
+        // A cell a person could not read stays unsure. It is not the
+        // student's error that the scanner produced something illegible, and
+        // marking it wrong would put that on a child.
+        if teacherValue == TeacherMark.unreadable { return .unsure }
+        // Blank is an answer — an absent one. The student did not write
+        // anything, which is not the same as nobody being able to tell.
+        if teacherValue == TeacherMark.blank { return .wrong }
         return AnswerKind.canonical(teacherValue) == AnswerKind.canonical(expected)
             ? .correct : .wrong
+    }
+
+    /// Still waiting for a human.
+    ///
+    /// Distinct from "unsure": a cell the teacher looked at and marked
+    /// unreadable is still ungraded, but it is done — it must not come back
+    /// round in the review queue, or marking it becomes a loop.
+    var awaitsReview: Bool {
+        effectiveVerdict == .unsure && teacherValue == nil
     }
 
     var rect: CGRect? {
