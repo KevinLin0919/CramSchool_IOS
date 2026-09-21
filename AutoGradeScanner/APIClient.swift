@@ -321,6 +321,11 @@ final class APIClient {
         let verdict: String
         let teacher_value: String?
         let cell_image_id: Int?
+        /// How far the cell sat from the alignment's evidence. Sent so the
+        /// training export can tell a labelled crop from a crop of the wrong
+        /// part of the page — the second teaches the recogniser nothing and
+        /// looks identical to a teacher.
+        let alignment_leverage: Double?
     }
 
     struct SessionPayload: Encodable {

@@ -246,6 +246,17 @@ final class LiveScanEngine {
     /// Whether the crop currently held came from a frame that could be read.
     /// A readable frame is never displaced by an unreadable one.
     private var cellCropReadable: [Int: Bool] = [:]
+    /// Alignment leverage on the frame the held crop came from.
+    ///
+    /// Not the same as `cellLeverage`, which every aligned frame overwrites —
+    /// that one ends up describing wherever the camera happened to stop. The
+    /// crop a teacher is shown came from one specific frame, and the honest
+    /// question about it is how far THAT frame's evidence was from this cell.
+    ///
+    /// It is what separates "the student left it blank" from "the box landed
+    /// on blank paper", which a teacher looking at the crop cannot tell
+    /// apart — the two look identical — and which the machine can.
+    private var cellCropLeverage: [Int: Double] = [:]
     /// How wide each cell was, in camera pixels, on the frame its crop was
     /// kept from. The basis for the sampling-quality check at the end.
     private var cellSampledPixels: [Int: Int] = [:]
@@ -415,6 +426,7 @@ final class LiveScanEngine {
         cellImages = [:]
         cellSharpness = [:]
         cellCropReadable = [:]
+        cellCropLeverage = [:]
         cellSampledPixels = [:]
         lastCellPixels = 0
         lastFramePixels = 0
@@ -600,7 +612,8 @@ final class LiveScanEngine {
                                 templateRect: i < boxes.count ? boxes[i] : nil,
                                 pageIndex: slot,
                                 answerType: question?.answerType,
-                                options: question.map { Self.options(for: $0, in: template) } ?? nil)
+                                options: question.map { Self.options(for: $0, in: template) } ?? nil,
+                                alignmentLeverage: cellCropLeverage[i])
         }
         // Every page had to be framed whole for the result to claim it shows
         // whole pages.
@@ -889,6 +902,7 @@ final class LiveScanEngine {
         guard better else { return }
         cellSharpness[i] = sharp
         cellCropReadable[i] = readable
+        cellCropLeverage[i] = cellLeverage[i]
         cellImages[i] = cut.bitmap.makeImage()
         cellSampledPixels[i] = Self.sampledSide(of: quad, in: framePixels)
     }

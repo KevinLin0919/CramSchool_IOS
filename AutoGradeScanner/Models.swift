@@ -184,6 +184,16 @@ struct GradedAnswer: Identifiable {
     /// is not knowing which one is right.
     let options: [String]?
 
+    /// How far this cell sat from the evidence the alignment was fitted to,
+    /// on the frame its crop came from. Higher means the box's position was
+    /// extrapolated further, so the crop is likelier to be off the cell.
+    ///
+    /// Recorded because a teacher cannot see it. Blank paper from a drifted
+    /// box and a cell the student left empty are the same picture; this is
+    /// the only thing that tells them apart, and it costs nothing — the
+    /// number was already being computed every frame and thrown away.
+    let alignmentLeverage: Double?
+
     init(id: Int,
          expected: String,
          recognized: String,
@@ -193,7 +203,8 @@ struct GradedAnswer: Identifiable {
          teacherValue: String? = nil,
          pageIndex: Int = 0,
          answerType: String? = nil,
-         options: [String]? = nil) {
+         options: [String]? = nil,
+         alignmentLeverage: Double? = nil) {
         self.id = id
         self.expected = expected
         self.recognized = recognized
@@ -204,6 +215,7 @@ struct GradedAnswer: Identifiable {
         self.pageIndex = pageIndex
         self.answerType = answerType
         self.options = options
+        self.alignmentLeverage = alignmentLeverage
     }
 
     var questionNumber: Int { id + 1 }

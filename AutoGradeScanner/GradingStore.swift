@@ -172,6 +172,11 @@ struct StoredAnswer: Codable, Equatable, Identifiable {
     /// this paper uses 1–4 or A–D has nothing to offer.
     var options: [String]?
 
+    /// How far this cell sat from the alignment's evidence, on the frame its
+    /// crop came from. Optional: absent on records filed before it was kept,
+    /// and on anything that was never aligned.
+    var alignmentLeverage: Double?
+
     var page: Int { pageIndex ?? 0 }
 
     /// How to ask about this cell.
@@ -486,7 +491,8 @@ final class GradingStore: ObservableObject {
                     },
                     pageIndex: answer.pageIndex,
                     answerType: answer.answerType,
-                    options: answer.options)
+                    options: answer.options,
+                    alignmentLeverage: answer.alignmentLeverage)
             },
             // The paper's own account of its shape, taken while the template
             // that produced it is still in hand. Everything downstream reads
