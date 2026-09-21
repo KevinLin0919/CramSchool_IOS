@@ -165,6 +165,35 @@ struct GradedAnswer: Identifiable {
     /// have to be flattened at the boundary anyway.
     let pageIndex: Int
 
+    /// What the template says this cell holds — `digit`, `choice`, `mark`,
+    /// `chinese`, `text`.
+    ///
+    /// Carried into the record rather than left behind with the template,
+    /// because the correction screen has to ask the right question and the
+    /// answer key cannot tell it which: a one-character answer belongs
+    /// equally to a multiple-choice cell and a fill-in blank, and that is a
+    /// fact about the question, not about the answer.
+    let answerType: String?
+
+    /// Every option this question offers, when it offers a fixed set.
+    ///
+    /// Collected here, while the template is in hand, for the same reason the
+    /// paper records its own pages: the correction screen needs to know
+    /// whether this paper labels its choices 1–4 or A–D, and by then the
+    /// template may have been edited or deleted. Knowing which options exist
+    /// is not knowing which one is right.
+    let options: [String]?
+
+    /// How far this cell sat from the evidence the alignment was fitted to,
+    /// on the frame its crop came from. Higher means the box's position was
+    /// extrapolated further, so the crop is likelier to be off the cell.
+    ///
+    /// Recorded because a teacher cannot see it. Blank paper from a drifted
+    /// box and a cell the student left empty are the same picture; this is
+    /// the only thing that tells them apart, and it costs nothing — the
+    /// number was already being computed every frame and thrown away.
+    let alignmentLeverage: Double?
+
     init(id: Int,
          expected: String,
          recognized: String,
@@ -172,7 +201,10 @@ struct GradedAnswer: Identifiable {
          rect: CGRect?,
          templateRect: CGRect? = nil,
          teacherValue: String? = nil,
-         pageIndex: Int = 0) {
+         pageIndex: Int = 0,
+         answerType: String? = nil,
+         options: [String]? = nil,
+         alignmentLeverage: Double? = nil) {
         self.id = id
         self.expected = expected
         self.recognized = recognized
@@ -181,6 +213,9 @@ struct GradedAnswer: Identifiable {
         self.templateRect = templateRect
         self.teacherValue = teacherValue
         self.pageIndex = pageIndex
+        self.answerType = answerType
+        self.options = options
+        self.alignmentLeverage = alignmentLeverage
     }
 
     var questionNumber: Int { id + 1 }

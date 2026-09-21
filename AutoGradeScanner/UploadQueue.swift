@@ -175,7 +175,8 @@ final class UploadQueue: ObservableObject {
                     // lost — `recognized` and `expected` still carry it.
                     verdict: answer.effectiveVerdict.wireName,
                     teacher_value: answer.teacherValue,
-                    cell_image_id: cellIDs[answer.questionNo])
+                    cell_image_id: cellIDs[answer.questionNo],
+                    alignment_leverage: answer.alignmentLeverage)
             })
 
         try await APIClient.shared.upsertSession(clientUUID: paper.id, payload)

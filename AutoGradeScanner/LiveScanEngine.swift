@@ -246,6 +246,17 @@ final class LiveScanEngine {
     /// Whether the crop currently held came from a frame that could be read.
     /// A readable frame is never displaced by an unreadable one.
     private var cellCropReadable: [Int: Bool] = [:]
+    /// Alignment leverage on the frame the held crop came from.
+    ///
+    /// Not the same as `cellLeverage`, which every aligned frame overwrites —
+    /// that one ends up describing wherever the camera happened to stop. The
+    /// crop a teacher is shown came from one specific frame, and the honest
+    /// question about it is how far THAT frame's evidence was from this cell.
+    ///
+    /// It is what separates "the student left it blank" from "the box landed
+    /// on blank paper", which a teacher looking at the crop cannot tell
+    /// apart — the two look identical — and which the machine can.
+    private var cellCropLeverage: [Int: Double] = [:]
     /// How wide each cell was, in camera pixels, on the frame its crop was
     /// kept from. The basis for the sampling-quality check at the end.
     private var cellSampledPixels: [Int: Int] = [:]
@@ -415,6 +426,7 @@ final class LiveScanEngine {
         cellImages = [:]
         cellSharpness = [:]
         cellCropReadable = [:]
+        cellCropLeverage = [:]
         cellSampledPixels = [:]
         lastCellPixels = 0
         lastFramePixels = 0
@@ -593,11 +605,15 @@ final class LiveScanEngine {
             let slot = template.pages.firstIndex { $0.index == serverPage } ?? 0
             let rect = pageKeyframes[slot].map { $0.homography.project(boxes[i]) }
                 ?? visibleRects[i]
+            let question = i < template.questions.count ? template.questions[i] : nil
             return GradedAnswer(id: number - 1, expected: exp, recognized: recognized,
                                 verdict: verdicts[i] ?? .unsure,
                                 rect: rect,
                                 templateRect: i < boxes.count ? boxes[i] : nil,
-                                pageIndex: slot)
+                                pageIndex: slot,
+                                answerType: question?.answerType,
+                                options: question.map { Self.options(for: $0, in: template) } ?? nil,
+                                alignmentLeverage: cellCropLeverage[i])
         }
         // Every page had to be framed whole for the result to claim it shows
         // whole pages.
@@ -621,6 +637,30 @@ final class LiveScanEngine {
 
     /// Everything the session knows, in the form the store keeps it.
     var templateIdentifier: Int { template.id }
+
+    /// Every option this question offers, or nil when it does not offer a set.
+    ///
+    /// Only multiple choice has one. The set is the distinct answers the
+    /// template's own choice cells hold, sorted — so a paper labelled 1–4
+    /// yields 1–4 and one labelled A–D yields A–D, without anyone having to
+    /// declare which convention this school uses.
+    ///
+    /// Reading the answer key to learn the ALPHABET is not reading it to
+    /// learn the answer: which four options exist is a fact about the
+    /// question, and the correction screen needs it to ask anything at all.
+    static func options(for question: ResolvedTemplate.Question,
+                        in template: ResolvedTemplate) -> [String]? {
+        guard question.answerType == "choice" else { return nil }
+        let set = Set(template.questions
+            .filter { $0.answerType == "choice" }
+            .map { AnswerKind.canonical($0.answer) }
+            .filter { !$0.isEmpty })
+        // Two is not a set of options, it is a paper where everyone happened
+        // to be right twice. Below three, offering "the options" would be
+        // offering a guess.
+        guard set.count >= 3 else { return nil }
+        return set.sorted()
+    }
 
     /// The paper's sides, for the record to keep. Labels are resolved here
     /// rather than at display time because the template's page count is known
@@ -862,6 +902,7 @@ final class LiveScanEngine {
         guard better else { return }
         cellSharpness[i] = sharp
         cellCropReadable[i] = readable
+        cellCropLeverage[i] = cellLeverage[i]
         cellImages[i] = cut.bitmap.makeImage()
         cellSampledPixels[i] = Self.sampledSide(of: quad, in: framePixels)
     }
