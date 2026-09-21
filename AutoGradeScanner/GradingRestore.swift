@@ -110,18 +110,19 @@ enum GradingRestore {
         // is worth one more request when they next open the app.
         hasCompleted = restored.count == wanted.count
 
-        // The crops last, separately, and only the ones somebody still has to
-        // look at.
+        // The crops last, and separately.
         //
-        // A crop is worth a download when it is the only way to settle a cell:
-        // the model could not read it and no teacher has said what it is. A
-        // cell the teacher already corrected is settled — their answer came
-        // back with the record — and a cell everyone agreed on never had a
-        // crop on the server to begin with. Fetching the whole set instead
-        // would be several hundred requests at sign-in to redraw thumbnails
-        // beside answers nobody disputes.
+        // All of them, not just the unsettled ones. The narrow version was
+        // written when the server only held crops for cells that had already
+        // gone wrong, and it made that limitation permanent: a restored paper
+        // showed evidence exactly where the grading had failed and "—"
+        // everywhere else, which is backwards — a confidently wrong reading
+        // is the one with no other way to be caught.
+        //
+        // Still last, because a teacher waiting to see whether their term of
+        // work survived should not be waiting on image downloads to find out.
         for (id, answers) in restored {
-            for answer in answers where needsCrop(answer) {
+            for answer in answers {
                 guard let imageID = answer.cell_image_id else { continue }
                 guard !FileManager.default.fileExists(
                     atPath: store.cellURL(id, question: answer.question_no).path) else { continue }
@@ -129,14 +130,6 @@ enum GradingRestore {
                 store.restoreCell(id, question: answer.question_no, png: png)
             }
         }
-    }
-
-    /// The mirror of `UploadQueue.wantsCrop`, narrowed. That one decides what
-    /// is worth keeping; this decides what is worth fetching back, and the
-    /// difference is the corrections — already answered, so the picture adds
-    /// nothing a teacher would act on.
-    private static func needsCrop(_ answer: APIClient.SessionAnswerDTO) -> Bool {
-        (answer.teacher_value ?? "").isEmpty && answer.verdict == "unsure"
     }
 
     // MARK: - Rebuilding one record
@@ -150,12 +143,24 @@ enum GradingRestore {
         // from something other than zero would put every box on the wrong
         // sheet in a way that looks entirely plausible.
         var placement: [Int: (rect: [Double], page: Int)] = [:]
+        // What kind of question each cell is, recovered the same way.
+        //
+        // The server never stored it — `graded_answers` has no such column,
+        // and adding one would only duplicate what the template already says.
+        // Without it a restored record falls back to reading the answer key's
+        // own shape, which cannot tell a one-character multiple-choice answer
+        // from a one-digit fill-in blank: a paper whose choices are 1-4 came
+        // back asking for digits on a calculator pad.
+        var kinds: [Int: (type: String?, options: [String]?)] = [:]
         if let template {
             for (slot, page) in template.pages.enumerated() {
                 for question in page.questions {
                     placement[question.number] = (
                         [question.box.minX, question.box.minY,
                          question.box.width, question.box.height], slot)
+                    kinds[question.number] = (
+                        question.answerType,
+                        LiveScanEngine.options(for: question, in: template))
                 }
             }
         }
@@ -176,7 +181,9 @@ enum GradingRestore {
                     teacherValue: answer.teacher_value,
                     confidence: answer.confidence,
                     templateRect: placed?.rect,
-                    pageIndex: placed?.page)
+                    pageIndex: placed?.page,
+                    answerType: kinds[answer.question_no]?.type,
+                    options: kinds[answer.question_no]?.options)
             }
 
         // Only when the template was resolvable. A record with no geometry

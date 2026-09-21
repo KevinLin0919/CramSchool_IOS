@@ -144,7 +144,7 @@ final class UploadQueue: ObservableObject {
         let revision = paper.revision ?? 0
 
         var cellIDs: [Int: Int] = [:]
-        for answer in paper.answers where wantsCrop(answer) {
+        for answer in paper.answers {
             guard let image = store.cellImage(paper, question: answer.questionNo),
                   let png = image.pngData() else { continue }
             let ref = try await APIClient.shared.uploadImage(
@@ -183,17 +183,30 @@ final class UploadQueue: ObservableObject {
         store.markUploaded(paper.id, revision: revision)
     }
 
-    /// Which crops are worth the upload.
+    // NOTE: kept as prose rather than a predicate, because there is no
+    // longer a decision to make.
+    //
+    /// Every crop, now.
     ///
-    /// A corrected cell paired with what the teacher said it was is the most
-    /// valuable row in the schema — it is a labelled handwriting sample
-    /// produced as a by-product of work someone was doing anyway. A cell the
-    /// model could not read is the next most useful. The rest are crops of
-    /// answers everyone already agrees about, and sending twenty of them per
-    /// paper across a cram school's uplink buys nothing.
-    private func wantsCrop(_ answer: StoredAnswer) -> Bool {
-        answer.teacherValue != nil || answer.parsedVerdict == .unsure
-    }
+    /// This used to send only corrected and unreadable cells, on the argument
+    /// that the rest are crops of answers everyone already agrees about. The
+    /// flaw in that is the word "agrees": a cell the model read confidently
+    /// and WRONG agrees with nobody, and it is precisely the failure with no
+    /// symptom — the grid shows a tidy green tick over a crop that was never
+    /// kept, so there is nothing for a teacher to check it against.
+    ///
+    /// It surfaced the first time a teacher signed in on a second device.
+    /// Everything they had graded came back with "—" where the evidence
+    /// should be, because the only crops the server had ever been sent were
+    /// the ones that had already gone wrong.
+    ///
+    /// The uplink argument does not survive arithmetic either: a cell crop is
+    /// a few kilobytes, so a forty-question paper is well under half a
+    /// megabyte, on a network the teacher is standing next to. What it buys
+    /// is that a restored paper is as reviewable as a fresh one, and that
+    /// `alignment_leverage` can be read across a whole paper rather than
+    /// across the cells that already failed.
+
 
     private static let iso8601: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
