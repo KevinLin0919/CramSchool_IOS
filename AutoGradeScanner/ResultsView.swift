@@ -23,6 +23,14 @@ struct ResultsView: View {
     @StateObject private var papers = GradingStore.shared
 
     @State private var index = 0
+    /// Whether the opening position has been chosen yet.
+    ///
+    /// Not a formality. The stack can arrive after this screen does — a
+    /// sign-in restores a term of grading in the background — so "open on the
+    /// newest" has to wait for there to be a newest. And it must happen once:
+    /// a teacher who has paged back to the third paper should not be dragged
+    /// to the end because one more record finished downloading.
+    @State private var hasPositioned = false
     @State private var correcting: StoredAnswer?
     /// Sheets already loaded, keyed by the paper that named them.
     ///
@@ -62,7 +70,9 @@ struct ResultsView: View {
         }
         .onChange(of: papers.papers.count) { _, count in
             if index >= count { index = max(0, count - 1) }
+            positionAtNewest()
         }
+        .onAppear { positionAtNewest() }
         .sheet(item: $correcting) { answer in
             if let paper = current {
                 CorrectionSheet(paperID: paper.id, startAt: answer.questionNo)
@@ -74,6 +84,18 @@ struct ResultsView: View {
     /// where to start; someone who just signed back in after a term is
     /// watching their own work come down, and telling them there is none
     /// would be both wrong and alarming.
+    /// Opens on the paper just graded rather than the oldest one in the pile.
+    ///
+    /// The stack is chronological, so starting at index 0 started as far from
+    /// the teacher as the stack is long: finish a class set of thirty and the
+    /// app offers you the first one, twenty-nine swipes from the one you were
+    /// just holding.
+    private func positionAtNewest() {
+        guard !hasPositioned, !papers.papers.isEmpty else { return }
+        index = papers.papers.count - 1
+        hasPositioned = true
+    }
+
     private var emptyState: some View {
         VStack(spacing: 12) {
             if papers.isRestoring {
