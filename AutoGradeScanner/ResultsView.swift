@@ -845,7 +845,8 @@ private struct CorrectionSheet: View {
             // a paper with too few distinct answers to infer from — fall back
             // to typing rather than inventing options that may not exist.
             if let options = answer.options, options.count >= 3 {
-                grid(options, columns: min(options.count, 4), current: answer.teacherValue)
+                grid(options, columns: Self.columns(for: options.count),
+                     current: answer.teacherValue)
             } else {
                 freeText(answer, keyboard: .default)
             }
@@ -854,6 +855,19 @@ private struct CorrectionSheet: View {
         case .unsupported:
             freeText(answer, keyboard: .default)
         }
+    }
+
+    /// How to lay a fixed set out.
+    ///
+    /// Four goes two-by-two rather than four-across — the common case is four
+    /// choices, and a row of four on a phone is four narrow targets with
+    /// three quarters of the sheet empty below them. Two rows of two are
+    /// twice the width each and land under the thumb.
+    ///
+    /// Five would leave one item alone on a second row at two columns, so
+    /// anything else takes three or fewer and wraps evenly.
+    static func columns(for count: Int) -> Int {
+        count == 4 ? 2 : min(count, 3)
     }
 
     /// Big targets, one tap, filed immediately.
@@ -870,10 +884,16 @@ private struct CorrectionSheet: View {
                     file(value)
                 } label: {
                     Text(value)
-                        .font(.system(size: 34, weight: .bold).monospaced())
+                        .font(.system(size: 40, weight: .bold).monospaced())
                         .foregroundStyle(selected ? Color.white : AG.fg1)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 74)
+                        // Sized to the room the sheet actually has. The
+                        // detent stays .large for every question type on
+                        // purpose — resizing as the cursor walks the queue
+                        // would move the bottom button out from under a
+                        // thumb mid-tap — so a two-row layout may as well
+                        // use the space rather than leave it blank.
+                        .frame(height: columns == 2 ? 96 : 76)
                         .background(selected ? AG.brand : AG.bg1)
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                         .overlay(RoundedRectangle(cornerRadius: 16)
