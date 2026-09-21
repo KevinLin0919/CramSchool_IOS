@@ -121,7 +121,29 @@ struct StoredAnswer: Codable, Equatable, Identifiable {
     /// single-page, so absent means page 0 and nothing needs migrating.
     var pageIndex: Int?
 
+    /// What the template said this cell holds. Optional so records written
+    /// before it was carried still decode; absent means the correction screen
+    /// falls back to reading the answer key's own shape, which is the guess
+    /// this field exists to replace.
+    var answerType: String?
+
+    /// The options this question offers, when it offers a fixed set. Stored
+    /// with the record rather than looked up later: the template can be
+    /// edited or deleted, and a correction screen that cannot say whether
+    /// this paper uses 1–4 or A–D has nothing to offer.
+    var options: [String]?
+
     var page: Int { pageIndex ?? 0 }
+
+    /// How to ask about this cell.
+    ///
+    /// Prefers what the template declared. Falls back to the answer key's own
+    /// text for records filed before the type was carried — a worse answer,
+    /// because it cannot tell a one-digit multiple-choice cell from a
+    /// one-digit fill-in blank, but a better one than refusing to ask.
+    var kind: AnswerKind {
+        AnswerKind.declared(answerType) ?? AnswerKind.infer(expected: expected)
+    }
 
     var parsedVerdict: GradingVerdict {
         switch verdict {
@@ -407,7 +429,9 @@ final class GradingStore: ObservableObject {
                     templateRect: answer.templateRect.map {
                         [$0.minX, $0.minY, $0.width, $0.height]
                     },
-                    pageIndex: answer.pageIndex)
+                    pageIndex: answer.pageIndex,
+                    answerType: answer.answerType,
+                    options: answer.options)
             },
             // The paper's own account of its shape, taken while the template
             // that produced it is still in hand. Everything downstream reads

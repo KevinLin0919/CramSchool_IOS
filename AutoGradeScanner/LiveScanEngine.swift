@@ -593,11 +593,14 @@ final class LiveScanEngine {
             let slot = template.pages.firstIndex { $0.index == serverPage } ?? 0
             let rect = pageKeyframes[slot].map { $0.homography.project(boxes[i]) }
                 ?? visibleRects[i]
+            let question = i < template.questions.count ? template.questions[i] : nil
             return GradedAnswer(id: number - 1, expected: exp, recognized: recognized,
                                 verdict: verdicts[i] ?? .unsure,
                                 rect: rect,
                                 templateRect: i < boxes.count ? boxes[i] : nil,
-                                pageIndex: slot)
+                                pageIndex: slot,
+                                answerType: question?.answerType,
+                                options: question.map { Self.options(for: $0, in: template) } ?? nil)
         }
         // Every page had to be framed whole for the result to claim it shows
         // whole pages.
@@ -621,6 +624,30 @@ final class LiveScanEngine {
 
     /// Everything the session knows, in the form the store keeps it.
     var templateIdentifier: Int { template.id }
+
+    /// Every option this question offers, or nil when it does not offer a set.
+    ///
+    /// Only multiple choice has one. The set is the distinct answers the
+    /// template's own choice cells hold, sorted — so a paper labelled 1–4
+    /// yields 1–4 and one labelled A–D yields A–D, without anyone having to
+    /// declare which convention this school uses.
+    ///
+    /// Reading the answer key to learn the ALPHABET is not reading it to
+    /// learn the answer: which four options exist is a fact about the
+    /// question, and the correction screen needs it to ask anything at all.
+    static func options(for question: ResolvedTemplate.Question,
+                        in template: ResolvedTemplate) -> [String]? {
+        guard question.answerType == "choice" else { return nil }
+        let set = Set(template.questions
+            .filter { $0.answerType == "choice" }
+            .map { AnswerKind.canonical($0.answer) }
+            .filter { !$0.isEmpty })
+        // Two is not a set of options, it is a paper where everyone happened
+        // to be right twice. Below three, offering "the options" would be
+        // offering a guess.
+        guard set.count >= 3 else { return nil }
+        return set.sorted()
+    }
 
     /// The paper's sides, for the record to keep. Labels are resolved here
     /// rather than at display time because the template's page count is known
