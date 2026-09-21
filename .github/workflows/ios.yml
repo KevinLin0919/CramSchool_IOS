@@ -185,46 +185,6 @@ jobs:
           head -1 "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
             | grep -q 'BEGIN PRIVATE KEY' && echo "key looks well-formed"
 
-      - name: Archive (Release, device, signed)
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-        run: |
-          # `-allowProvisioningUpdates` is what lets a machine with no
-          # certificates sign: Xcode asks App Store Connect for the
-          # certificate and profile, using the same key that will later do
-          # the upload. DEVELOPMENT_TEAM is passed here rather than written
-          # into the project, so the unsigned job above stays unsigned.
-          #
-          # This step signs for DEVELOPMENT, and that is correct even though
-          # the build is going to App Store Connect. Archiving under automatic
-          # signing always uses a development identity; the distribution
-          # identity is applied by the export step below, which re-signs.
-          # Naming `CODE_SIGN_IDENTITY=Apple Distribution` here does not move
-          # that forward, it just makes Xcode refuse the contradiction.
-          #
-          # The consequence is that the team must have at least one registered
-          # device, because a development profile is defined as being pinned
-          # to devices. That is the whole of what "your team has no devices"
-          # was telling us.
-          #
-          # CURRENT_PROJECT_VERSION is the build number, and Apple refuses a
-          # repeat. A re-run of this workflow reuses its run number, so a
-          # rejected upload is re-driven by pushing a commit, not by pressing
-          # re-run.
-          xcodebuild archive \
-            -project AutoGradeScanner.xcodeproj \
-            -scheme AutoGradeScanner \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            -archivePath "$RUNNER_TEMP/AutoGradeScanner.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
-            CURRENT_PROJECT_VERSION=${{ github.run_number }}
-
       - name: Install the distribution certificate and profile
         env:
           P12: ${{ secrets.IOS_DIST_P12_BASE64 }}
@@ -269,6 +229,46 @@ jobs:
 
           # Name what arrived, without printing anything secret.
           security find-identity -v -p codesigning "$KEYCHAIN" | grep -c "Apple Distribution"
+
+      - name: Archive (Release, device, signed)
+        run: |
+          # `-allowProvisioningUpdates` is what lets a machine with no
+          # certificates sign: Xcode asks App Store Connect for the
+          # certificate and profile, using the same key that will later do
+          # the upload. DEVELOPMENT_TEAM is passed here rather than written
+          # into the project, so the unsigned job above stays unsigned.
+          #
+          # Manual signing, with the certificate installed above.
+          #
+          # This used to archive under automatic signing, on the reasoning
+          # that Xcode archives with a development identity and the export
+          # re-signs for distribution. True, and fine on a machine that owns
+          # a development certificate — but this runner is thrown away, so
+          # `-allowProvisioningUpdates` created a NEW one every single build.
+          # Apple caps how many an account may hold, and ten runs later the
+          # archive failed with "choose a certificate to revoke".
+          #
+          # Nothing here actually wanted a development identity. The build is
+          # going to App Store Connect, the distribution certificate and its
+          # profile are already in the keychain, and naming them means the
+          # archive asks Apple for nothing at all — which is also why
+          # -allowProvisioningUpdates is gone from this step.
+          #
+          # CURRENT_PROJECT_VERSION is the build number, and Apple refuses a
+          # repeat. A re-run of this workflow reuses its run number, so a
+          # rejected upload is re-driven by pushing a commit, not by pressing
+          # re-run.
+          xcodebuild archive \
+            -project AutoGradeScanner.xcodeproj \
+            -scheme AutoGradeScanner \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/AutoGradeScanner.xcarchive" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="Fudao App Store" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }}
 
       - name: Export a signed .ipa
         env:
