@@ -5,7 +5,7 @@ import UIKit
 // Two servers, deliberately.
 //
 //   /api/v1/*   CramSchool_API — templates, images, grading results, auth.
-//               One base URL, one bearer token, reached over the tailnet.
+//               One base URL, one bearer token, reached over Tailscale Funnel.
 //
 //   /predict    YOLO answer-box detection, and
 //   /ocr_google standard-answer OCR. Both are only used when *building* a
@@ -20,10 +20,20 @@ enum ServerConfig {
     static let ocrKey = "server.ocr"
     static let ocrGoogleKey = "server.ocrGoogle"
 
-    /// No sensible default exists: the address is a tailnet name unique to the
-    /// school. Empty means "not configured", which the enrolment screen asks
-    /// for rather than guessing.
-    static let defaultAPI = ""
+    /// The school's server, reachable from anywhere through Tailscale Funnel.
+    ///
+    /// This was empty for a long time, deliberately: the school answered at
+    /// two addresses, its own WiFi and its tailnet, and which one worked
+    /// depended on where the person holding the phone was standing — so any
+    /// default was right for one group and wrong for the other. Funnel ended
+    /// that. One public HTTPS name works in the building and at home, with no
+    /// VPN on the phone, so a teacher who installs the app can sign in without
+    /// being told an address at all.
+    ///
+    /// The LAN address stays on offer in the server sheet for the one case
+    /// this does not cover: the school's internet is down and the teacher is
+    /// standing next to the machine.
+    static let defaultAPI = "https://commaserver.tail475cee.ts.net"
     static let defaultPredict = "http://140.115.54.241:8082"
     static let defaultOCR = "http://140.115.54.239:8083"
     static let defaultOCRGoogle = "http://140.115.54.241:8083"
