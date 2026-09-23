@@ -147,17 +147,16 @@ struct LoginView: View {
     /// had nowhere to go — which nobody noticed while every test device
     /// already carried an address from an earlier install.
     ///
-    /// Always visible, and that is a correction. It first appeared only when
-    /// the address was missing or a sign-in had failed, on the reasoning that
-    /// a teacher simply signing in has no business being shown ports and IP
-    /// addresses. True of an app with one address. This school has two — the
-    /// cram school's own network and its tailnet — and which one works
-    /// depends on where the person is standing, so changing it is an ordinary
-    /// thing to need rather than a repair. Hiding it until something breaks
-    /// made "I walked home" into a failed login first and a fix second.
+    /// Always visible. There is now one address that works everywhere, which
+    /// is the day this was going to become conditional again — and on
+    /// reflection it should not.
     ///
-    /// It can go back to being conditional the day there is one address that
-    /// works everywhere.
+    /// What it shows is which server the app is pointed at, in words. That is
+    /// the first thing worth knowing when sign-in fails, and hiding it until
+    /// after a failure is the "fail first, fix second" order it was made
+    /// visible to avoid. It also costs one line of small grey text, and a
+    /// device carrying an address saved before the public one existed needs
+    /// a way to see that it is.
     private var serverEntry: some View {
         Button {
             showingServer = true

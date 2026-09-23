@@ -8,16 +8,17 @@ import SwiftUI
 /// fresh install and being able to sign in at all, and everything else in
 /// that form would be noise at this moment.
 ///
-/// There is no default address baked into the app, and that is a decision
-/// rather than an omission. The school is reachable at two addresses — its
-/// own WiFi and its tailnet — and which one works depends on where the person
-/// holding the phone is standing. Shipping one of them as the default would
-/// be right for the teachers and wrong for whoever is not in the building,
-/// and the LAN address is handed out by DHCP, so it is not a fact that keeps.
-/// An app pointed at the wrong machine fails far less legibly than one that
-/// says it has not been told yet.
+/// Mostly a way back now, rather than a way in. The app ships pointed at the
+/// school's public address, which works in the building and at home alike,
+/// so a teacher who has just installed it never needs this sheet.
 ///
-/// So both are offered, named by where they work, and the field stays open
+/// It stays because two situations still need it. The school's internet can
+/// go down while the machine itself is fine, and a teacher in the room can
+/// then still reach it over the WiFi. And a device that saved an older
+/// address keeps it — `@AppStorage` only falls back to the default when
+/// nothing was ever stored — so it needs somewhere to change it.
+///
+/// Named by where they work, not by their numbers, and the field stays open
 /// for anything else.
 struct ServerAddressSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -36,9 +37,14 @@ struct ServerAddressSheet: View {
     /// The addresses this school actually answers on. Named by the situation
     /// rather than by the network, because "10.0.50.16" tells a teacher
     /// nothing and "在補習班" tells them everything.
+    ///
+    /// The tailnet address that used to be offered as 在外面 is gone from the
+    /// list: it only ever worked on a phone running Tailscale, which is what
+    /// the public address exists so that teachers never have to do. Anyone
+    /// who needs it can still type it.
     static let known: [(label: String, detail: String, url: String)] = [
-        ("在補習班", "連上補習班的 WiFi 時使用", "http://10.0.50.16:8085"),
-        ("在外面", "需要開啟 Tailscale", "http://100.107.235.123:8085"),
+        ("任何地方", "在補習班或在家都能用（建議）", ServerConfig.defaultAPI),
+        ("在補習班", "補習班網路斷線時，連上 WiFi 使用", "http://10.0.50.16:8085"),
     ]
 
     /// What to call the address currently saved.
@@ -81,7 +87,7 @@ struct ServerAddressSheet: View {
                 } header: {
                     Text("選擇位址")
                 } footer: {
-                    Text("兩個位址連的是同一台伺服器，差別只在你人在哪裡。")
+                    Text("兩個位址連的是同一台伺服器。平常用「任何地方」就好。")
                 }
 
                 Section("或自行輸入") {
