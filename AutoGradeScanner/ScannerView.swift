@@ -70,8 +70,16 @@ struct ScannerView: View {
                 startLiveSession(for: template)
                 camera.checkPermissionAndStart()
             }
+            // Grading a paper is hands-off by design: the teacher holds the
+            // phone over the page and moves it, and touches nothing until the
+            // paper is done. A running camera does not hold off auto-lock, so
+            // on a 30-second setting a two-sided paper could lock the phone
+            // halfway through. Only while this screen is up — everywhere else
+            // the teacher's own setting stands.
+            UIApplication.shared.isIdleTimerDisabled = true
         }
         .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
             camera.onLiveFrame = nil
             liveEngine = nil
             liveUpdate = nil
