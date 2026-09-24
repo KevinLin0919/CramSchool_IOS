@@ -351,6 +351,14 @@ final class APIClient {
     /// lands on the row the first attempt created rather than making a second
     /// copy of the same paper. The same call carries a teacher's later
     /// corrections: re-sending updates in place.
+    /// Scoped to the caller on the server, so a uuid that is not this
+    /// teacher's is a 404 like one that never arrived.
+    func deleteSession(clientUUID: UUID) async throws {
+        _ = try await send(try makeRequest(
+            path: "/api/v1/grading-sessions/\(clientUUID.uuidString.lowercased())",
+            method: "DELETE"))
+    }
+
     func upsertSession(clientUUID: UUID, _ payload: SessionPayload) async throws {
         var request = try makeRequest(path: "/api/v1/grading-sessions/\(clientUUID.uuidString.lowercased())",
                                       method: "PUT")

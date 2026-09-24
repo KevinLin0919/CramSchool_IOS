@@ -46,6 +46,8 @@ struct ResultsView: View {
     @State private var sheets: [UUID: SheetSet] = [:]
     @State private var shownPage = 0
     @State private var showsClearConfirm = false
+    /// The paper whose deletion is waiting on a confirmation.
+    @State private var deleting: StoredPaper?
 
     /// What a paper's backdrop resolved to. `failure` is a state of its own:
     /// without it a sheet that cannot be fetched shows a spinner that never
@@ -77,6 +79,20 @@ struct ResultsView: View {
             if let paper = current {
                 CorrectionSheet(paperID: paper.id, startAt: answer.questionNo)
             }
+        }
+        // Here rather than on the nav beside the clear-all dialog: two
+        // dialogs on one view is a pairing SwiftUI has not always honoured.
+        .confirmationDialog("刪除這一份？",
+                            isPresented: Binding(get: { deleting != nil },
+                                                 set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible,
+                            presenting: deleting) { paper in
+            Button("刪除", role: .destructive) {
+                papers.delete(paper)
+                deleting = nil
+            }
+        } message: { _ in
+            Text("這一份的批改結果會從這台裝置刪除，已上傳的也會從伺服器刪除，無法復原。")
         }
     }
 
@@ -507,6 +523,14 @@ struct ResultsView: View {
 
             Menu {
                 ShareLink(item: shareText(paper)) { Label("分享文字", systemImage: "square.and.arrow.up") }
+                // The scan that should not have happened — the same paper
+                // twice, the wrong template — used to be removable only by
+                // clearing the whole stack along with it.
+                Button(role: .destructive) {
+                    deleting = paper
+                } label: {
+                    Label("刪除這一份", systemImage: "trash")
+                }
                 Button("清除這一疊", role: .destructive) { showsClearConfirm = true }
             } label: {
                 Image(systemName: "ellipsis.circle")

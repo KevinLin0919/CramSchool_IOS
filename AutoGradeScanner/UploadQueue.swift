@@ -42,7 +42,7 @@ final class UploadQueue: ObservableObject {
         guard Credentials.isEnrolled, !DemoData.isEnabled else { return }
         guard ServerConfig.isConfigured else { return }
         if let nextAttempt, nextAttempt > Date() { return }
-        guard store.papers.contains(where: \.needsUpload) else { return }
+        guard hasWork else { return }
 
         Task { await run() }
     }
@@ -63,11 +63,15 @@ final class UploadQueue: ObservableObject {
         guard !isDraining else { return }
         guard Credentials.isEnrolled, !DemoData.isEnabled else { return }
         guard ServerConfig.isConfigured else { return }
-        guard store.papers.contains(where: \.needsUpload) else { return }
+        guard hasWork else { return }
 
         failureStreak = 0
         nextAttempt = nil
         await run()
+    }
+
+    private var hasWork: Bool {
+        store.papers.contains(where: \.needsUpload) || !store.pendingDeletions.isEmpty
     }
 
     private func run() async {
@@ -81,6 +85,9 @@ final class UploadQueue: ObservableObject {
             .sorted { $0.scannedAt < $1.scannedAt }
 
         for paper in queued {
+            // Deleted while this drain was under way. Sending it now would
+            // put back on the server the paper the teacher just removed.
+            guard store.papers.contains(where: { $0.id == paper.id }) else { continue }
             do {
                 try await upload(paper)
                 failureStreak = 0
@@ -91,6 +98,32 @@ final class UploadQueue: ObservableObject {
             } catch {
                 store.markUploadFailed(paper.id, error: error.localizedDescription,
                                        permanent: false)
+                backOff()
+                return
+            }
+        }
+
+        await sendDeletions()
+    }
+
+    /// After the uploads, never beside them. An upload of the same paper that
+    /// was already in flight when the teacher deleted it would otherwise land
+    /// after the delete, and the server would have the paper again.
+    private func sendDeletions() async {
+        for id in store.pendingDeletions {
+            do {
+                try await APIClient.shared.deleteSession(clientUUID: id)
+                store.confirmDeleted(id)
+                failureStreak = 0
+                nextAttempt = nil
+                haltedReason = nil
+            } catch APIError.badStatus(let code, _) where code == 404 {
+                // Never reached the server, or already gone: done either way.
+                store.confirmDeleted(id)
+            } catch APIError.unauthorized {
+                haltedReason = "裝置授權已失效，重新登入後會繼續上傳"
+                return
+            } catch {
                 backOff()
                 return
             }
