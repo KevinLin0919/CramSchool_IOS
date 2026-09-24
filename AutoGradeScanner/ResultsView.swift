@@ -168,23 +168,35 @@ struct ResultsView: View {
     private func paperBody(_ paper: StoredPaper, isRegular: Bool) -> some View {
         if isRegular {
             HStack(alignment: .top, spacing: 0) {
-                ScrollView { sheetPanel(paper).padding(16).padding(.top, Self.navInset) }
+                ScrollView { scrollingColumn(sheetPanel(paper)) }
                     .frame(maxWidth: .infinity)
                 Rectangle().fill(AG.border2).frame(width: 1)
-                ScrollView { cellPanel(paper).padding(16).padding(.top, Self.navInset) }
+                ScrollView { scrollingColumn(cellPanel(paper)) }
                     .frame(width: 380)
             }
         } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                scrollingColumn(VStack(alignment: .leading, spacing: 18) {
                     sheetPanel(paper)
                     cellPanel(paper)
-                }
-                .padding(16)
-                .padding(.top, Self.navInset)
-                .padding(.bottom, 80)
+                })
             }
         }
+    }
+
+    /// The insets every scrolling column needs, in one place so a layout
+    /// cannot be given some of them and not others.
+    ///
+    /// The bottom one is room for the tab bar, which RootView floats over this
+    /// screen rather than stacking beneath it. The two-column layout once had
+    /// none: the last rows of the answer column sat under the bar with no way
+    /// to scroll them clear. Measured from the physical edge, as the bar
+    /// itself is, rather than a number tuned by eye on one phone.
+    private func scrollingColumn(_ content: some View) -> some View {
+        content
+            .padding(16)
+            .padding(.top, Self.navInset)
+            .padding(.bottom, AG.padding(above: AG.bottomChromeClearance))
     }
 
 
