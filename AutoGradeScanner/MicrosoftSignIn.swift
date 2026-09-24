@@ -44,6 +44,7 @@ enum MicrosoftSignIn {
         let token: String
         let teacherID: Int
         let teacherName: String
+        let role: String
         /// ISO-8601. The backend expires Microsoft-issued device tokens on
         /// purpose — an iPad that outlives the directory account it was issued
         /// against would make central offboarding a fiction.
@@ -116,6 +117,7 @@ enum MicrosoftSignIn {
         return Result(token: response.token,
                       teacherID: response.teacherID,
                       teacherName: response.teacherName,
+                      role: response.role,
                       expiresAt: response.expiresAt)
     }
 

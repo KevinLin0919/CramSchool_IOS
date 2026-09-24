@@ -44,8 +44,20 @@ struct SettingsView: View {
                 deviceSection
                 syncSection
                 gradingSection
-                diagnosticsSection
-                inferenceSection
+                // Tools for whoever is building and tuning the app, not for
+                // grading. One of them — forcing the demo sheets — quietly
+                // stops everything graded afterwards from ever uploading,
+                // which is not a switch to leave where a teacher can find it.
+                //
+                // Except while that switch is on: a teacher who turned it on
+                // in a build that still showed it has to be able to turn it
+                // off again.
+                if model.isAdmin || (enrolled && demoModeOverride) {
+                    diagnosticsSection
+                }
+                if model.isAdmin {
+                    inferenceSection
+                }
             }
             .navigationTitle("設定")
             .navigationBarTitleDisplayMode(.inline)
