@@ -42,10 +42,14 @@ struct ServerAddressSheet: View {
     /// list: it only ever worked on a phone running Tailscale, which is what
     /// the public address exists so that teachers never have to do. Anyone
     /// who needs it can still type it.
-    static let known: [(label: String, detail: String, url: String)] = [
-        ("任何地方", "在補習班或在家都能用（建議）", ServerConfig.defaultAPI),
-        ("在補習班", "補習班網路斷線時，連上 WiFi 使用", "http://10.0.50.16:8085"),
-    ]
+    static let known: [(label: String, detail: String, url: String)] = AppEnvironment.isQAT
+        // The QAT app has one server, and offering the teachers' two would be
+        // offering a way to put test data into production.
+        ? [("QAT 測試伺服器", "比賽與測試用，資料和正式版分開", ServerConfig.defaultAPI)]
+        : [
+            ("任何地方", "在補習班或在家都能用（建議）", ServerConfig.defaultAPI),
+            ("在補習班", "補習班網路斷線時，連上 WiFi 使用", "http://10.0.50.16:8085"),
+        ]
 
     /// What to call the address currently saved.
     ///
@@ -87,7 +91,9 @@ struct ServerAddressSheet: View {
                 } header: {
                     Text("選擇位址")
                 } footer: {
-                    Text("兩個位址連的是同一台伺服器。平常用「任何地方」就好。")
+                    Text(AppEnvironment.isQAT
+                         ? "QAT 測試版只連測試伺服器，不會碰到正式資料。"
+                         : "兩個位址連的是同一台伺服器。平常用「任何地方」就好。")
                 }
 
                 Section("或自行輸入") {

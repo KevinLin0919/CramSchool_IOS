@@ -33,7 +33,12 @@ enum ServerConfig {
     /// The LAN address stays on offer in the server sheet for the one case
     /// this does not cover: the school's internet is down and the teacher is
     /// standing next to the machine.
-    static let defaultAPI = "https://commaserver.tail475cee.ts.net"
+    ///
+    /// The QAT build talks to its own backend on the same machine — its own
+    /// database, on port 8443 — so nothing tried there touches teachers' data.
+    static let defaultAPI = AppEnvironment.isQAT
+        ? "https://commaserver.tail475cee.ts.net:8443"
+        : "https://commaserver.tail475cee.ts.net"
     static let defaultPredict = "http://140.115.54.241:8082"
     static let defaultOCR = "http://140.115.54.239:8083"
     static let defaultOCRGoogle = "http://140.115.54.241:8083"

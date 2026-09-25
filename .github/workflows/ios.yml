@@ -2,7 +2,7 @@ name: iOS starter workflow
 
 on:
   push:
-    branches: [ "main", "coreml-xfeat", "demo-*", "client-*", "scan-*" ]
+    branches: [ "main", "develop", "coreml-xfeat", "demo-*", "client-*", "scan-*" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
@@ -152,16 +152,38 @@ jobs:
     # progress, and a build number spent on one is a build number Apple will
     # never accept again. A manual dispatch is exempt because it is somebody
     # deciding, which is the only way to test this job before main has it.
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    #
+    # `develop` builds the other app: 浮島 QAT, a separate bundle ID with its
+    # own TestFlight group that holds only the developer. That is what keeps
+    # test builds away from teachers — not a setting anyone has to remember,
+    # but a different app they are simply not testers of.
+    if: >-
+      github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+      || github.event_name == 'workflow_dispatch'
     needs: [build, selftest]
 
     env:
       TEAM_ID: 72QM8HTFG6
-      BUNDLE_ID: com.cramschool.autogradescanner
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Choose which app this build is
+        run: |
+          if [ "$GITHUB_REF" = "refs/heads/develop" ]; then
+            {
+              echo "APP_ENV=qat"
+              echo "BUNDLE_ID=com.cramschool.autogradescanner.dev"
+              echo "PROFILE_NAME=Fudao Dev App Store"
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "APP_ENV=prd"
+              echo "BUNDLE_ID=com.cramschool.autogradescanner"
+              echo "PROFILE_NAME=Fudao App Store"
+            } >> "$GITHUB_ENV"
+          fi
 
       - name: Put the App Store Connect key where xcodebuild expects it
         env:
@@ -189,8 +211,10 @@ jobs:
         env:
           P12: ${{ secrets.IOS_DIST_P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
-          PROFILE: ${{ secrets.IOS_PROFILE_BASE64 }}
+          PRD_PROFILE: ${{ secrets.IOS_PROFILE_BASE64 }}
+          QAT_PROFILE: ${{ secrets.IOS_DEV_PROFILE_BASE64 }}
         run: |
+          if [ "$APP_ENV" = qat ]; then PROFILE="$QAT_PROFILE"; else PROFILE="$PRD_PROFILE"; fi
           # Exporting asked Apple to sign in the cloud and was refused with
           # "Cloud signing permission error". Cloud signing is Apple holding
           # the private key on your behalf, which is a separate arrangement
@@ -225,7 +249,7 @@ jobs:
 
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo "$PROFILE" | base64 --decode \
-            > ~/Library/MobileDevice/Provisioning\ Profiles/Fudao_App_Store.mobileprovision
+            > ~/Library/MobileDevice/Provisioning\ Profiles/"${PROFILE_NAME// /_}".mobileprovision
 
           # Name what arrived, without printing anything secret.
           security find-identity -v -p codesigning "$KEYCHAIN" | grep -c "Apple Distribution"
@@ -258,6 +282,15 @@ jobs:
           # repeat. A re-run of this workflow reuses its run number, so a
           # rejected upload is re-driven by pushing a commit, not by pressing
           # re-run.
+          # Production passes nothing extra: the teachers' app is built exactly
+          # as it was before QAT existed.
+          EXTRA=()
+          if [ "$APP_ENV" = qat ]; then
+            EXTRA=(PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+                   FUDAO_ENV=qat
+                   ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon-QAT
+                   INFOPLIST_KEY_CFBundleDisplayName="浮島 QAT")
+          fi
           xcodebuild archive \
             -project AutoGradeScanner.xcodeproj \
             -scheme AutoGradeScanner \
@@ -267,8 +300,9 @@ jobs:
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="Fudao App Store" \
-            CURRENT_PROJECT_VERSION=${{ github.run_number }}
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            "${EXTRA[@]}"
 
       - name: Export a signed .ipa
         env:
@@ -291,7 +325,7 @@ jobs:
             <key>signingCertificate</key><string>Apple Distribution</string>
             <key>provisioningProfiles</key>
             <dict>
-              <key>$BUNDLE_ID</key><string>Fudao App Store</string>
+              <key>$BUNDLE_ID</key><string>$PROFILE_NAME</string>
             </dict>
           </dict>
           </plist>
@@ -316,6 +350,10 @@ jobs:
             | grep -E 'Authority|TeamIdentifier|Identifier='
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
             "$RUNNER_TEMP/unpacked/Payload/AutoGradeScanner.app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+            "$RUNNER_TEMP/unpacked/Payload/AutoGradeScanner.app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :FudaoEnvironment' \
+            "$RUNNER_TEMP/unpacked/Payload/AutoGradeScanner.app/Info.plist" || true
           /usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' \
             "$RUNNER_TEMP/unpacked/Payload/AutoGradeScanner.app/Info.plist"
 

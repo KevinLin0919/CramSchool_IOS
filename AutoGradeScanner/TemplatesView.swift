@@ -110,7 +110,9 @@ struct TemplatesView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("浮島")
+                // The QAT build says so where every session starts, so a
+                // screenshot or a stray tap is never mistaken for the real one.
+                Text(AppEnvironment.isQAT ? "浮島 · QAT 測試版" : "浮島")
                     .font(.system(size: 13, weight: .semibold))
                     .kerning(0.6)
                     .foregroundStyle(AG.fg2)

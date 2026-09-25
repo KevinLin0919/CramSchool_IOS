@@ -15,6 +15,10 @@
 	     tester, which is a manual gate on an otherwise automatic pipeline. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- Set by CI for the QAT build (FUDAO_ENV=qat). Empty everywhere else,
+	     which AppEnvironment reads as production. -->
+	<key>FudaoEnvironment</key>
+	<string>$(FUDAO_ENV)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>需要使用相機掃描學生考卷，進行即時辨識與批改。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
