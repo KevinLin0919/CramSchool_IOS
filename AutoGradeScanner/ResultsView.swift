@@ -46,6 +46,8 @@ struct ResultsView: View {
     @State private var sheets: [UUID: SheetSet] = [:]
     @State private var shownPage = 0
     @State private var showsClearConfirm = false
+    /// The paper whose deletion is waiting on a confirmation.
+    @State private var deleting: StoredPaper?
 
     /// What a paper's backdrop resolved to. `failure` is a state of its own:
     /// without it a sheet that cannot be fetched shows a spinner that never
@@ -77,6 +79,20 @@ struct ResultsView: View {
             if let paper = current {
                 CorrectionSheet(paperID: paper.id, startAt: answer.questionNo)
             }
+        }
+        // Here rather than on the nav beside the clear-all dialog: two
+        // dialogs on one view is a pairing SwiftUI has not always honoured.
+        .confirmationDialog("刪除這一份？",
+                            isPresented: Binding(get: { deleting != nil },
+                                                 set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible,
+                            presenting: deleting) { paper in
+            Button("刪除", role: .destructive) {
+                papers.delete(paper)
+                deleting = nil
+            }
+        } message: { _ in
+            Text("這一份的批改結果會從這台裝置刪除，已上傳的也會從伺服器刪除，無法復原。")
         }
     }
 
@@ -168,23 +184,35 @@ struct ResultsView: View {
     private func paperBody(_ paper: StoredPaper, isRegular: Bool) -> some View {
         if isRegular {
             HStack(alignment: .top, spacing: 0) {
-                ScrollView { sheetPanel(paper).padding(16).padding(.top, Self.navInset) }
+                ScrollView { scrollingColumn(sheetPanel(paper)) }
                     .frame(maxWidth: .infinity)
                 Rectangle().fill(AG.border2).frame(width: 1)
-                ScrollView { cellPanel(paper).padding(16).padding(.top, Self.navInset) }
+                ScrollView { scrollingColumn(cellPanel(paper)) }
                     .frame(width: 380)
             }
         } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                scrollingColumn(VStack(alignment: .leading, spacing: 18) {
                     sheetPanel(paper)
                     cellPanel(paper)
-                }
-                .padding(16)
-                .padding(.top, Self.navInset)
-                .padding(.bottom, 80)
+                })
             }
         }
+    }
+
+    /// The insets every scrolling column needs, in one place so a layout
+    /// cannot be given some of them and not others.
+    ///
+    /// The bottom one is room for the tab bar, which RootView floats over this
+    /// screen rather than stacking beneath it. The two-column layout once had
+    /// none: the last rows of the answer column sat under the bar with no way
+    /// to scroll them clear. Measured from the physical edge, as the bar
+    /// itself is, rather than a number tuned by eye on one phone.
+    private func scrollingColumn(_ content: some View) -> some View {
+        content
+            .padding(16)
+            .padding(.top, Self.navInset)
+            .padding(.bottom, AG.padding(above: AG.bottomChromeClearance))
     }
 
 
@@ -495,6 +523,14 @@ struct ResultsView: View {
 
             Menu {
                 ShareLink(item: shareText(paper)) { Label("分享文字", systemImage: "square.and.arrow.up") }
+                // The scan that should not have happened — the same paper
+                // twice, the wrong template — used to be removable only by
+                // clearing the whole stack along with it.
+                Button(role: .destructive) {
+                    deleting = paper
+                } label: {
+                    Label("刪除這一份", systemImage: "trash")
+                }
                 Button("清除這一疊", role: .destructive) { showsClearConfirm = true }
             } label: {
                 Image(systemName: "ellipsis.circle")

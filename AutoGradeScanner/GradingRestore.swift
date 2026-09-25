@@ -69,7 +69,9 @@ enum GradingRestore {
         // rather than the ones the template holds today — so replacing it with
         // the server's account of it would be a downgrade performed on every
         // sign-in.
-        let known = store.knownIDs
+        // Nor what the teacher deleted and the server has not yet heard
+        // about: restoring it would undo the delete.
+        let known = store.knownIDs.union(store.pendingDeletions)
         let wanted = summaries.filter { !known.contains($0.client_uuid) }
         guard !wanted.isEmpty else {
             hasCompleted = true

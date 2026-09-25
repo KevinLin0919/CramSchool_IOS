@@ -389,6 +389,49 @@ final class GradingStore: ObservableObject {
         papers.removeAll { $0.id == paper.id }
     }
 
+    // MARK: - Deleting one
+
+    /// Papers deleted here whose server copy is not yet confirmed gone.
+    ///
+    /// Kept apart from the papers, and deliberately untouched by `clearAll`,
+    /// because the intent outlives the record. A paper deleted on a dead
+    /// network still has a copy on the server, and the next sign-in's restore
+    /// would bring it back — the one outcome a delete must not have. The
+    /// upload queue sends these, and the server's 404 counts as done, so one
+    /// that never reached the server costs a single request.
+    private static let deletionsKey = "grading.pendingDeletions"
+
+    var pendingDeletions: Set<UUID> {
+        let raw = UserDefaults.standard.stringArray(forKey: Self.deletionsKey) ?? []
+        return Set(raw.compactMap(UUID.init(uuidString:)))
+    }
+
+    private func setPendingDeletions(_ ids: Set<UUID>) {
+        UserDefaults.standard.set(ids.map(\.uuidString), forKey: Self.deletionsKey)
+    }
+
+    /// One paper, gone: from this device now, and from the server as soon as
+    /// the queue can reach it. For the scan that should not have happened —
+    /// the same paper twice, or the wrong template — which until now could
+    /// only be removed by clearing everything.
+    func delete(_ paper: StoredPaper) {
+        remove(paper)
+        // A demo paper never left the device, and a device with no credential
+        // has nobody to send the request as.
+        guard paper.isDemo != true, Credentials.isEnrolled else { return }
+        var pending = pendingDeletions
+        pending.insert(paper.id)
+        setPendingDeletions(pending)
+        UploadQueue.shared.drain()
+    }
+
+    /// The server no longer has it — deleted now, or never had it.
+    func confirmDeleted(_ id: UUID) {
+        var pending = pendingDeletions
+        pending.remove(id)
+        setPendingDeletions(pending)
+    }
+
     /// Ends the stack. Nothing is uploaded yet, so this genuinely discards —
     /// the confirmation belongs in the UI, not here.
     func clearAll() {

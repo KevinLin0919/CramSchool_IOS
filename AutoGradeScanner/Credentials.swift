@@ -36,6 +36,7 @@ enum Credentials {
     private static let teacherIDKey = "auth.teacherID"
     private static let methodKey = "auth.enrolmentMethod"
     private static let expiresAtKey = "auth.expiresAt"
+    private static let roleKey = "auth.role"
 
     /// Posted when enrolment starts or ends, so views showing enrolment state
     /// (and DemoData's default) refresh without polling the Keychain.
@@ -85,12 +86,36 @@ enum Credentials {
         UserDefaults.standard.string(forKey: expiresAtKey)
     }
 
+    /// `admin` or `teacher`, as the server last said. Decides only what the
+    /// app offers, never what the server allows: every admin action is
+    /// checked again there, and a device that thinks it is an admin gets a
+    /// 403 for its trouble. What this prevents is a teacher being shown a
+    /// button whose only possible outcome is a refusal.
+    ///
+    /// Nil on devices enrolled before it was recorded, until `/auth/me`
+    /// answers. Nil reads as not an admin — hiding a control for a moment is
+    /// the recoverable mistake.
+    static var role: String? {
+        UserDefaults.standard.string(forKey: roleKey)
+    }
+
+    static var isAdmin: Bool { role == "admin" }
+
+    /// For a role learned after enrolment, from `/auth/me`. Deliberately does
+    /// not post `didChange`: that notification means the credential itself
+    /// changed, and its handlers purge the template cache and restore grading
+    /// — none of which a promotion or demotion calls for.
+    static func updateRole(_ role: String) {
+        UserDefaults.standard.set(role, forKey: roleKey)
+    }
+
     // MARK: - Writing
 
     @discardableResult
     static func store(token: String,
                       teacherID: Int,
                       teacherName: String,
+                      role: String,
                       method: EnrolmentMethod,
                       expiresAt: String? = nil) -> Bool {
         let base: [String: Any] = [
@@ -117,6 +142,7 @@ enum Credentials {
 
         UserDefaults.standard.set(teacherName, forKey: teacherNameKey)
         UserDefaults.standard.set(teacherID, forKey: teacherIDKey)
+        UserDefaults.standard.set(role, forKey: roleKey)
         UserDefaults.standard.set(method.rawValue, forKey: methodKey)
         if let expiresAt {
             UserDefaults.standard.set(expiresAt, forKey: expiresAtKey)
@@ -138,6 +164,7 @@ enum Credentials {
         UserDefaults.standard.removeObject(forKey: teacherIDKey)
         UserDefaults.standard.removeObject(forKey: methodKey)
         UserDefaults.standard.removeObject(forKey: expiresAtKey)
+        UserDefaults.standard.removeObject(forKey: roleKey)
         NotificationCenter.default.post(name: didChange, object: nil)
     }
 }

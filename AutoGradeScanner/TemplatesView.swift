@@ -36,6 +36,15 @@ struct TemplatesView: View {
         VStack(spacing: 0) {
             header
             listArea
+                // On the list rather than beside the rename alert: two alerts
+                // on one view is a pairing SwiftUI has not always honoured.
+                .alert("沒有完成",
+                       isPresented: Binding(get: { model.actionError != nil },
+                                            set: { if !$0 { model.actionError = nil } })) {
+                    Button("好", role: .cancel) {}
+                } message: {
+                    Text(model.actionError ?? "")
+                }
         }
         // Overlaid for the same reason the tab bar is: it hangs past the safe
         // area, and as a ZStack sibling that would have stretched the stack to
@@ -101,7 +110,7 @@ struct TemplatesView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("AUTOGRADE")
+                Text("浮島")
                     .font(.system(size: 13, weight: .semibold))
                     .kerning(0.6)
                     .foregroundStyle(AG.fg2)
@@ -111,7 +120,9 @@ struct TemplatesView: View {
                         .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(AG.fg2)
                 }
-                .padding(.trailing, 14)
+                // Teachers are the ones who keep the template list in order,
+                // so this is theirs as much as an admin's. Only the service
+                // addresses behind it are an admin setting.
                 Button { showNewTemplate = true } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "plus")
@@ -121,6 +132,7 @@ struct TemplatesView: View {
                     }
                     .foregroundStyle(AG.brand)
                 }
+                .padding(.leading, 14)
             }
             .frame(height: 44)
 

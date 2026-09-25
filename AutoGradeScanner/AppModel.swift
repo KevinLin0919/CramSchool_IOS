@@ -17,6 +17,18 @@ final class AppModel: ObservableObject {
     @Published var templatesError: String?
     @Published var selectedTemplateID: Int?
 
+    /// Why the last rename or delete did not happen. Separate from
+    /// `templatesError` because that one is only drawn when the list is
+    /// empty — which is never the case when there was a row to act on, so a
+    /// refusal from the server used to vanish without a word.
+    @Published var actionError: String?
+
+    /// Whether to offer the admin-only settings: diagnostics, the demo
+    /// switch, and the addresses of the template-building services. Published
+    /// rather than read from `Credentials` in each view, because it changes
+    /// without the credential changing — `/auth/me` can report a promotion.
+    @Published private(set) var isAdmin = Credentials.isAdmin
+
     /// Why the credential stopped working, in the server's own words, waiting
     /// for the login screen to say it. Nil when the person simply has not
     /// signed in yet — that screen needs no explanation.
@@ -55,6 +67,7 @@ final class AppModel: ObservableObject {
         NotificationCenter.default.publisher(for: Credentials.didChange)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
+                self?.isAdmin = Credentials.isAdmin
                 if Credentials.isEnrolled {
                     // Signing in successfully answers the message; signing out
                     // does not, since that is when it was just written.
@@ -162,6 +175,24 @@ final class AppModel: ObservableObject {
             selectedTemplateID = nil
         }
         isLoadingTemplates = false
+
+        // Beside the refresh rather than inside it: the role only decides
+        // which controls are offered, and neither the list nor a pull to
+        // refresh should wait on it.
+        if !DemoData.isEnabled { Task { await refreshRole() } }
+    }
+
+    /// Asks the server who this device belongs to, for the role.
+    ///
+    /// Rides on the template refresh — sign-in, launch, pull to refresh — so
+    /// a device enrolled before the role was recorded learns it the first
+    /// time it syncs, and a teacher promoted since sees the change the next.
+    /// Failure keeps whatever was known: offline is not a demotion.
+    private func refreshRole() async {
+        guard Credentials.isEnrolled else { return }
+        guard let me = try? await APIClient.shared.me() else { return }
+        Credentials.updateRole(me.role)
+        isAdmin = Credentials.isAdmin
     }
 
     func renameTemplate(_ template: ExamTemplate, to name: String) async {
@@ -175,7 +206,7 @@ final class AppModel: ObservableObject {
             }
             await loadTemplates()
         } catch {
-            templatesError = error.localizedDescription
+            actionError = error.localizedDescription
         }
     }
 
@@ -190,7 +221,7 @@ final class AppModel: ObservableObject {
             templates.removeAll { $0.id == template.id }
             await loadTemplates()
         } catch {
-            templatesError = error.localizedDescription
+            actionError = error.localizedDescription
         }
     }
 
