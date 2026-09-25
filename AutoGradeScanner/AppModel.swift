@@ -23,8 +23,8 @@ final class AppModel: ObservableObject {
     /// refusal from the server used to vanish without a word.
     @Published var actionError: String?
 
-    /// Whether to offer what only an admin can do: new templates, renaming,
-    /// deleting, and the diagnostics a teacher has no use for. Published
+    /// Whether to offer the admin-only settings: diagnostics, the demo
+    /// switch, and the addresses of the template-building services. Published
     /// rather than read from `Credentials` in each view, because it changes
     /// without the credential changing — `/auth/me` can report a promotion.
     @Published private(set) var isAdmin = Credentials.isAdmin

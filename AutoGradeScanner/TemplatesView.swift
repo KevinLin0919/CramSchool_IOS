@@ -120,22 +120,19 @@ struct TemplatesView: View {
                         .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(AG.fg2)
                 }
-                // Admins only. Building a template needs the detection and
-                // OCR services on the lab network, which a teacher's phone
-                // cannot reach — for them this button was a wait followed by
-                // an error, whatever they did.
-                if model.isAdmin {
-                    Button { showNewTemplate = true } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 16, weight: .semibold))
-                            Text("新增")
-                                .font(.system(size: 17, weight: .semibold))
-                        }
-                        .foregroundStyle(AG.brand)
+                // Teachers are the ones who keep the template list in order,
+                // so this is theirs as much as an admin's. Only the service
+                // addresses behind it are an admin setting.
+                Button { showNewTemplate = true } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("新增")
+                            .font(.system(size: 17, weight: .semibold))
                     }
-                    .padding(.leading, 14)
+                    .foregroundStyle(AG.brand)
                 }
+                .padding(.leading, 14)
             }
             .frame(height: 44)
 
@@ -450,27 +447,21 @@ struct TemplatesView: View {
         .contentShape(Rectangle())
         .onTapGesture { model.selectedTemplateID = template.id }
         .contextMenu {
-            // The server refuses both to anyone but an admin, so offering
-            // them to a teacher was offering a refusal.
-            if model.isAdmin {
-                Button {
-                    renameTarget = template
-                    renameText = template.examName
-                } label: {
-                    Label("改名", systemImage: "pencil")
-                }
+            Button {
+                renameTarget = template
+                renameText = template.examName
+            } label: {
+                Label("改名", systemImage: "pencil")
             }
             Button {
                 previewTarget = template
             } label: {
                 Label("預覽", systemImage: "eye")
             }
-            if model.isAdmin {
-                Button(role: .destructive) {
-                    deleteTarget = template
-                } label: {
-                    Label("刪除", systemImage: "trash")
-                }
+            Button(role: .destructive) {
+                deleteTarget = template
+            } label: {
+                Label("刪除", systemImage: "trash")
             }
         }
     }
