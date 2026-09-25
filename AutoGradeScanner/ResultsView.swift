@@ -48,6 +48,12 @@ struct ResultsView: View {
     @State private var showsClearConfirm = false
     /// The paper whose deletion is waiting on a confirmation.
     @State private var deleting: StoredPaper?
+    @State private var matching = false
+    @StateObject private var roster = RosterStore.shared
+
+    /// The stack being paged through. Everything on this screen that used to
+    /// mean "every paper on the device" means this now.
+    private var stack: [StoredPaper] { papers.papers(inStack: model.focusedStack ?? "") }
 
     /// What a paper's backdrop resolved to. `failure` is a state of its own:
     /// without it a sheet that cannot be fetched shows a spinner that never
@@ -58,21 +64,31 @@ struct ResultsView: View {
     }
 
     private var current: StoredPaper? {
-        guard papers.papers.indices.contains(index) else { return papers.papers.last }
-        return papers.papers[index]
+        guard stack.indices.contains(index) else { return stack.last }
+        return stack[index]
     }
 
     var body: some View {
         Group {
             if papers.papers.isEmpty {
                 emptyState
+            } else if model.focusedStack == nil || stack.isEmpty {
+                StackListView()
             } else {
                 content
             }
         }
-        .onChange(of: papers.papers.count) { _, count in
+        .onChange(of: stack.count) { _, count in
             if index >= count { index = max(0, count - 1) }
             positionAtNewest()
+        }
+        .onChange(of: model.focusedStack) { _, _ in
+            hasPositioned = false
+            shownPage = 0
+            positionAtNewest()
+        }
+        .sheet(isPresented: $matching) {
+            if let key = model.focusedStack { MatchStudentsView(stackKey: key) }
         }
         .onAppear { positionAtNewest() }
         .sheet(item: $correcting) { answer in
@@ -107,8 +123,8 @@ struct ResultsView: View {
     /// app offers you the first one, twenty-nine swipes from the one you were
     /// just holding.
     private func positionAtNewest() {
-        guard !hasPositioned, !papers.papers.isEmpty else { return }
-        index = papers.papers.count - 1
+        guard !hasPositioned, !stack.isEmpty else { return }
+        index = stack.count - 1
         hasPositioned = true
     }
 
@@ -156,7 +172,7 @@ struct ResultsView: View {
                 // the paper with the finger and letting it fall back is the
                 // behaviour that teaches itself.
                 TabView(selection: $index) {
-                    ForEach(Array(papers.papers.enumerated()), id: \.element.id) { position, item in
+                    ForEach(Array(stack.enumerated()), id: \.element.id) { position, item in
                         paperBody(item, isRegular: isRegular)
                             .task(id: item.id) { await loadSheets(for: item) }
                             .tag(position)
@@ -226,7 +242,7 @@ struct ResultsView: View {
     /// arrows stopped working the moment the swipe pager replaced the old
     /// threshold gesture, and this is why.
     private func goTo(_ target: Int) {
-        guard papers.papers.indices.contains(target), target != index else { return }
+        guard stack.indices.contains(target), target != index else { return }
         index = target
     }
 
@@ -509,12 +525,14 @@ struct ResultsView: View {
 
     private func topNav(_ paper: StoredPaper) -> some View {
         HStack(spacing: 8) {
+            // Back to the list of stacks. Scanning more is one tap away on the
+            // tab bar, and in the menu.
             Button {
-                model.screen = .scan
+                model.focusedStack = nil
             } label: {
                 HStack(spacing: 2) {
                     Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold))
-                    Text("繼續掃描").font(.system(size: 16))
+                    Text("全部").font(.system(size: 16))
                 }
                 .foregroundStyle(AG.brand)
             }
@@ -522,6 +540,14 @@ struct ResultsView: View {
             Spacer()
 
             Menu {
+                if paper.classID != nil {
+                    Button { matching = true } label: {
+                        Label("配對學生", systemImage: "person.crop.rectangle.stack")
+                    }
+                }
+                Button { model.screen = .scan } label: {
+                    Label("繼續掃描", systemImage: "viewfinder")
+                }
                 ShareLink(item: shareText(paper)) { Label("分享文字", systemImage: "square.and.arrow.up") }
                 // The scan that should not have happened — the same paper
                 // twice, the wrong template — used to be removable only by
@@ -550,10 +576,11 @@ struct ResultsView: View {
                 // Paging is by position in the stack. Which student a paper
                 // belongs to is not recorded yet, and guessing would put a
                 // name on a record nobody verified.
-                Text("第 \(index + 1) / \(papers.papers.count) 份")
+                Text(roster.studentName(paper.studentID).map { "\($0) · \(index + 1)/\(stack.count)" }
+                     ?? "第 \(index + 1) / \(stack.count) 份")
                     .font(.system(size: 14, weight: .semibold).monospacedDigit())
                     .foregroundStyle(AG.fg1)
-                pagerButton("chevron.right", enabled: index < papers.papers.count - 1) {
+                pagerButton("chevron.right", enabled: index < stack.count - 1) {
                     goTo(index + 1)
                 }
             }
@@ -563,15 +590,16 @@ struct ResultsView: View {
         .padding(.top, 6)
         .confirmationDialog("清除這一疊批改結果？", isPresented: $showsClearConfirm,
                             titleVisibility: .visible) {
-            Button("清除 \(papers.papers.count) 份", role: .destructive) {
-                papers.clearAll()
+            Button("清除 \(stack.count) 份", role: .destructive) {
+                papers.clear(stack: model.focusedStack ?? "")
                 index = 0
+                model.focusedStack = nil
             }
         } message: {
             // The one place on this screen where upload state changes a
             // decision, so the one place it is mentioned.
-            Text(papers.pendingUploadCount > 0
-                 ? "其中 \(papers.pendingUploadCount) 份還沒上傳到伺服器，清除後無法復原。"
+            Text(stack.contains(where: \.needsUpload)
+                 ? "其中 \(stack.filter(\.needsUpload).count) 份還沒上傳到伺服器，清除後無法復原。"
                  : "這些結果都已上傳到伺服器，這裡只清除裝置上的紀錄。")
         }
     }

@@ -35,6 +35,21 @@ struct ScannerView: View {
 
     @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
 
+    /// The sitting chosen with the class, if it is for the paper on screen.
+    private var currentExam: LocalExam? {
+        guard let exam = ExamStore.shared.exam(model.currentExamID),
+              exam.templateID == model.selectedTemplate?.id else { return nil }
+        return exam
+    }
+
+    /// The results tab's key for what is being scanned now.
+    private var currentStackKey: String {
+        if let exam = currentExam { return exam.id.uuidString }
+        return "legacy:\(model.selectedTemplate?.id ?? 0):\(ExamStore.day())"
+    }
+
+    private var stackSoFar: [StoredPaper] { papers.papers(inStack: currentStackKey) }
+
     /// Names the pages, not just the fact that some exist. "背面還有 10 題沒批改"
     /// can be acted on; "還有題目沒批改" sends someone hunting.
     private var leftBehindTitle: String {
@@ -306,11 +321,12 @@ struct ScannerView: View {
 
             Spacer()
 
-            if !papers.papers.isEmpty {
+            if !stackSoFar.isEmpty {
                 // The one being graded, not the count already filed: those
                 // differ by one, and labelling the finished count "第 N 份"
-                // would name the paper you just put down.
-                Text("第 \(papers.papers.count + 1) 份")
+                // would name the paper you just put down. Counted within this
+                // stack, not across every paper this device has ever held.
+                Text("第 \(stackSoFar.count + 1) 份")
                     .font(.system(size: 13, weight: .bold).monospacedDigit())
                     .foregroundStyle(.white)
                     .padding(.horizontal, 11)
@@ -514,7 +530,7 @@ struct ScannerView: View {
                     }
                 }
                 Spacer()
-                Text("已完成 \(papers.papers.count) 份")
+                Text("已完成 \(stackSoFar.count) 份")
                     .font(.system(size: 12, weight: .medium).monospacedDigit())
                     .foregroundStyle(.white.opacity(0.6))
             }
@@ -525,6 +541,7 @@ struct ScannerView: View {
             // loop just offers another paper, forever.
             HStack(spacing: 10) {
                 Button {
+                    model.focusedStack = currentStackKey
                     model.screen = .results
                 } label: {
                     Text(clean ? "完成這疊" : "處理")
@@ -696,7 +713,8 @@ struct ScannerView: View {
         guard let engine = liveEngine, let result = engine.finish() else { return }
         let paper = GradingStore.record(from: result,
                                         templateID: engine.templateIdentifier,
-                                        pages: engine.storedPages)
+                                        pages: engine.storedPages,
+                                        exam: currentExam)
         papers.store(paper, cells: engine.capturedCells())
         model.lastResult = result
         withAnimation(.spring(duration: 0.3)) { completedPaper = paper }

@@ -26,6 +26,7 @@ struct SettingsView: View {
     /// gone from this device either way; what is left is a token nobody can
     /// present but that the server still honours.
     @State private var revokeWarning: String?
+    @State private var showingWebCode = false
     @State private var enrolled = Credentials.isEnrolled
     @State private var method = Credentials.enrolmentMethod
     @StateObject private var papers = GradingStore.shared
@@ -42,6 +43,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 deviceSection
+                classesSection
                 syncSection
                 gradingSection
                 // Tools for whoever is building and tuning the app, not for
@@ -69,6 +71,7 @@ struct SettingsView: View {
             .sheet(isPresented: $showingEnrolment) {
                 EnrolmentView()
             }
+            .sheet(isPresented: $showingWebCode) { WebLoginCodeView() }
             .onReceive(NotificationCenter.default.publisher(for: Credentials.didChange)) { _ in
                 enrolled = Credentials.isEnrolled
                 method = Credentials.enrolmentMethod
@@ -259,6 +262,26 @@ struct SettingsView: View {
             lines.append("其中 \(pending) 份還沒上傳，登出後就會消失，無法復原。")
         }
         return lines.joined(separator: "\n")
+    }
+
+    @ViewBuilder
+    private var classesSection: some View {
+        if enrolled {
+            Section {
+                NavigationLink {
+                    ClassListView()
+                } label: {
+                    Label("班級與學生", systemImage: "person.3")
+                }
+                Button {
+                    showingWebCode = true
+                } label: {
+                    Label("在電腦上看報告", systemImage: "desktopcomputer")
+                }
+            } header: {
+                Text("班級")
+            }
+        }
     }
 
     @ViewBuilder

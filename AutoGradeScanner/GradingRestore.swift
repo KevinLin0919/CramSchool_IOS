@@ -63,6 +63,12 @@ enum GradingRestore {
         }
 
         guard let summaries = try? await APIClient.shared.listSessions() else { return }
+        // Sittings first, so restored papers can name their class. A server
+        // without them answers 404, which simply leaves papers unfiled.
+        if let exams = try? await APIClient.shared.listExams() {
+            ExamStore.shared.merge(exams)
+        }
+        await RosterStore.shared.refresh()
 
         // Only what is missing. A paper already here is the richer copy — it
         // has its crops, and the rectangles it was actually graded against
@@ -201,7 +207,7 @@ enum GradingRestore {
             }
         }
 
-        return StoredPaper(
+        var paper = StoredPaper(
             id: dto.client_uuid,
             templateID: dto.template_id,
             templateTitle: template?.title ?? dto.template_name ?? "考卷 \(dto.template_id)",
@@ -216,6 +222,14 @@ enum GradingRestore {
             uploadedAt: date(dto.uploaded_at) ?? Date(),
             isDemo: nil,
             revision: 0)
+        // Which sitting and whose, as the server last heard it. The class
+        // comes from the exam list fetched at the start of the restore.
+        paper.examUUID = dto.exam_uuid
+        paper.classID = ExamStore.shared.exam(dto.exam_uuid)?.classID
+        paper.studentID = dto.student_id
+        paper.identitySource = dto.identity_source
+        paper.serverKnown = true
+        return paper
     }
 
     // MARK: - Dates

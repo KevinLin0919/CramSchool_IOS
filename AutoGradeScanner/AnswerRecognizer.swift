@@ -49,7 +49,9 @@ enum AnswerKind {
     }
 
     private static let circleForms: Set<String> = ["O", "o", "○", "◯", "圈"]
-    private static let crossForms: Set<String> = ["X", "x", "×", "✗", "叉"]
+    // ✕ and ✖ are what the correction screen's own buttons file. Without them
+    // a teacher correcting a cell to ✕ was marked wrong against an X key.
+    private static let crossForms: Set<String> = ["X", "x", "×", "✗", "✕", "✖", "叉"]
     /// Taiwanese papers set multiple-choice options as ①②③④ but students write
     /// a bare 1234, so the two sides never match until these are folded.
     private static let circledDigits: [Character: Character] = [

@@ -406,6 +406,10 @@ final class APIClient {
         let scanned_at: String
         let uploaded_at: String
         let answers: [SessionAnswerDTO]
+        // Absent from servers that predate classes, which is fine: nil.
+        let exam_uuid: UUID?
+        let student_id: Int?
+        let identity_source: String?
     }
 
     /// This teacher's grading, newest first. The server decides whose — the
@@ -532,5 +536,129 @@ final class APIClient {
 
     static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+// MARK: - Classes, exams, whose paper
+
+extension APIClient {
+    struct StudentDTO: Codable, Hashable, Identifiable {
+        let id: Int
+        let name: String
+    }
+
+    struct ClassDTO: Codable, Hashable, Identifiable {
+        let id: Int
+        let name: String
+        let is_simulated: Bool
+        let students: [StudentDTO]
+    }
+
+    struct ExamDTO: Decodable {
+        let client_uuid: UUID
+        let class_id: Int
+        let class_name: String
+        let template_id: Int
+        let template_name: String
+        let exam_date: String
+        let sitting: Int
+    }
+
+    private struct NameBody: Encodable { let name: String }
+
+    func listClasses() async throws -> [ClassDTO] {
+        try decode([ClassDTO].self, from: try await send(try makeRequest(path: "/api/v1/classes")))
+    }
+
+    func createClass(name: String) async throws -> ClassDTO {
+        var request = try makeRequest(path: "/api/v1/classes", method: "POST")
+        try json(&request, body: NameBody(name: name))
+        return try decode(ClassDTO.self, from: try await send(request))
+    }
+
+    func renameClass(id: Int, name: String) async throws -> ClassDTO {
+        var request = try makeRequest(path: "/api/v1/classes/\(id)", method: "PATCH")
+        try json(&request, body: NameBody(name: name))
+        return try decode(ClassDTO.self, from: try await send(request))
+    }
+
+    func addStudent(classID: Int, name: String) async throws -> ClassDTO {
+        var request = try makeRequest(path: "/api/v1/classes/\(classID)/students", method: "POST")
+        try json(&request, body: NameBody(name: name))
+        return try decode(ClassDTO.self, from: try await send(request))
+    }
+
+    func renameStudent(classID: Int, studentID: Int, name: String) async throws -> ClassDTO {
+        var request = try makeRequest(path: "/api/v1/classes/\(classID)/students/\(studentID)",
+                                      method: "PATCH")
+        try json(&request, body: NameBody(name: name))
+        return try decode(ClassDTO.self, from: try await send(request))
+    }
+
+    func removeStudent(classID: Int, studentID: Int) async throws {
+        _ = try await send(try makeRequest(path: "/api/v1/classes/\(classID)/students/\(studentID)",
+                                           method: "DELETE"))
+    }
+
+    private struct ExamBody: Encodable {
+        let class_id: Int
+        let template_id: Int
+        let exam_date: String
+        let sitting: Int
+    }
+
+    /// Idempotent. The UUID that comes back may differ from the one sent:
+    /// the same sitting was started on another device first, and this one
+    /// should file its papers there.
+    func upsertExam(uuid: UUID, classID: Int, templateID: Int, date: String,
+                    sitting: Int) async throws -> ExamDTO {
+        var request = try makeRequest(path: "/api/v1/exams/\(uuid.uuidString.lowercased())",
+                                      method: "PUT")
+        try json(&request, body: ExamBody(class_id: classID, template_id: templateID,
+                                          exam_date: date, sitting: sitting))
+        return try decode(ExamDTO.self, from: try await send(request))
+    }
+
+    func listExams() async throws -> [ExamDTO] {
+        try decode([ExamDTO].self, from: try await send(try makeRequest(path: "/api/v1/exams")))
+    }
+
+    /// Always sends both keys, as null when unset, because this endpoint
+    /// changes exactly the fields it is given — and the device's record is
+    /// the whole truth about both.
+    private struct AssignmentBody: Encodable {
+        let exam_uuid: UUID?
+        let student_id: Int?
+        let identity_source: String?
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(exam_uuid?.uuidString.lowercased(), forKey: .exam_uuid)
+            try c.encode(student_id, forKey: .student_id)
+            try c.encodeIfPresent(identity_source, forKey: .identity_source)
+        }
+
+        enum CodingKeys: String, CodingKey { case exam_uuid, student_id, identity_source }
+    }
+
+    func assignSession(uuid: UUID, examUUID: UUID?, studentID: Int?,
+                       identitySource: String?) async throws {
+        var request = try makeRequest(
+            path: "/api/v1/grading-sessions/\(uuid.uuidString.lowercased())/assignment",
+            method: "PUT")
+        try json(&request, body: AssignmentBody(exam_uuid: examUUID, student_id: studentID,
+                                                identity_source: identitySource))
+        _ = try await send(request)
+    }
+
+    struct WebCodeDTO: Decodable {
+        let code: String
+        let expires_at: String
+    }
+
+    func webLoginCode() async throws -> WebCodeDTO {
+        try decode(WebCodeDTO.self,
+                   from: try await send(try makeRequest(path: "/api/v1/auth/web-code",
+                                                         method: "POST")))
     }
 }

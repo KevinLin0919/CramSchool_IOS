@@ -112,6 +112,34 @@ struct StoredPaper: Codable, Identifiable, Equatable {
     var needsUpload: Bool {
         uploadedAt == nil && uploadBlocked != true && isDemo != true
     }
+
+    // MARK: - Which sitting, whose paper
+
+    /// The sitting this paper was scanned in, when a class was chosen first.
+    var examUUID: UUID?
+    var classID: Int?
+    /// Whose paper it is — set only by a teacher, on the matching screen.
+    var studentID: Int?
+    /// `teacher` when picked by hand, `suggested` when a suggestion was
+    /// accepted. Kept for the server, which records how each match was made.
+    var identitySource: String?
+    /// Exam or student changed since the server last heard. Sent through its
+    /// own endpoint, never the upload, which older builds resend without it.
+    var assignmentDirty: Bool?
+    /// The server holds this paper, so an assignment can be sent against it.
+    /// Distinct from `uploadedAt`, which a correction clears.
+    var serverKnown: Bool?
+
+    var needsAssignmentSync: Bool {
+        assignmentDirty == true && serverKnown == true && isDemo != true
+    }
+
+    /// Which stack the results screen files this paper under: its sitting, or
+    /// for papers from before sittings existed, its paper and day.
+    var stackKey: String {
+        if let examUUID { return examUUID.uuidString }
+        return "legacy:\(templateID):\(ExamStore.day(scannedAt))"
+    }
 }
 
 /// The two things a teacher can say about a cell that are not a value.
@@ -355,6 +383,8 @@ final class GradingStore: ObservableObject {
 
     func markUploaded(_ id: UUID, revision: Int) {
         guard let index = papers.firstIndex(where: { $0.id == id }) else { return }
+        // The row exists on the server now, whatever happens to the revision.
+        papers[index].serverKnown = true
         // A correction landing while the request was in flight bumped the
         // revision. The reply describes a version of this paper that no longer
         // exists, so it cannot be allowed to mark it delivered.
@@ -380,6 +410,38 @@ final class GradingStore: ObservableObject {
         try? FileManager.default.createDirectory(at: folder(paper.id),
                                                  withIntermediateDirectories: true)
         try? data.write(to: recordURL(paper.id), options: .atomic)
+    }
+
+    // MARK: - Assignment
+
+    /// Name the student on a paper, or clear it with nil.
+    func assign(_ paperID: UUID, student: Int?, source: String = "teacher") {
+        guard let i = papers.firstIndex(where: { $0.id == paperID }) else { return }
+        papers[i].studentID = student
+        papers[i].identitySource = student == nil ? nil : source
+        papers[i].assignmentDirty = true
+        writeRecord(papers[i])
+        UploadQueue.shared.drain()
+    }
+
+    /// A sitting's server id turned out to be another device's.
+    func moveExam(from old: UUID, to new: UUID) {
+        for i in papers.indices where papers[i].examUUID == old {
+            papers[i].examUUID = new
+            papers[i].assignmentDirty = true
+            writeRecord(papers[i])
+        }
+    }
+
+    func markAssignmentSynced(_ id: UUID) {
+        guard let i = papers.firstIndex(where: { $0.id == id }) else { return }
+        papers[i].assignmentDirty = false
+        writeRecord(papers[i])
+    }
+
+    /// Papers of one stack, in the order they were scanned.
+    func papers(inStack key: String) -> [StoredPaper] {
+        papers.filter { $0.stackKey == key }
     }
 
     // MARK: - Clearing
@@ -432,6 +494,15 @@ final class GradingStore: ObservableObject {
         setPendingDeletions(pending)
     }
 
+    /// Removes one stack from this device. What reached the server comes back
+    /// on the next sign-in, exactly as with clearing everything.
+    func clear(stack key: String) {
+        for paper in papers where paper.stackKey == key {
+            try? FileManager.default.removeItem(at: folder(paper.id))
+        }
+        papers.removeAll { $0.stackKey == key }
+    }
+
     /// Ends the stack. Nothing is uploaded yet, so this genuinely discards —
     /// the confirmation belongs in the UI, not here.
     func clearAll() {
@@ -478,6 +549,8 @@ final class GradingStore: ObservableObject {
     /// already on the server, and re-sending it would be the device arguing
     /// with the copy it just downloaded.
     func restore(_ paper: StoredPaper) {
+        var paper = paper
+        paper.serverKnown = true
         writeRecord(paper)
         if let index = papers.firstIndex(where: { $0.id == paper.id }) {
             papers[index] = paper
@@ -509,8 +582,9 @@ final class GradingStore: ObservableObject {
     static func record(from result: GradingResult,
                        templateID: Int,
                        pages: [StoredPage],
+                       exam: LocalExam? = nil,
                        id: UUID = UUID()) -> StoredPaper {
-        StoredPaper(
+        var paper = StoredPaper(
             id: id,
             templateID: templateID,
             templateTitle: result.templateTitle,
@@ -546,5 +620,11 @@ final class GradingStore: ObservableObject {
             // distinguishes those papers from real ones except this.
             isDemo: DemoData.isEnabled ? true : nil,
             revision: 0)
+        if let exam {
+            paper.examUUID = exam.id
+            paper.classID = exam.classID
+            paper.assignmentDirty = true
+        }
+        return paper
     }
 }

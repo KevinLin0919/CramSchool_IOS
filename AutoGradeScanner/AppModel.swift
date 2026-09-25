@@ -29,6 +29,12 @@ final class AppModel: ObservableObject {
     /// without the credential changing — `/auth/me` can report a promotion.
     @Published private(set) var isAdmin = Credentials.isAdmin
 
+    /// The sitting being scanned into, chosen with the class before the
+    /// camera opens. Nil scans without a class, as before.
+    @Published var currentExamID: UUID?
+    /// The stack the results tab is showing; nil shows the list of stacks.
+    @Published var focusedStack: String?
+
     /// Why the credential stopped working, in the server's own words, waiting
     /// for the login screen to say it. Nil when the person simply has not
     /// signed in yet — that screen needs no explanation.
@@ -90,8 +96,11 @@ final class AppModel: ObservableObject {
                     // and the papers are on disk, so the next person simply
                     // sees them. Scoping the API decided what the server hands
                     // out; this decides what the device already has.
-                    if let teacherID = Credentials.teacherID {
-                        GradingStore.shared.adopt(teacherID: teacherID)
+                    if let teacherID = Credentials.teacherID,
+                       GradingStore.shared.adopt(teacherID: teacherID) {
+                        // Someone else's classes and sittings go with their papers.
+                        RosterStore.shared.clear()
+                        ExamStore.shared.clear()
                     }
                 }
                 Task {
@@ -179,7 +188,10 @@ final class AppModel: ObservableObject {
         // Beside the refresh rather than inside it: the role only decides
         // which controls are offered, and neither the list nor a pull to
         // refresh should wait on it.
-        if !DemoData.isEnabled { Task { await refreshRole() } }
+        if !DemoData.isEnabled {
+            Task { await refreshRole() }
+            Task { await RosterStore.shared.refresh() }
+        }
     }
 
     /// Asks the server who this device belongs to, for the role.
@@ -244,6 +256,10 @@ final class AppModel: ObservableObject {
         // do not are the ones the confirmation dialog has to name, which is
         // why it counts them before getting here.
         GradingStore.shared.clearAll()
+        RosterStore.shared.clear()
+        ExamStore.shared.clear()
+        currentExamID = nil
+        focusedStack = nil
         selectedTemplateID = nil
         lastResult = nil
         Task { await loadTemplates() }

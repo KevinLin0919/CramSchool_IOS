@@ -72,6 +72,7 @@ final class UploadQueue: ObservableObject {
 
     private var hasWork: Bool {
         store.papers.contains(where: \.needsUpload) || !store.pendingDeletions.isEmpty
+            || store.papers.contains(where: \.needsAssignmentSync)
     }
 
     private func run() async {
@@ -104,6 +105,45 @@ final class UploadQueue: ObservableObject {
         }
 
         await sendDeletions()
+        await sendAssignments()
+    }
+
+    /// Which sitting and whose paper, for papers the server already has.
+    ///
+    /// The sitting is created first, idempotently, and may come back under a
+    /// different id — another device started it first — in which case every
+    /// local paper moves to that one before its assignment is sent.
+    private func sendAssignments() async {
+        let exams = ExamStore.shared
+        for paper in store.papers where paper.needsAssignmentSync {
+            // Re-read: an earlier iteration may have moved it to another exam.
+            guard let current = store.papers.first(where: { $0.id == paper.id }),
+                  current.needsAssignmentSync else { continue }
+            do {
+                if let local = exams.exam(current.examUUID), !local.synced {
+                    let server = try await APIClient.shared.upsertExam(
+                        uuid: local.id, classID: local.classID, templateID: local.templateID,
+                        date: local.date, sitting: local.sitting)
+                    exams.markSynced(local.id, serverID: server.client_uuid)
+                }
+                guard let fresh = store.papers.first(where: { $0.id == paper.id }) else { continue }
+                try await APIClient.shared.assignSession(
+                    uuid: fresh.id, examUUID: fresh.examUUID, studentID: fresh.studentID,
+                    identitySource: fresh.identitySource)
+                store.markAssignmentSynced(fresh.id)
+            } catch APIError.unauthorized {
+                haltedReason = "裝置授權已失效，重新登入後會繼續上傳"
+                return
+            } catch APIError.badStatus(let code, _) where code == 404 || code == 400 {
+                // An older server without sittings, or a student no longer on
+                // the roster. Retrying cannot fix either; the paper itself is
+                // safely uploaded.
+                store.markAssignmentSynced(paper.id)
+            } catch {
+                backOff()
+                return
+            }
+        }
     }
 
     /// After the uploads, never beside them. An upload of the same paper that

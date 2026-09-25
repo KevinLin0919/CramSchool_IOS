@@ -10,6 +10,8 @@ struct TemplatesView: View {
     @State private var openGrades: Set<String> = []
     @State private var showSettings = false
     @State private var showNewTemplate = false
+    @State private var showClassPicker = false
+    @StateObject private var roster = RosterStore.shared
 
     @State private var renameTarget: ExamTemplate?
     @State private var renameText = ""
@@ -58,6 +60,9 @@ struct TemplatesView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showClassPicker) {
+            ClassPickerSheet { picked in startScanning(in: picked) }
+        }
         .sheet(isPresented: $showNewTemplate) {
             NewTemplateView {
                 Task { await model.loadTemplates() }
@@ -490,8 +495,13 @@ struct TemplatesView: View {
     private var startButton: some View {
         VStack(spacing: 8) {
             Button {
-                if model.selectedTemplate != nil {
-                    model.screen = .scan
+                guard model.selectedTemplate != nil else { return }
+                // The class is asked for only once there are classes to pick
+                // from; before a roster exists this is the old one-tap start.
+                if !model.isDemo && !roster.classes.isEmpty {
+                    showClassPicker = true
+                } else {
+                    startScanning(in: nil)
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -534,6 +544,20 @@ struct TemplatesView: View {
         // list stays visible in the strip the bar floats over — which is what
         // gives the glass something to sample on this screen.
         .padding(.bottom, AG.padding(above: AG.bottomChromeClearance))
+    }
+}
+
+extension TemplatesView {
+    fileprivate func startScanning(in cls: APIClient.ClassDTO?) {
+        guard let template = model.selectedTemplate else { return }
+        if let cls {
+            model.currentExamID = ExamStore.shared.current(
+                classID: cls.id, className: cls.name,
+                templateID: template.id, templateTitle: template.fullTitle).id
+        } else {
+            model.currentExamID = nil
+        }
+        model.screen = .scan
     }
 }
 
