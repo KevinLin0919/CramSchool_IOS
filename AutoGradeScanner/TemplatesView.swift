@@ -504,46 +504,58 @@ struct TemplatesView: View {
                     startScanning(in: nil)
                 }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "viewfinder")
-                        .font(.system(size: 18, weight: .semibold))
-                    Text(model.selectedTemplate != nil ? "開始掃描" : "請先選擇考卷")
-                        .font(.system(size: 17, weight: .semibold))
+                // The chosen paper rides inside the button rather than on a
+                // line of its own under it, which needed its own backing strip.
+                VStack(spacing: 2) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "viewfinder")
+                            .font(.system(size: 18, weight: .semibold))
+                        Text(model.selectedTemplate != nil ? "開始掃描" : "請先選擇考卷")
+                            .font(.system(size: 17, weight: .semibold))
+                    }
+                    if let selected = model.selectedTemplate {
+                        Text(selected.fullTitle)
+                            .font(.system(size: 12, weight: .medium))
+                            .opacity(0.85)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
+                .padding(.horizontal, 16)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .frame(height: 54)
+                .frame(height: model.selectedTemplate != nil ? 62 : 54)
                 .background(model.selectedTemplate != nil ? AG.brand : Color(hex: 0xC8C9CB))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: model.selectedTemplate != nil ? AG.brand.opacity(0.25) : .clear,
                         radius: 11, y: 8)
             }
             .disabled(model.selectedTemplate == nil)
-
-            if let selected = model.selectedTemplate {
-                Text("已選擇：\(selected.fullTitle)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(AG.fg2)
-            }
         }
         .centeredContent(AG.Width.action)
         .padding(.horizontal, 16)
+        .padding(.top, 24)
         .frame(maxWidth: .infinity)
-        .background(
-            LinearGradient(colors: [AG.bg2.opacity(0), AG.bg2.opacity(0.98), AG.bg2],
-                           startPoint: .top, endPoint: .bottom)
-            .allowsHitTesting(false)
-        )
         // Stops where the tab bar begins, measured from the physical bottom
         // like the bar itself, so the gap between them is the same on every
         // device. `.ignoresSafeArea` was doing this job and was doing nothing:
         // the button stayed put while the bar moved down, and the space
         // between them grew by exactly the inset.
-        //
-        // The gradient stops above this padding rather than filling it, so the
-        // list stays visible in the strip the bar floats over — which is what
-        // gives the glass something to sample on this screen.
         .padding(.bottom, AG.padding(above: AG.bottomChromeClearance))
+        // The backing fades in above the button and then runs solid to the
+        // physical bottom. It used to stop just under the button, so the list
+        // showed again in the strip above the tab bar and a hard-edged band
+        // cut a row in half; the glass bar now sits on plain ground instead.
+        .background(
+            VStack(spacing: 0) {
+                LinearGradient(colors: [AG.bg2.opacity(0), AG.bg2],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: 24)
+                AG.bg2
+            }
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        )
     }
 }
 
