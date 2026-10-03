@@ -101,6 +101,11 @@ enum Credentials {
 
     static var isAdmin: Bool { role == "admin" }
 
+    /// Templates are shared by every teacher who grades that paper, so keeping
+    /// them — creating, renaming, retiring — belongs to a template manager or
+    /// an admin. The server enforces it; this only decides what is offered.
+    static var canManageTemplates: Bool { role == "admin" || role == "template_manager" }
+
     /// For a role learned after enrolment, from `/auth/me`. Deliberately does
     /// not post `didChange`: that notification means the credential itself
     /// changed, and its handlers purge the template cache and restore grading

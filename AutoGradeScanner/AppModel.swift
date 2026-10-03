@@ -23,11 +23,15 @@ final class AppModel: ObservableObject {
     /// refusal from the server used to vanish without a word.
     @Published var actionError: String?
 
-    /// Whether to offer the admin-only settings: diagnostics, the demo
-    /// switch, and the addresses of the template-building services. Published
-    /// rather than read from `Credentials` in each view, because it changes
-    /// without the credential changing — `/auth/me` can report a promotion.
+    /// Whether to offer the admin-only settings: diagnostics and the demo
+    /// switch. Published rather than read from `Credentials` in each view,
+    /// because it changes without the credential changing — `/auth/me` can
+    /// report a promotion.
     @Published private(set) var isAdmin = Credentials.isAdmin
+
+    /// Whether to offer creating, renaming and deleting templates. Same
+    /// reasoning as `isAdmin`: a promotion arrives through `/auth/me`.
+    @Published private(set) var canManageTemplates = Credentials.canManageTemplates
 
     /// The sitting being scanned into, chosen with the class before the
     /// camera opens. Nil scans without a class, as before.
@@ -74,6 +78,7 @@ final class AppModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.isAdmin = Credentials.isAdmin
+                self?.canManageTemplates = Credentials.canManageTemplates
                 if Credentials.isEnrolled {
                     // Signing in successfully answers the message; signing out
                     // does not, since that is when it was just written.
@@ -205,6 +210,7 @@ final class AppModel: ObservableObject {
         guard let me = try? await APIClient.shared.me() else { return }
         Credentials.updateRole(me.role)
         isAdmin = Credentials.isAdmin
+        canManageTemplates = Credentials.canManageTemplates
     }
 
     func renameTemplate(_ template: ExamTemplate, to name: String) async {
