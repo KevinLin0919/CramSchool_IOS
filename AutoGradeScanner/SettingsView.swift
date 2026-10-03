@@ -55,7 +55,8 @@ struct SettingsView: View {
                 if model.isAdmin || (enrolled && demoModeOverride) {
                     diagnosticsSection
                 }
-                if model.isAdmin {
+                // The services behind 新增, so whoever may add a template.
+                if model.canManageTemplates {
                     inferenceSection
                 }
             }

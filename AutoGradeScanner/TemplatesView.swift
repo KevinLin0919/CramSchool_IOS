@@ -120,19 +120,21 @@ struct TemplatesView: View {
                         .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(AG.fg2)
                 }
-                // Teachers are the ones who keep the template list in order,
-                // so this is theirs as much as an admin's. Only the service
-                // addresses behind it are an admin setting.
-                Button { showNewTemplate = true } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 16, weight: .semibold))
-                        Text("新增")
-                            .font(.system(size: 17, weight: .semibold))
+                // Template managers and admins only. A template is shared by
+                // every teacher grading that paper, so the server refuses this
+                // to anyone else — offering it would be offering a refusal.
+                if model.canManageTemplates {
+                    Button { showNewTemplate = true } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("新增")
+                                .font(.system(size: 17, weight: .semibold))
+                        }
+                        .foregroundStyle(AG.brand)
                     }
-                    .foregroundStyle(AG.brand)
+                    .padding(.leading, 14)
                 }
-                .padding(.leading, 14)
             }
             .frame(height: 44)
 
@@ -447,21 +449,27 @@ struct TemplatesView: View {
         .contentShape(Rectangle())
         .onTapGesture { model.selectedTemplateID = template.id }
         .contextMenu {
-            Button {
-                renameTarget = template
-                renameText = template.examName
-            } label: {
-                Label("改名", systemImage: "pencil")
+            // Renaming and deleting change a template every teacher shares,
+            // so they are a template manager's; previewing is anyone's.
+            if model.canManageTemplates {
+                Button {
+                    renameTarget = template
+                    renameText = template.examName
+                } label: {
+                    Label("改名", systemImage: "pencil")
+                }
             }
             Button {
                 previewTarget = template
             } label: {
                 Label("預覽", systemImage: "eye")
             }
-            Button(role: .destructive) {
-                deleteTarget = template
-            } label: {
-                Label("刪除", systemImage: "trash")
+            if model.canManageTemplates {
+                Button(role: .destructive) {
+                    deleteTarget = template
+                } label: {
+                    Label("刪除", systemImage: "trash")
+                }
             }
         }
     }
