@@ -105,6 +105,10 @@ struct TemplatesView: View {
         }
     }
 
+    /// Template managers and admins keep the shared templates. The demo sheets
+    /// are bundled with the app and shared with nobody, so anyone may tidy them.
+    private var mayEditTemplates: Bool { model.canManageTemplates || DemoData.isEnabled }
+
     // MARK: - Header
 
     private var header: some View {
@@ -120,19 +124,21 @@ struct TemplatesView: View {
                         .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(AG.fg2)
                 }
-                // Teachers are the ones who keep the template list in order,
-                // so this is theirs as much as an admin's. Only the service
-                // addresses behind it are an admin setting.
-                Button { showNewTemplate = true } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 16, weight: .semibold))
-                        Text("新增")
-                            .font(.system(size: 17, weight: .semibold))
+                // Template managers and admins only. A template is shared by
+                // every teacher grading that paper, so the server refuses this
+                // to anyone else — offering it would be offering a refusal.
+                if mayEditTemplates {
+                    Button { showNewTemplate = true } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("新增")
+                                .font(.system(size: 17, weight: .semibold))
+                        }
+                        .foregroundStyle(AG.brand)
                     }
-                    .foregroundStyle(AG.brand)
+                    .padding(.leading, 14)
                 }
-                .padding(.leading, 14)
             }
             .frame(height: 44)
 
@@ -145,6 +151,15 @@ struct TemplatesView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(AG.fg2)
                 .padding(.top, 4)
+
+            // A teacher has no 新增, 改名 or 刪除, and should know why and who
+            // to ask rather than wonder whether the app is missing something.
+            if !mayEditTemplates {
+                Label("模板由模板管理者維護，需要新增或修改請聯絡模板管理者", systemImage: "info.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AG.fg2)
+                    .padding(.top, 6)
+            }
 
             searchField
                 .padding(.top, 14)
@@ -447,21 +462,34 @@ struct TemplatesView: View {
         .contentShape(Rectangle())
         .onTapGesture { model.selectedTemplateID = template.id }
         .contextMenu {
-            Button {
-                renameTarget = template
-                renameText = template.examName
-            } label: {
-                Label("改名", systemImage: "pencil")
+            // Renaming and deleting change a template every teacher shares,
+            // so they are a template manager's; previewing is anyone's.
+            if mayEditTemplates {
+                Button {
+                    renameTarget = template
+                    renameText = template.examName
+                } label: {
+                    Label("改名", systemImage: "pencil")
+                }
             }
             Button {
                 previewTarget = template
             } label: {
                 Label("預覽", systemImage: "eye")
             }
-            Button(role: .destructive) {
-                deleteTarget = template
-            } label: {
-                Label("刪除", systemImage: "trash")
+            if !mayEditTemplates {
+                // Shown disabled: the answer to "where did 改名 go".
+                Button {} label: {
+                    Label("改名或刪除請聯絡模板管理者", systemImage: "person.crop.circle.badge.questionmark")
+                }
+                .disabled(true)
+            }
+            if mayEditTemplates {
+                Button(role: .destructive) {
+                    deleteTarget = template
+                } label: {
+                    Label("刪除", systemImage: "trash")
+                }
             }
         }
     }
@@ -492,46 +520,58 @@ struct TemplatesView: View {
                     model.screen = .scan
                 }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "viewfinder")
-                        .font(.system(size: 18, weight: .semibold))
-                    Text(model.selectedTemplate != nil ? "開始掃描" : "請先選擇考卷")
-                        .font(.system(size: 17, weight: .semibold))
+                // The chosen paper rides inside the button rather than on a
+                // line of its own under it, which needed its own backing strip.
+                VStack(spacing: 2) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "viewfinder")
+                            .font(.system(size: 18, weight: .semibold))
+                        Text(model.selectedTemplate != nil ? "開始掃描" : "請先選擇考卷")
+                            .font(.system(size: 17, weight: .semibold))
+                    }
+                    if let selected = model.selectedTemplate {
+                        Text(selected.fullTitle)
+                            .font(.system(size: 12, weight: .medium))
+                            .opacity(0.85)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
+                .padding(.horizontal, 16)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .frame(height: 54)
+                .frame(height: model.selectedTemplate != nil ? 62 : 54)
                 .background(model.selectedTemplate != nil ? AG.brand : Color(hex: 0xC8C9CB))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: model.selectedTemplate != nil ? AG.brand.opacity(0.25) : .clear,
                         radius: 11, y: 8)
             }
             .disabled(model.selectedTemplate == nil)
-
-            if let selected = model.selectedTemplate {
-                Text("已選擇：\(selected.fullTitle)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(AG.fg2)
-            }
         }
         .centeredContent(AG.Width.action)
         .padding(.horizontal, 16)
+        .padding(.top, 24)
         .frame(maxWidth: .infinity)
-        .background(
-            LinearGradient(colors: [AG.bg2.opacity(0), AG.bg2.opacity(0.98), AG.bg2],
-                           startPoint: .top, endPoint: .bottom)
-            .allowsHitTesting(false)
-        )
         // Stops where the tab bar begins, measured from the physical bottom
         // like the bar itself, so the gap between them is the same on every
         // device. `.ignoresSafeArea` was doing this job and was doing nothing:
         // the button stayed put while the bar moved down, and the space
         // between them grew by exactly the inset.
-        //
-        // The gradient stops above this padding rather than filling it, so the
-        // list stays visible in the strip the bar floats over — which is what
-        // gives the glass something to sample on this screen.
         .padding(.bottom, AG.padding(above: AG.bottomChromeClearance))
+        // The backing fades in above the button and then runs solid to the
+        // physical bottom. It used to stop just under the button, so the list
+        // showed again in the strip above the tab bar and a hard-edged band
+        // cut a row in half; the glass bar now sits on plain ground instead.
+        .background(
+            VStack(spacing: 0) {
+                LinearGradient(colors: [AG.bg2.opacity(0), AG.bg2],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: 24)
+                AG.bg2
+            }
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        )
     }
 }
 
