@@ -105,6 +105,10 @@ struct TemplatesView: View {
         }
     }
 
+    /// Template managers and admins keep the shared templates. The demo sheets
+    /// are bundled with the app and shared with nobody, so anyone may tidy them.
+    private var mayEditTemplates: Bool { model.canManageTemplates || DemoData.isEnabled }
+
     // MARK: - Header
 
     private var header: some View {
@@ -123,7 +127,7 @@ struct TemplatesView: View {
                 // Template managers and admins only. A template is shared by
                 // every teacher grading that paper, so the server refuses this
                 // to anyone else — offering it would be offering a refusal.
-                if model.canManageTemplates {
+                if mayEditTemplates {
                     Button { showNewTemplate = true } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "plus")
@@ -147,6 +151,15 @@ struct TemplatesView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(AG.fg2)
                 .padding(.top, 4)
+
+            // A teacher has no 新增, 改名 or 刪除, and should know why and who
+            // to ask rather than wonder whether the app is missing something.
+            if !mayEditTemplates {
+                Label("模板由模板管理者維護，需要新增或修改請聯絡模板管理者", systemImage: "info.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AG.fg2)
+                    .padding(.top, 6)
+            }
 
             searchField
                 .padding(.top, 14)
@@ -451,7 +464,7 @@ struct TemplatesView: View {
         .contextMenu {
             // Renaming and deleting change a template every teacher shares,
             // so they are a template manager's; previewing is anyone's.
-            if model.canManageTemplates {
+            if mayEditTemplates {
                 Button {
                     renameTarget = template
                     renameText = template.examName
@@ -464,7 +477,14 @@ struct TemplatesView: View {
             } label: {
                 Label("預覽", systemImage: "eye")
             }
-            if model.canManageTemplates {
+            if !mayEditTemplates {
+                // Shown disabled: the answer to "where did 改名 go".
+                Button {} label: {
+                    Label("改名或刪除請聯絡模板管理者", systemImage: "person.crop.circle.badge.questionmark")
+                }
+                .disabled(true)
+            }
+            if mayEditTemplates {
                 Button(role: .destructive) {
                     deleteTarget = template
                 } label: {
