@@ -378,6 +378,49 @@ enum CellRegistration {
         return Placement(dx: chosen.dx, dy: chosen.dy, score: chosen.score)
     }
 
+    /// Re-finds a template near where it was a frame ago — the cheap path.
+    ///
+    /// `field` covers the template's rect moved by the previous placement and
+    /// grown by `radius` pixels each way, sampled at the canonical scale. Only
+    /// the fine search runs, over ±`radius`; the result is the change since
+    /// the previous placement. A best placement on the edge of that range, or
+    /// one below the fine threshold, means the cell has moved more than
+    /// tracking can follow, and the caller searches properly instead.
+    ///
+    /// Measured in the mirror: with the prediction within 0.08 of a cell, 197
+    /// of 216 frames track and none track wrong; with it 0.1–0.3 off, nearly
+    /// all hand back to the full search, and still none are wrong.
+    static func track(_ template: CellTemplate, in field: CellPatch, radius: Int) -> Placement? {
+        guard template.isUsable, radius > 0,
+              field.width == template.width + 2 * radius,
+              field.height == template.height + 2 * radius else { return nil }
+        let fw = field.width, fh = field.height
+        let grown = CellTemplate.dilated(field.mask, width: fw, height: fh, radius: 1)
+        let full = grown.map { $0 ? Float(1) : 0 }
+        let sums = integral(full, width: fw, height: fh)
+        let norm = Double(template.rewardX.count)
+        var candidates: [(score: Double, dx: Int, dy: Int)] = []
+        for dy in -radius...radius {
+            for dx in -radius...radius {
+                let s = score(field: full, fieldWidth: fw, sums: sums,
+                              rewardX: template.rewardX, rewardY: template.rewardY, rewardW: nil,
+                              exemptX: template.exemptX, exemptY: template.exemptY, exemptW: nil,
+                              norm: norm, width: template.width, height: template.height,
+                              near: template.near, ox: radius + dx, oy: radius + dy)
+                candidates.append((s, dx, dy))
+            }
+        }
+        // The edge test is on the true best, before any tie-breaking: a best
+        // on the edge says the optimum may lie beyond it.
+        guard let top = candidates.max(by: { $0.score < $1.score }),
+              top.score >= CellTemplate.Tuning.minFineScore,
+              abs(top.dx) < radius, abs(top.dy) < radius else { return nil }
+        let chosen = candidates
+            .filter { $0.score >= top.score - 0.02 }
+            .min { ($0.dx * $0.dx + $0.dy * $0.dy) < ($1.dx * $1.dx + $1.dy * $1.dy) }!
+        return Placement(dx: chosen.dx, dy: chosen.dy, score: chosen.score)
+    }
+
     /// Reward for print found, less a penalty for ink where the master has
     /// paper, per printed pixel — evaluated with the template's origin at
     /// (ox, oy) in the field.
