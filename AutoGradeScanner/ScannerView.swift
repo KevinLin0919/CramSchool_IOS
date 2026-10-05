@@ -503,6 +503,17 @@ struct ScannerView: View {
                         Text("・對焦中")
                             .foregroundStyle(AG.warn)
                     }
+
+                    // Of the cells looked for on the last frame, how many were
+                    // found where the master says they are printed. Low
+                    // numbers on a steady camera mean registration is
+                    // refusing frames — the fallback then reads them the old
+                    // way after a moment.
+                    if live.registrationAttempts > 0 {
+                        Text("・校正 \(live.registered)/\(live.registrationAttempts)")
+                            .monospacedDigit()
+                            .foregroundStyle(live.registered > 0 ? .white.opacity(0.75) : AG.warn)
+                    }
                 }
             } else if !live.isReady {
                 ProgressView()

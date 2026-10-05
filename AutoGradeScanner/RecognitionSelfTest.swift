@@ -1,4 +1,5 @@
 import UIKit
+import simd
 
 // DEBUG-only headless check of the on-device recognition path. Launch with
 //
@@ -415,6 +416,93 @@ enum RecognitionSelfTest {
         check("vote.leaderMustBeMostLooks", !halfSettled && votes.isSettled,
               "3 of 6 looks does not settle; 5 of 8 does")
 
+        // MARK: registration
+
+        // A sheet with three rows of "（ ） n. 題目", a pink answer key in the
+        // middle row's box. The "student's copy" is the same print moved 9px
+        // right and 6px up — what a homography that is slightly off hands
+        // over — with a pencil stroke in the box and no key. Registration has
+        // to find exactly that shift, refuse blank paper, and the read window
+        // has to come back holding the stroke and not the parentheses.
+        let sheet = Shapes.registrationSheet(shift: .zero, answerKey: true, handwriting: false)
+        let student = Shapes.registrationSheet(shift: CGPoint(x: 9, y: -6),
+                                               answerKey: false, handwriting: true)
+        let box = Shapes.registrationBox
+        if let ink = MasterInk(sheet) {
+            let t = CellTemplate(box: box, ink: ink, pageSize: sheet.size)
+            let identity = XFeatMatcher.Homography(
+                matrix: matrix_identity_double3x3, inlierCount: 100, matchCount: 100,
+                sourceInlierBounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                sourceInlierCentroid: CGPoint(x: 0.5, y: 0.5),
+                sourceInlierSpread: CGSize(width: 0.3, height: 0.3))
+            func place(_ frame: UIImage) -> (CellRegistration.Placement, FrameRegion)? {
+                let quad = identity.projectedCorners(of: t.searchRect)
+                guard let region = ImageCellSource(frame).region(covering: quad, maxSide: 2000),
+                      let field = CellPatch(bitmap: region.bitmap, quad: quad.map(region.pixel),
+                                            width: t.fieldWidth, height: t.fieldHeight),
+                      let placement = CellRegistration.locate(t, in: field) else { return nil }
+                return (placement, region)
+            }
+            check("register.templateUsable", t.isUsable,
+                  "\(t.width)x\(t.height) template around the box")
+
+            // Canonical pixels per sheet pixel, per axis.
+            let perPixelX = t.scaleX / Double(sheet.size.width)
+            let perPixelY = t.scaleY / Double(sheet.size.height)
+            let wantX = 9 * perPixelX, wantY = -6 * perPixelY
+            if let (placement, region) = place(student) {
+                check("register.findsTheShift",
+                      abs(Double(placement.dx) - wantX) <= 2 && abs(Double(placement.dy) - wantY) <= 2,
+                      String(format: "found (%d, %d), expected (%.1f, %.1f), score %.2f",
+                             placement.dx, placement.dy, wantX, wantY, placement.score))
+
+                let window = ReadWindow(box: box,
+                                        pads: (0.6 * Double(box.width), 0.6 * Double(box.width),
+                                               1.0 * Double(box.height), 1.0 * Double(box.height)),
+                                        template: t, ink: ink)
+                let corrected = box.offsetBy(dx: CGFloat(Double(placement.dx) / t.scaleX),
+                                             dy: CGFloat(Double(placement.dy) / t.scaleY))
+                let quad = identity.projectedCorners(of: window.rect(around: corrected)).map(region.pixel)
+                if let raw = CellPatch(bitmap: region.bitmap, quad: quad, width: window.width,
+                                       height: window.height, printedBounds: window.printedBounds),
+                   let cleaned = window.cleaned(raw) {
+                    // The stroke runs from inside the box into the ")" and
+                    // joins it. Inside the box nothing may be lost; right of
+                    // the box, where the parenthesis is, almost all of it must.
+                    let bx0 = Int(Double(window.printedBounds.minX) * Double(raw.width))
+                    let bx1 = Int(Double(window.printedBounds.maxX) * Double(raw.width))
+                    let by0 = Int(Double(window.printedBounds.minY) * Double(raw.height))
+                    let by1 = Int(Double(window.printedBounds.maxY) * Double(raw.height))
+                    func ink(_ patch: CellPatch, _ x0: Int, _ x1: Int) -> Int {
+                        var n = 0
+                        for y in by0..<by1 {
+                            for x in max(0, x0)..<min(patch.width, x1) where patch.mask[y * patch.width + x] {
+                                n += 1
+                            }
+                        }
+                        return n
+                    }
+                    let insideBefore = ink(raw, bx0 + 2, bx1 - 2)
+                    let insideAfter = ink(cleaned.patch, bx0 + 2, bx1 - 2)
+                    let rightBefore = ink(raw, bx1 + 3, raw.width)
+                    let rightAfter = ink(cleaned.patch, bx1 + 3, raw.width)
+                    check("register.erasesPrintKeepsStroke",
+                          insideBefore > 0 && Double(insideAfter) >= 0.8 * Double(insideBefore)
+                            && rightBefore > 0 && Double(rightAfter) <= 0.35 * Double(rightBefore),
+                          "inside the box \(insideBefore)→\(insideAfter) px, "
+                            + "over the parenthesis \(rightBefore)→\(rightAfter) px")
+                } else {
+                    check("register.erasesPrintKeepsStroke", false, "window could not be sampled")
+                }
+            } else {
+                check("register.findsTheShift", false, "nothing found")
+            }
+            check("register.refusesBlankPaper", place(Shapes.blankSheet()) == nil,
+                  "plain paper has no print to line up with")
+        } else {
+            check("register.templateUsable", false, "could not read the synthetic master")
+        }
+
         // MARK: MNIST normalisation
 
         let corner = Shapes.corner()
@@ -635,6 +723,59 @@ enum RecognitionSelfTest {
             arc(&values, width: w, height: h, cx: 72, cy: 32, radius: 24, from: 160, to: 200)
             return CellPatch(width: w, height: h, intensity: values,
                              printedBounds: CGRect(x: 0.5, y: 0.1, width: 0.35, height: 0.8))
+        }
+
+        /// Where the registration sheet's middle answer box is, normalized.
+        static let registrationBox = CGRect(x: 240.0 / 600, y: 360.0 / 800,
+                                            width: 56.0 / 600, height: 44.0 / 800)
+
+        /// Three rows of "（  ） n. 題目文字" on white, the middle row's box at
+        /// `registrationBox`; optionally a pink answer key in that box and a
+        /// pencil stroke through it, the whole print moved by `shift` pixels.
+        static func registrationSheet(shift: CGPoint, answerKey: Bool,
+                                      handwriting: Bool) -> UIImage {
+            let size = CGSize(width: 600, height: 800)
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+                UIColor.white.setFill()
+                ctx.fill(CGRect(origin: .zero, size: size))
+                let font = UIFont.systemFont(ofSize: 40)
+                let small = UIFont.systemFont(ofSize: 26)
+                let black: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: UIColor.black]
+                let text: [NSAttributedString.Key: Any] = [.font: small, .foregroundColor: UIColor.black]
+                let box = CGRect(x: 240 + shift.x, y: 360 + shift.y, width: 56, height: 44)
+                for (row, label) in [(-1, "2. 下列何者正確"), (0, "3. 土壤的顆粒"), (1, "4. 承上題的實驗")] {
+                    let y = box.minY + CGFloat(row) * 130
+                    ("(" as NSString).draw(at: CGPoint(x: box.minX - 20, y: y - 6), withAttributes: black)
+                    (")" as NSString).draw(at: CGPoint(x: box.maxX + 6, y: y - 6), withAttributes: black)
+                    (label as NSString).draw(at: CGPoint(x: box.maxX + 34, y: y + 4), withAttributes: text)
+                }
+                if answerKey {
+                    let pink: [NSAttributedString.Key: Any] = [
+                        .font: font, .foregroundColor: UIColor(red: 0.85, green: 0.2, blue: 0.5, alpha: 1)]
+                    ("4" as NSString).draw(at: CGPoint(x: box.minX + 16, y: box.minY - 4), withAttributes: pink)
+                }
+                if handwriting {
+                    // From the top of the box, down and right into the ")".
+                    let stroke = UIBezierPath()
+                    stroke.move(to: CGPoint(x: box.minX + 10, y: box.minY + 4))
+                    stroke.addLine(to: CGPoint(x: box.maxX + 12, y: box.maxY - 6))
+                    stroke.lineWidth = 3
+                    UIColor(white: 0.15, alpha: 1).setStroke()
+                    stroke.stroke()
+                }
+            }
+        }
+
+        static func blankSheet() -> UIImage {
+            let size = CGSize(width: 600, height: 800)
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+                UIColor(white: 0.97, alpha: 1).setFill()
+                ctx.fill(CGRect(origin: .zero, size: size))
+            }
         }
 
         /// A blob jammed into the top-left corner — the centring test only
