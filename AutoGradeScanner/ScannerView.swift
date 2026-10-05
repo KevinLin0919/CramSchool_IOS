@@ -498,6 +498,15 @@ struct ScannerView: View {
                             .monospacedDigit()
                             .foregroundStyle(live.registered > 0 ? .white.opacity(0.75) : AG.warn)
                     }
+
+                    // What locating and reading the cells cost on the last
+                    // frame. Above ~100ms the scanner falls visibly behind
+                    // the camera.
+                    if live.readMillis > 0 {
+                        Text(String(format: "・讀 %.0fms", live.readMillis))
+                            .monospacedDigit()
+                            .foregroundStyle(live.readMillis < 100 ? .white.opacity(0.75) : AG.warn)
+                    }
                 }
             } else if !live.isReady {
                 ProgressView()

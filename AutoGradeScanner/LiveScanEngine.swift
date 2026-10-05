@@ -124,6 +124,8 @@ final class LiveScanEngine {
         /// with, out of those looked for.
         let registered: Int
         let registrationAttempts: Int
+        /// Wall time the last frame spent locating and reading cells, ms.
+        let readMillis: Double
 
         /// What, if anything, is worth telling the teacher about the framing.
         ///
@@ -263,13 +265,14 @@ final class LiveScanEngine {
     /// Alignment leverage at each cell on the most recent aligned frame.
     private var cellLeverage: [Int: Double] = [:]
     private var blankStreak: [Int: Int] = [:]
-    /// Consecutive aligned frames on which each cell was steady (see
-    /// `Steadiness`), and where its centre was on the last one, in frame
-    /// pixels.
-    private var steadyStreak: [Int: Int] = [:]
-    private var lastCellCentre: [Int: CGPoint] = [:]
-    /// Aligned frames in a row on which no waiting cell was steady.
+    /// Aligned frames in a row taken mid-sweep while cells were waiting.
     private var unsteadyFrames = 0
+    /// Where each cell was found on the aligned frame numbered `serial`, in
+    /// canonical pixels, for tracking it on the next one.
+    private var lastPlacement: [Int: (dx: Int, dy: Int, serial: Int)] = [:]
+    private var alignedSerial = 0
+    /// Wall time the last frame spent locating and reading cells.
+    private var lastReadMillis = 0.0
     private var lastMotion: FrameMotion?
     private var lastFrameSteady = true
 
@@ -490,9 +493,8 @@ final class LiveScanEngine {
         registrationMisses = [:]
         cellCropLeverage = [:]
         cellSampledPixels = [:]
-        steadyStreak = [:]
-        lastCellCentre = [:]
         unsteadyFrames = 0
+        lastPlacement = [:]
         lastCellPixels = 0
         lastFramePixels = 0
         pageKeyframes = [:]
@@ -524,9 +526,8 @@ final class LiveScanEngine {
         anchorTimestamp = 0
         anchorIntrinsics = nil
         anchorSheetQuad = nil
-        steadyStreak = [:]
-        lastCellCentre = [:]
         unsteadyFrames = 0
+        lastPlacement = [:]
     }
 
     // MARK: - Pages
@@ -615,32 +616,40 @@ final class LiveScanEngine {
     /// on a phone already held still and is not long enough on one that is
     /// not, so the wait here lasts exactly until the camera stops moving.
     enum Steadiness {
-        /// Above this rotation rate the frame is smeared. At 4K a cell is
-        /// some 300px wide on a sensor with a ~2800px focal length, so 0.15
-        /// rad/s moves the image about 14px over a 1/30s exposure — around
-        /// a stroke's width once the cell is sampled down to recognition's
-        /// 128px. Hands held still turn at a few hundredths.
-        static let maxAngularSpeed = 0.15
-        /// How far a cell may have moved since the previous aligned frame, in
-        /// cell widths. Catches what the gyro cannot see — the phone sliding
-        /// without turning — and alignment that jitters between frames, which
-        /// is not a fit to read through either.
-        static let maxCellShift = 0.15
-        /// Steady looks in a row before a cell is first read: about a quarter
-        /// of a second at tracking cadence.
-        static let looksBeforeReading = 2
-        /// Aligned frames in a row with nothing steady enough to read before
+        /// Above this rotation rate a frame is smeared past reading: at 4K
+        /// and a 1/30s exposure, 0.35 rad/s drags the image some 30px, most
+        /// of a stroke's length once a cell is sampled for recognition.
+        /// Panning across a page at an ordinary pace stays under it.
+        ///
+        /// This gate used to ask far more — the camera under 0.15 rad/s, the
+        /// lens not refocusing, and every cell within 0.15 of its width of
+        /// where it was a frame before, two frames running. A hand never
+        /// manages all of that at once (the alignment's own frame-to-frame
+        /// jitter is about that size), and on the first build that carried it
+        /// eight cells in ten were still unread after ten seconds of
+        /// scanning. Where a cell is, is registration's job now; this is
+        /// only here to skip frames taken mid-sweep.
+        static let maxAngularSpeed = 0.35
+        /// Aligned frames in a row taken mid-sweep, with cells waiting, before
         /// the scanner says 拿穩一點 — about a second.
         static let shakyFramesBeforeHint = 10
     }
 
     enum Registration {
-        /// Steady looks at a cell whose print cannot be found before it is
-        /// read the old way, where the homography says. A cell is never left
-        /// stuck behind registration — but it waits most of a second first,
-        /// because a print that cannot be found is usually a frame that is
-        /// not on the cell.
-        static let fallbackAfter = 6
+        /// Looks at a cell whose print cannot be found before it is read the
+        /// old way, where the homography says, so a cell is never left stuck
+        /// behind registration.
+        static let fallbackAfter = 3
+        /// Full searches per frame, the cells with the fewest looks going
+        /// first. A full search samples five cells' worth of frame and scores
+        /// two thousand placements; ten of them per frame is what made the
+        /// first build crawl. Cells located on the previous frame are
+        /// tracked instead, which costs a fraction of that and is not
+        /// counted here.
+        static let maxSearchesPerFrame = 6
+        /// How far tracking looks around the previous placement, canonical
+        /// pixels (a tenth of a cell).
+        static let trackRadius = 8
         /// Cells placed in the same frame are compared once there are this
         /// many…
         static let minCellsToCompare = 3
@@ -874,38 +883,16 @@ final class LiveScanEngine {
                                  width: sxs.max()! - sxs.min()!, height: sys.max()! - sys.min()!)
         }
 
-        // Is this frame one to read from? The camera itself first — turning,
-        // or refocusing — then, per cell, whether it is where it was on the
-        // previous aligned frame. Frames without motion data (the headless
-        // self-test, the simulator) are judged on the second test alone.
+        // Is this frame one to read from? Only a camera actually turning fast
+        // says no — see `Steadiness`. Frames without motion data (the
+        // headless self-test, the simulator) always qualify.
         let framePixels = pixels?.frameSize ?? lastFrameSize
-        let frameSteady = !(motion?.isFocusing ?? false)
-            && (motion?.angularSpeed ?? 0) <= Steadiness.maxAngularSpeed
+        let frameSteady = (motion?.angularSpeed ?? 0) <= Steadiness.maxAngularSpeed
         lastMotion = motion
         lastFrameSteady = frameSteady
-        var waiting = false, waitingSteady = false
-        for i in currentSlots {
-            guard confirmedNow.contains(i), let quad = rawQuads[i], quad.count == 4 else {
-                steadyStreak[i] = 0
-                lastCellCentre[i] = nil
-                continue
-            }
-            let centre = CGPoint(x: quad.map(\.x).reduce(0, +) / 4 * framePixels.width,
-                                 y: quad.map(\.y).reduce(0, +) / 4 * framePixels.height)
-            let cellWidth = hypot((quad[1].x - quad[0].x) * framePixels.width,
-                                  (quad[1].y - quad[0].y) * framePixels.height)
-            let shift = lastCellCentre[i].map {
-                hypot(centre.x - $0.x, centre.y - $0.y) / max(cellWidth, 1)
-            }
-            lastCellCentre[i] = centre
-            let steady = frameSteady && (shift.map { $0 <= Steadiness.maxCellShift } ?? false)
-            steadyStreak[i] = steady ? steadyStreak[i, default: 0] + 1 : 0
-            if verdicts[i] == nil {
-                waiting = true
-                if steady { waitingSteady = true }
-            }
-        }
-        unsteadyFrames = waiting && !waitingSteady ? unsteadyFrames + 1 : 0
+        alignedSerial += 1
+        let waiting = currentSlots.contains { confirmedNow.contains($0) && verdicts[$0] == nil }
+        unsteadyFrames = waiting && !frameSteady ? unsteadyFrames + 1 : 0
 
         // Recognition reads from the capture buffer at sensor resolution when
         // one came with the frame, and from the downscaled alignment image
@@ -944,10 +931,9 @@ final class LiveScanEngine {
             }
             seenStreak[i, default: 0] += 1
             guard seenStreak[i, default: 0] >= 2, verdicts[i] == nil else { continue }
-            // Not until the camera has held still on this cell for a moment.
-            // A frame skipped here is not a look: it neither votes nor counts
-            // towards writing the cell off as blank.
-            guard steadyStreak[i, default: 0] >= Steadiness.looksBeforeReading else { continue }
+            // Not mid-sweep. A frame skipped here is not a look: it neither
+            // votes nor counts towards writing the cell off as blank.
+            guard frameSteady else { continue }
             let exp = i < expected.count ? expected[i] : ""
             guard !exp.isEmpty else { continue }
             toRead.append(i)
@@ -956,13 +942,40 @@ final class LiveScanEngine {
         // Where each of them is actually printed in this frame — see
         // CellRegistration. Found first for all of them, because one cell's
         // placement is checked against the others' before any is trusted.
+        let readStarted = CACurrentMediaTime()
         var placed: [Int: (placement: CellRegistration.Placement, region: FrameRegion)] = [:]
-        var attempted = 0
+        var looked = Set<Int>()
         if let source {
-            for i in toRead {
+            var searches = 0
+            let byLooks = toRead.sorted {
+                (accumulators[$0]?.samples ?? 0, $0) < (accumulators[$1]?.samples ?? 0, $1)
+            }
+            for i in byLooks {
                 guard let prepared = registration(for: i) else { continue }
-                attempted += 1
                 let t = prepared.template
+                // Found on the previous aligned frame: follow it from there.
+                if let last = lastPlacement[i], last.serial == alignedSerial - 1 {
+                    let r = Registration.trackRadius
+                    looked.insert(i)
+                    let rect = t.templateRect
+                        .offsetBy(dx: CGFloat(Double(last.dx) / t.scaleX),
+                                  dy: CGFloat(Double(last.dy) / t.scaleY))
+                        .insetBy(dx: CGFloat(-Double(r) / t.scaleX), dy: CGFloat(-Double(r) / t.scaleY))
+                    let quad = h.projectedCorners(of: rect)
+                    let side = Int(Double(max(t.width, t.height) + 2 * r) * Registration.renderScale)
+                    if let region = source.region(covering: quad, maxSide: side),
+                       let field = CellPatch(bitmap: region.bitmap, quad: quad.map(region.pixel),
+                                             width: t.width + 2 * r, height: t.height + 2 * r),
+                       let step = CellRegistration.track(t, in: field, radius: r) {
+                        placed[i] = (CellRegistration.Placement(dx: last.dx + step.dx,
+                                                                dy: last.dy + step.dy,
+                                                                score: step.score), region)
+                        continue
+                    }
+                }
+                guard searches < Registration.maxSearchesPerFrame else { continue }
+                searches += 1
+                looked.insert(i)
                 let searchQuad = h.projectedCorners(of: t.searchRect)
                 let side = Int(Double(max(t.fieldWidth, t.fieldHeight)) * Registration.renderScale)
                 guard let region = source.region(covering: searchQuad, maxSide: side),
@@ -991,8 +1004,11 @@ final class LiveScanEngine {
                 }
             }
         }
+        for (i, hit) in placed {
+            lastPlacement[i] = (hit.placement.dx, hit.placement.dy, alignedSerial)
+        }
         lastRegistered = placed.count
-        lastRegistrationAttempts = attempted
+        lastRegistrationAttempts = looked.count
 
         for i in toRead {
             let exp = expected[i]
@@ -1015,6 +1031,9 @@ final class LiveScanEngine {
                 keepCrop(i, bitmap: cleaned.evidence, quad: rawQuads[i] ?? quad,
                          framePixels: framePixels, readable: reading != nil,
                          registered: true, text: reading?.text)
+            } else if registration(for: i) != nil, !looked.contains(i) {
+                // Its turn to be searched for has not come this frame.
+                continue
             } else if registration(for: i) != nil,
                       registrationMisses[i, default: 0] < Registration.fallbackAfter {
                 // Its print is on the master but could not be found here: this
@@ -1090,6 +1109,7 @@ final class LiveScanEngine {
                 }
             }
         }
+        lastReadMillis = toRead.isEmpty ? 0 : (CACurrentMediaTime() - readStarted) * 1000
         visibleQuads = nowQuads
         visibleRects = nowRects
         publish(aligned: true)
@@ -1380,8 +1400,7 @@ final class LiveScanEngine {
             visibleQuads = [:]
             visibleRects = [:]
             seenStreak = [:]
-            steadyStreak = [:]
-            lastCellCentre = [:]
+            lastPlacement = [:]
             grace = [:]
             supportHistory = []
             trackingHint = nil
@@ -1446,6 +1465,7 @@ final class LiveScanEngine {
                          isSteady: lastFrameSteady,
                          waitingForSteady: unsteadyFrames >= Steadiness.shakyFramesBeforeHint,
                          registered: lastRegistered,
-                         registrationAttempts: lastRegistrationAttempts))
+                         registrationAttempts: lastRegistrationAttempts,
+                         readMillis: lastReadMillis))
     }
 }
