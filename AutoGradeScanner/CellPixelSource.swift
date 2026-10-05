@@ -38,6 +38,52 @@ protocol CellPixelSource {
     func cell(quad: [CGPoint], maxSide: Int) -> (bitmap: GrayBitmap, quad: [CGPoint])?
 }
 
+// MARK: - A region read once, sampled many times
+
+/// A rendered piece of the frame and the map into it from the frame's
+/// normalized coordinates.
+///
+/// Registration renders the neighbourhood of a cell once and then samples it
+/// twice — the wide field it searches, and the cell's own window once it is
+/// placed — so the map has to be kept, not just the one quad `cell` returns.
+/// Every source renders an axis-aligned crop, scaled uniformly (and flipped,
+/// for the capture buffer), so the map is linear per axis and is recovered
+/// exactly from the quad's corners.
+struct FrameRegion {
+    let bitmap: GrayBitmap
+    private let ax: CGFloat, bx: CGFloat, ay: CGFloat, by: CGFloat
+
+    init?(bitmap: GrayBitmap, normalized: [CGPoint], mapped: [CGPoint]) {
+        guard normalized.count == mapped.count, normalized.count >= 2 else { return nil }
+        func fit(_ u: [CGFloat], _ v: [CGFloat]) -> (CGFloat, CGFloat)? {
+            let n = CGFloat(u.count)
+            let mu = u.reduce(0, +) / n, mv = v.reduce(0, +) / n
+            var cov: CGFloat = 0, varU: CGFloat = 0
+            for (a, b) in zip(u, v) { cov += (a - mu) * (b - mv); varU += (a - mu) * (a - mu) }
+            guard varU > 1e-12 else { return nil }
+            let slope = cov / varU
+            return (slope, mv - slope * mu)
+        }
+        guard let x = fit(normalized.map(\.x), mapped.map(\.x)),
+              let y = fit(normalized.map(\.y), mapped.map(\.y)) else { return nil }
+        self.bitmap = bitmap
+        ax = x.0; bx = x.1; ay = y.0; by = y.1
+    }
+
+    /// A point in normalized frame coordinates, in this region's pixels.
+    func pixel(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: ax * point.x + bx, y: ay * point.y + by)
+    }
+}
+
+extension CellPixelSource {
+    /// Renders the axis-aligned bounds of `quad` once, for sampling repeatedly.
+    func region(covering quad: [CGPoint], maxSide: Int) -> FrameRegion? {
+        guard let cut = cell(quad: quad, maxSide: maxSide) else { return nil }
+        return FrameRegion(bitmap: cut.bitmap, normalized: quad, mapped: cut.quad)
+    }
+}
+
 // MARK: - From an already-decoded image
 
 /// Reads from a UIImage. This is the pre-existing behaviour — it is what the

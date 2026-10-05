@@ -44,7 +44,15 @@ enum MarkFeatures {
     /// outweigh a child's pencil mark is printed furniture, and printed
     /// furniture is what sits at the edges. Ties go to the lower label, which
     /// is raster order — the same rule the Python reference uses.
-    static func isolate(mask: [Bool], width: Int, height: Int) -> [Bool]? {
+    ///
+    /// `centre` is where the answer box sits in the patch, in pixels; nil
+    /// means the middle of the patch. Not the same thing whenever the patch
+    /// was read wider than the box or the box was projected a little off: on
+    /// sixteen real scans, nearly every ○ read as ✕ was the left parenthesis
+    /// winning this contest, because a big circle's centre of mass sat
+    /// further from the patch's middle than the bracket did.
+    static func isolate(mask: [Bool], width: Int, height: Int,
+                        centre: (x: Double, y: Double)? = nil) -> [Bool]? {
         guard width > 0, height > 0, mask.count == width * height else { return nil }
         let (labels, count) = ConnectedComponents.label(mask, width: width,
                                                         height: height, connectivity: .eight)
@@ -64,7 +72,7 @@ enum MarkFeatures {
         }
 
         let floor = minBlobAreaRatio * Double(width * height)
-        let cx = Double(width) / 2, cy = Double(height) / 2
+        let cx = centre?.x ?? Double(width) / 2, cy = centre?.y ?? Double(height) / 2
         var best = -1
         var bestDistance = Double.infinity
         for label in 1...count where Double(area[label]) >= floor {

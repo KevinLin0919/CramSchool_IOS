@@ -62,7 +62,8 @@ enum DemoSelfTest {
             let u = latest
             print("SELFTEST LIVE frame\(index) (\((path as NSString).lastPathComponent)): "
                   + "aligned=\(u?.aligned ?? false) visible=\(u?.boxes.count ?? 0) "
-                  + "graded=\(u?.gradedCount ?? 0)/\(u?.totalCount ?? 0)")
+                  + "graded=\(u?.gradedCount ?? 0)/\(u?.totalCount ?? 0) "
+                  + "registered=\(u?.registered ?? 0)/\(u?.registrationAttempts ?? 0)")
         }
 
         guard let result = engine.finish() else {

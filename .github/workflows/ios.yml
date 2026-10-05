@@ -59,7 +59,12 @@ jobs:
           # is fewer looks than a teacher gives a page in the first second.
           # Feeding only the pan tested the engine under a condition the real
           # flow never produces.
-          SIMCTL_CHILD_DEMO_SELFTEST_LIVE="$F/scan_top.jpg,$F/scan_top.jpg,$F/scan_bottom.jpg,$F/scan_bottom.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg" \
+          #
+          # Twelve whole-page frames rather than eight since cells wait for a
+          # steady camera: the first frame after each jump is a move, not a
+          # look, and reading starts on the third still frame — so eight left
+          # a blank cell exactly the six looks it needs, with nothing to spare.
+          SIMCTL_CHILD_DEMO_SELFTEST_LIVE="$F/scan_top.jpg,$F/scan_top.jpg,$F/scan_bottom.jpg,$F/scan_bottom.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg" \
           SIMCTL_CHILD_DEMO_SELFTEST_OUT="$PWD/selftest_live.png" \
           xcrun simctl launch --terminate-running-process --console-pty "$UDID" \
             com.cramschool.autogradescanner | tee live.log
@@ -102,6 +107,13 @@ jobs:
           # origin is bottom-left and every quad here is top-left. A wrong flip
           # would sample the mirror image and fail silently.
           grep -q "RECOG PASS source.bufferPathAgrees" recog.log
+          # Registration puts each cell back where the master says it is
+          # printed before reading it. Named, because the way it breaks is
+          # finding nothing — every cell then falls back to the old read and
+          # the scanner still works, just badly, with nothing else going red.
+          grep -q "RECOG PASS register.findsTheShift" recog.log
+          grep -q "RECOG PASS register.refusesBlankPaper" recog.log
+          grep -q "RECOG PASS register.erasesPrintKeepsStroke" recog.log
           ! grep -q "RECOG FAIL" recog.log
       - name: Upload self-test output
         if: always()

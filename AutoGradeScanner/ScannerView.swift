@@ -380,10 +380,10 @@ struct ScannerView: View {
                 engine.onUpdate = { update in liveUpdate = update }
                 liveEngine = engine
                 resolveError = nil
-                camera.onLiveFrame = { image, timestamp, intrinsics, pixels in
+                camera.onLiveFrame = { image, timestamp, intrinsics, pixels, motion in
                     Task { @MainActor in
                         engine.submit(frame: image, timestamp: timestamp,
-                                      intrinsics: intrinsics, pixels: pixels)
+                                      intrinsics: intrinsics, pixels: pixels, motion: motion)
                     }
                 }
             } catch {
@@ -487,6 +487,32 @@ struct ScannerView: View {
                         Text(String(format: "・槓桿 %.2f", live.medianLeverage))
                             .monospacedDigit()
                             .foregroundStyle(.white.opacity(0.75))
+                    }
+
+                    // Why a cell is not being read yet. Reading waits for the
+                    // camera to stop turning and the lens to stop hunting; the
+                    // number is what the gate is comparing, in degrees per
+                    // second, so a threshold that is wrong for real hands is
+                    // visible as one rather than as cells that never fill in.
+                    if let speed = live.angularSpeed {
+                        Text(String(format: "・轉 %.0f°/s", speed * 180 / .pi))
+                            .monospacedDigit()
+                            .foregroundStyle(live.isSteady ? .white.opacity(0.75) : AG.warn)
+                    }
+                    if live.isFocusing {
+                        Text("・對焦中")
+                            .foregroundStyle(AG.warn)
+                    }
+
+                    // Of the cells looked for on the last frame, how many were
+                    // found where the master says they are printed. Low
+                    // numbers on a steady camera mean registration is
+                    // refusing frames — the fallback then reads them the old
+                    // way after a moment.
+                    if live.registrationAttempts > 0 {
+                        Text("・校正 \(live.registered)/\(live.registrationAttempts)")
+                            .monospacedDigit()
+                            .foregroundStyle(live.registered > 0 ? .white.opacity(0.75) : AG.warn)
                     }
                 }
             } else if !live.isReady {
