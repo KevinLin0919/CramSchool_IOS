@@ -399,6 +399,9 @@ final class LiveScanEngine {
     private func build(page: Int, prefetchingNext: Bool = true) {
         guard template.pages.indices.contains(page), matchers[page] == nil else { return }
         let master = template.pages[page].master
+        let pageSize = master.size
+        let slots = slotsByPage.indices.contains(page) ? slotsByPage[page] : []
+        let cells = slots.map { (slot: $0, box: boxes[$0], pads: windowPads[$0]) }
         Task.detached(priority: .userInitiated) { [weak self] in
             let built = try? XFeatTemplateMatcher(template: master)
             // The page's print, for registering cells against. Built here, off
@@ -418,6 +421,28 @@ final class LiveScanEngine {
                 self.publish()
                 if prefetchingNext, let next = self.pageAfter(page) {
                     self.build(page: next, prefetchingNext: false)
+                }
+            }
+            // Every cell's template and window too, after the page is already
+            // usable: built lazily they cost the main thread several ms per
+            // cell on the first frame that reads them — a visible stall the
+            // moment a whole page comes into view.
+            guard let ink else { return }
+            var prepared: [(slot: Int, template: CellTemplate, window: ReadWindow?)] = []
+            for cell in cells {
+                let t = CellTemplate(box: cell.box, ink: ink, pageSize: pageSize)
+                let w = t.isUsable ? ReadWindow(box: cell.box, pads: cell.pads, template: t, ink: ink) : nil
+                prepared.append((cell.slot, t, w))
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for cell in prepared {
+                    if let w = cell.window {
+                        self.cellTemplates[cell.slot] = cell.template
+                        self.cellWindows[cell.slot] = w
+                    } else {
+                        self.unregistrable.insert(cell.slot)
+                    }
                 }
             }
         }
@@ -642,11 +667,11 @@ final class LiveScanEngine {
         static let fallbackAfter = 3
         /// Full searches per frame, the cells with the fewest looks going
         /// first. A full search samples five cells' worth of frame and scores
-        /// two thousand placements; ten of them per frame is what made the
-        /// first build crawl. Cells located on the previous frame are
+        /// two thousand placements; one per waiting cell per frame is what
+        /// made the first build crawl. Cells located on the previous frame are
         /// tracked instead, which costs a fraction of that and is not
         /// counted here.
-        static let maxSearchesPerFrame = 6
+        static let maxSearchesPerFrame = 3
         /// How far tracking looks around the previous placement, canonical
         /// pixels (a tenth of a cell).
         static let trackRadius = 8
