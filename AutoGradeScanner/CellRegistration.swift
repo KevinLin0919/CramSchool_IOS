@@ -362,6 +362,7 @@ enum CellRegistration {
                 let s = score(field: full, fieldWidth: fw, sums: fullSums,
                               rewardX: template.rewardX, rewardY: template.rewardY, rewardW: nil,
                               exemptX: template.exemptX, exemptY: template.exemptY, exemptW: nil,
+                              exemptStride: 2,
                               norm: norm, width: template.width, height: template.height,
                               near: template.near, ox: ox, oy: oy)
                 candidates.append((s, dx, dy))
@@ -378,31 +379,119 @@ enum CellRegistration {
         return Placement(dx: chosen.dx, dy: chosen.dy, score: chosen.score)
     }
 
+    /// Re-finds a template near where it was a frame ago — the cheap path.
+    ///
+    /// `field` covers the template's rect moved by the previous placement and
+    /// grown by `radius` pixels each way, sampled at the canonical scale. Only
+    /// the fine search runs, over ±`radius`; the result is the change since
+    /// the previous placement. A best placement on the edge of that range, or
+    /// one below the fine threshold, means the cell has moved more than
+    /// tracking can follow, and the caller searches properly instead.
+    ///
+    /// Measured in the mirror: with the prediction within 0.08 of a cell, 197
+    /// of 216 frames track and none track wrong; with it 0.1–0.3 off, nearly
+    /// all hand back to the full search, and still none are wrong.
+    static func track(_ template: CellTemplate, in field: CellPatch, radius: Int) -> Placement? {
+        guard template.isUsable, radius > 0,
+              field.width == template.width + 2 * radius,
+              field.height == template.height + 2 * radius else { return nil }
+        let fw = field.width, fh = field.height
+        let grown = CellTemplate.dilated(field.mask, width: fw, height: fh, radius: 1)
+        let full = grown.map { $0 ? Float(1) : 0 }
+        let sums = integral(full, width: fw, height: fh)
+        let norm = Double(template.rewardX.count)
+        var scored: [Int: (score: Double, dx: Int, dy: Int)] = [:]
+        func evaluate(_ dx: Int, _ dy: Int) {
+            guard abs(dx) <= radius, abs(dy) <= radius else { return }
+            let key = (dy + radius) * (2 * radius + 1) + dx + radius
+            guard scored[key] == nil else { return }
+            let s = score(field: full, fieldWidth: fw, sums: sums,
+                          rewardX: template.rewardX, rewardY: template.rewardY, rewardW: nil,
+                          exemptX: template.exemptX, exemptY: template.exemptY, exemptW: nil,
+                          exemptStride: 2,
+                          norm: norm, width: template.width, height: template.height,
+                          near: template.near, ox: radius + dx, oy: radius + dy)
+            scored[key] = (s, dx, dy)
+        }
+        // Every other placement first — a found print scores high over a
+        // plateau three pixels wide, because frame ink is grown by one pixel,
+        // so a two-pixel grid cannot step over it — then the neighbours of
+        // the best.
+        for dy in stride(from: -radius, through: radius, by: 2) {
+            for dx in stride(from: -radius, through: radius, by: 2) { evaluate(dx, dy) }
+        }
+        guard let coarseBest = scored.values.max(by: { $0.score < $1.score }) else { return nil }
+        for ddy in -1...1 {
+            for ddx in -1...1 { evaluate(coarseBest.dx + ddx, coarseBest.dy + ddy) }
+        }
+        let candidates = Array(scored.values)
+        // The edge test is on the true best, before any tie-breaking: a best
+        // on the edge says the optimum may lie beyond it.
+        guard let top = candidates.max(by: { $0.score < $1.score }),
+              top.score >= CellTemplate.Tuning.minFineScore,
+              abs(top.dx) < radius, abs(top.dy) < radius else { return nil }
+        let chosen = candidates
+            .filter { $0.score >= top.score - 0.02 }
+            .min { ($0.dx * $0.dx + $0.dy * $0.dy) < ($1.dx * $1.dx + $1.dy * $1.dy) }!
+        return Placement(dx: chosen.dx, dy: chosen.dy, score: chosen.score)
+    }
+
     /// Reward for print found, less a penalty for ink where the master has
     /// paper, per printed pixel — evaluated with the template's origin at
     /// (ox, oy) in the field.
+    ///
+    /// The hot loop of registration, run a few hundred times per cell per
+    /// frame, so written for speed: no closures, no bounds checks. The exempt
+    /// sum (print and its surroundings outside the near band, a few thousand
+    /// pixels) only refines an area penalty taken from integral images, so
+    /// at full resolution it is sampled every `exemptStride`th pixel and
+    /// scaled up; the reward, which is what locates the print, is exact.
     private static func score(field: [Float], fieldWidth fw: Int, sums: [Double],
                               rewardX: [Int32], rewardY: [Int32], rewardW: [Float]?,
                               exemptX: [Int32], exemptY: [Int32], exemptW: [Float]?,
+                              exemptStride: Int = 1,
                               norm: Double, width: Int, height: Int,
                               near: (x0: Double, y0: Double, x1: Double, y1: Double),
                               ox: Int, oy: Int) -> Double {
-        var reward = 0.0
-        for k in 0..<rewardX.count {
-            let v = Double(field[(Int(rewardY[k]) + oy) * fw + Int(rewardX[k]) + ox])
-            reward += rewardW.map { v * Double($0[k]) } ?? v
-        }
-        var exempt = 0.0
-        for k in 0..<exemptX.count {
-            let v = Double(field[(Int(exemptY[k]) + oy) * fw + Int(exemptX[k]) + ox])
-            exempt += exemptW.map { v * Double($0[k]) } ?? v
+        let shift = oy * fw + ox
+        var reward: Float = 0
+        var exempt: Float = 0
+        field.withUnsafeBufferPointer { f in
+            rewardX.withUnsafeBufferPointer { rx in
+                rewardY.withUnsafeBufferPointer { ry in
+                    if let rewardW {
+                        rewardW.withUnsafeBufferPointer { rw in
+                            for k in 0..<rx.count {
+                                reward += f[Int(ry[k]) * fw + Int(rx[k]) + shift] * rw[k]
+                            }
+                        }
+                    } else {
+                        for k in 0..<rx.count { reward += f[Int(ry[k]) * fw + Int(rx[k]) + shift] }
+                    }
+                }
+            }
+            exemptX.withUnsafeBufferPointer { ex in
+                exemptY.withUnsafeBufferPointer { ey in
+                    if let exemptW {
+                        exemptW.withUnsafeBufferPointer { ew in
+                            for k in stride(from: 0, to: ex.count, by: exemptStride) {
+                                exempt += f[Int(ey[k]) * fw + Int(ex[k]) + shift] * ew[k]
+                            }
+                        }
+                    } else {
+                        for k in stride(from: 0, to: ex.count, by: exemptStride) {
+                            exempt += f[Int(ey[k]) * fw + Int(ex[k]) + shift]
+                        }
+                    }
+                }
+            }
         }
         let whole = rectSum(sums, width: fw, x0: ox, y0: oy, x1: ox + width, y1: oy + height)
         let nearSum = rectSum(sums, width: fw,
                               x0: ox + Int(near.x0.rounded()), y0: oy + Int(near.y0.rounded()),
                               x1: ox + Int(near.x1.rounded()), y1: oy + Int(near.y1.rounded()))
-        let paper = whole - nearSum - exempt
-        return (reward - CellTemplate.Tuning.paperPenalty * paper) / norm
+        let paper = whole - nearSum - Double(exempt) * Double(exemptStride)
+        return (Double(reward) - CellTemplate.Tuning.paperPenalty * paper) / norm
     }
 
     private static func integral(_ values: [Float], width: Int, height: Int) -> [Double] {
