@@ -45,6 +45,14 @@ struct GrayBitmap {
         pixels = buffer
     }
 
+    /// Pixels already in hand, row-major, 0 = black.
+    init(width: Int, height: Int, pixels: [UInt8]) {
+        precondition(pixels.count == width * height, "pixels must be width * height")
+        self.width = width
+        self.height = height
+        self.pixels = pixels
+    }
+
     /// These pixels as an image, for keeping alongside a verdict.
     ///
     /// It matters that this is the bitmap recognition actually read rather
@@ -283,6 +291,26 @@ struct CellPatch {
         self.init(width: w, height: h, intensity: values, printedBounds: printedBounds)
     }
 
+    /// Sample `quad` onto exactly `width`×`height` pixels.
+    ///
+    /// For callers that work at a fixed scale of the page — registration
+    /// compares a frame against a template pixel for pixel, so the two grids
+    /// have to agree to the pixel, not to whatever an aspect ratio rounds to.
+    init?(bitmap: GrayBitmap, quad: [CGPoint], width w: Int, height h: Int,
+          printedBounds: CGRect = CellPatch.wholePatch) {
+        guard quad.count == 4, w > 0, h > 0, let map = UnitQuad(quad: quad) else { return nil }
+        var values = [Double](repeating: 0, count: w * h)
+        for j in 0..<h {
+            let v = (CGFloat(j) + 0.5) / CGFloat(h)
+            for i in 0..<w {
+                let u = (CGFloat(i) + 0.5) / CGFloat(w)
+                let p = map.point(u, v)
+                values[j * w + i] = 1 - bitmap.sample(p.x, p.y)
+            }
+        }
+        self.init(width: w, height: h, intensity: values, printedBounds: printedBounds)
+    }
+
     /// Direct construction, for tests and for callers that already hold a patch.
     init(width: Int, height: Int, intensity: [Double],
          printedBounds: CGRect = CellPatch.wholePatch) {
@@ -313,6 +341,18 @@ struct CellPatch {
         mask = flags
         coverage = intensity.isEmpty ? 0
             : Double(flags.lazy.filter { $0 }.count) / Double(intensity.count)
+    }
+
+    /// A copy holding only the ink at `keep`, judged against this patch's own
+    /// ink/paper split — erasing must not move the threshold, for the same
+    /// reason as in `withoutPrintedMarks`.
+    func keeping(_ keep: [Bool]) -> CellPatch {
+        precondition(keep.count == intensity.count, "keep must be width * height")
+        var kept = intensity
+        for i in 0..<kept.count where !keep[i] { kept[i] = 0 }
+        return CellPatch(width: width, height: height, intensity: kept,
+                         threshold: threshold, separation: separation,
+                         printedBounds: printedBounds)
     }
 
     /// A copy with the cell's printed furniture erased — the answer box's own

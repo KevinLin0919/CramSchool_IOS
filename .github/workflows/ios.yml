@@ -107,6 +107,13 @@ jobs:
           # origin is bottom-left and every quad here is top-left. A wrong flip
           # would sample the mirror image and fail silently.
           grep -q "RECOG PASS source.bufferPathAgrees" recog.log
+          # Registration puts each cell back where the master says it is
+          # printed before reading it. Named, because the way it breaks is
+          # finding nothing — every cell then falls back to the old read and
+          # the scanner still works, just badly, with nothing else going red.
+          grep -q "RECOG PASS register.findsTheShift" recog.log
+          grep -q "RECOG PASS register.refusesBlankPaper" recog.log
+          grep -q "RECOG PASS register.erasesPrintKeepsStroke" recog.log
           ! grep -q "RECOG FAIL" recog.log
       - name: Upload self-test output
         if: always()
