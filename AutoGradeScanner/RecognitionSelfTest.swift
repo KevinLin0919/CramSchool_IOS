@@ -354,6 +354,67 @@ enum RecognitionSelfTest {
             check("mark.wideOpenRingIsStillACircle", false, "no reading at all")
         }
 
+        // MARK: parentheses, single answers, options, votes
+
+        // A printed "( 1 )" whose box was drawn inside the parentheses: both
+        // arcs sit outside the box and are far short of its full height —
+        // the exact case the edge-and-span rule let through as two 1s.
+        let bracketed = Shapes.bracketed(withStroke: true)
+        let bracketedClean = bracketed.withoutPrintedMarks()
+        let survivors = DigitRecognizer.segment(bracketedClean)
+        check("cell.bracketPairErased",
+              survivors.count == 1,
+              "\(survivors.count) group(s) left of a ( 1 ) with the box inside the brackets")
+
+        // …while an open circle drawn beside a printed ")" is NOT a pair of
+        // brackets: it is nearly as wide as it is tall, and it is the answer.
+        let openC = Shapes.openCircleBesideBracket()
+        let openClean = openC.withoutPrintedMarks()
+        check("cell.openCircleSurvivesBracketRule",
+              openClean.coverage >= openC.coverage * 0.6,
+              String(format: "ink kept %.0f%%", 100 * openClean.coverage / max(openC.coverage, 1e-9)))
+
+        // The ○ is chosen around the printed box, not the middle of the patch.
+        // A parenthesis nearer the patch's middle used to win and read as ✕.
+        let offCentre = Shapes.ringInOffsetBox()
+        check("mark.isolatesAtPrintedBox",
+              MarkRecognizer.recognize(offCentre)?.mark == .circle,
+              "ring in an off-centre box, an arc nearer the patch middle")
+
+        if let recognizer,
+           let data = FileManager.default.contents(atPath: referencePath),
+           let reference = try? JSONDecoder().decode(Reference.self, from: data),
+           reference.cases.count > 9,
+           let six = try? recognizer.classify(reference.cases[1].input),
+           let two = try? recognizer.classify(reference.cases[9].input) {
+            // Case 1 is a confident 6: not an option on a 1–4 question, so the
+            // restricted reading must be unconfident rather than "the nearest
+            // option". Case 9 leans 2 with most of its belief on 1–4.
+            let notAnOption = DigitRecognizer.restricted(six, to: [1, 2, 3, 4])
+            check("digit.notAnOptionIsUnsure",
+                  (1...4).contains(notAnOption.digit) && notAnOption.confidence == 0,
+                  String(format: "model said %d at %.2f → %d at %.2f",
+                         six.digit, six.confidence, notAnOption.digit, notAnOption.confidence))
+            let option = DigitRecognizer.restricted(two, to: [1, 2, 3, 4])
+            check("digit.optionKeepsTheModelsLeader",
+                  option.digit == two.digit && option.confidence > two.confidence,
+                  String(format: "%d at %.2f → %d at %.2f",
+                         two.digit, two.confidence, option.digit, option.confidence))
+        } else {
+            check("digit.notAnOptionIsUnsure", false, "reference cases unavailable")
+        }
+
+        // Three frames read "1", three could not read anything: that is not a
+        // settled 1. Five of eight is.
+        var votes = AnswerAccumulator()
+        let one = AnswerRecognizer.Reading(text: "1", confidence: 0.9, margin: 0.8, kind: .digits)
+        let unsure = AnswerRecognizer.Reading(text: "1", confidence: 0.3, margin: 0.1, kind: .digits)
+        for _ in 0..<3 { votes.add(one); votes.add(unsure) }
+        let halfSettled = votes.isSettled
+        votes.add(one); votes.add(one)
+        check("vote.leaderMustBeMostLooks", !halfSettled && votes.isSettled,
+              "3 of 6 looks does not settle; 5 of 8 does")
+
         // MARK: MNIST normalisation
 
         let corner = Shapes.corner()
@@ -518,6 +579,62 @@ enum RecognitionSelfTest {
                 }
             }
             return CellPatch(width: size, height: size, intensity: values)
+        }
+
+        /// One arc of a circle centred at (cx, cy), from `from` to `to`
+        /// degrees (0 = right, 90 = down), drawn `thickness` px wide.
+        static func arc(_ values: inout [Double], width: Int, height: Int,
+                        cx: Double, cy: Double, radius: Double,
+                        from: Double, to: Double, thickness: Double = 1.6) {
+            for y in 0..<height {
+                for x in 0..<width {
+                    let dx = Double(x) + 0.5 - cx, dy = Double(y) + 0.5 - cy
+                    guard abs((dx * dx + dy * dy).squareRoot() - radius) <= thickness else { continue }
+                    var degrees = atan2(dy, dx) * 180 / .pi
+                    if degrees < from { degrees += 360 }
+                    if degrees <= to { values[y * width + x] = ink }
+                }
+            }
+        }
+
+        /// "( 1 )" with the printed box drawn inside the parentheses, the way
+        /// the 自然 template's boxes are: arcs outside the box, ~60% of its
+        /// height, a handwritten 1 in the middle.
+        static func bracketed(withStroke: Bool) -> CellPatch {
+            let w = 96, h = 64
+            var values = [Double](repeating: paper, count: w * h)
+            // Brackets: arcs of a large circle, bowing outwards.
+            arc(&values, width: w, height: h, cx: 34, cy: 32, radius: 22, from: 150, to: 210)
+            arc(&values, width: w, height: h, cx: 62, cy: 32, radius: 22, from: -30, to: 30)
+            if withStroke {
+                for y in 18..<46 {
+                    for x in 46..<49 { values[y * w + x] = ink }
+                }
+            }
+            // The box: inside the brackets, a little taller than them.
+            return CellPatch(width: w, height: h, intensity: values,
+                             printedBounds: CGRect(x: 0.2, y: 0.12, width: 0.6, height: 0.76))
+        }
+
+        /// An open circle (a C, a third missing) with a printed ")" beside it.
+        static func openCircleBesideBracket() -> CellPatch {
+            let w = 96, h = 64
+            var values = [Double](repeating: paper, count: w * h)
+            arc(&values, width: w, height: h, cx: 44, cy: 32, radius: 16, from: 60, to: 300)
+            arc(&values, width: w, height: h, cx: 62, cy: 32, radius: 22, from: -30, to: 30)
+            return CellPatch(width: w, height: h, intensity: values,
+                             printedBounds: CGRect(x: 0.2, y: 0.12, width: 0.6, height: 0.76))
+        }
+
+        /// A closed ring in a printed box that sits right of the patch's
+        /// middle, and a lone arc nearer that middle than the ring is.
+        static func ringInOffsetBox() -> CellPatch {
+            let w = 120, h = 64
+            var values = [Double](repeating: paper, count: w * h)
+            arc(&values, width: w, height: h, cx: 81, cy: 32, radius: 17, from: 0, to: 360)
+            arc(&values, width: w, height: h, cx: 72, cy: 32, radius: 24, from: 160, to: 200)
+            return CellPatch(width: w, height: h, intensity: values,
+                             printedBounds: CGRect(x: 0.5, y: 0.1, width: 0.35, height: 0.8))
         }
 
         /// A blob jammed into the top-left corner — the centring test only
