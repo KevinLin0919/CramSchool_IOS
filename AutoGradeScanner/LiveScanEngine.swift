@@ -156,6 +156,9 @@ final class LiveScanEngine {
     private let expected: [String]
     /// What the template says each cell is, parallel to `expected`.
     private let answerTypes: [String]
+    /// Each multiple-choice cell's options — its alphabet, not its answer —
+    /// parallel to `expected`; nil for every other kind of cell.
+    private let choiceOptions: [[String]?]
 
     /// Which page each flat question slot belongs to, and the reverse lookup.
     /// The flat slot stays the index space the whole session works in — every
@@ -303,6 +306,7 @@ final class LiveScanEngine {
         self.readBoxes = Self.widened(rects, pageOf: pages)
         self.expected = questions.map(\.answer)
         self.answerTypes = questions.map(\.answerType)
+        self.choiceOptions = questions.map { Self.options(for: $0, in: template) }
         self.pageOf = pages
 
         var slots = Array(repeating: [Int](), count: template.pages.count)
@@ -811,7 +815,8 @@ final class LiveScanEngine {
                                               aspect: aspect, expected: exp,
                                               declaredType: type,
                                               printedBounds: Self.printedBounds(
-                                                  of: boxes[i], within: box))
+                                                  of: boxes[i], within: box),
+                                              options: choiceOptions[i])
                 // Keep the best look at this cell, judged after trying to read
                 // it rather than before.
                 //

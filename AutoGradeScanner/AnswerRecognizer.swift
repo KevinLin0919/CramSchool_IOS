@@ -160,8 +160,17 @@ final class AnswerRecognizer {
     /// Returns nil for a blank cell, an unsupported answer type, or a reading
     /// that could not be formed — all of which mean "no answer from this
     /// frame", not "wrong".
+    ///
+    /// `options` is the question's alphabet when it is multiple choice (see
+    /// `DigitRecognizer.restricted`). `furnitureCleared` says the caller has
+    /// already erased the printed furniture against the master sheet and kept
+    /// only strokes touching the answer box — the geometric guesswork in
+    /// `withoutPrintedMarks` is then skipped, because on a window read wide
+    /// enough to hold a child's whole digit it mistakes a tall 3 or a 4 that
+    /// spans the box for a ruled line and erases the answer.
     func read(_ patch: CellPatch, expected: String,
-              declaredType: String? = nil) -> Reading? {
+              declaredType: String? = nil, options: [String]? = nil,
+              furnitureCleared: Bool = false) -> Reading? {
         // The template's word first; the answer text only when it said
         // nothing.
         let kind = AnswerKind.declared(declaredType) ?? AnswerKind.infer(expected: expected)
@@ -171,7 +180,7 @@ final class AnswerRecognizer {
         // Both recognisers are otherwise reading printed strokes as part of the
         // answer, which is by far the largest error source measured on real
         // papers — see CellPatch.withoutPrintedMarks.
-        let clean = patch.withoutPrintedMarks()
+        let clean = furnitureCleared ? patch : patch.withoutPrintedMarks()
 
         switch kind {
         case .mark:
@@ -179,8 +188,18 @@ final class AnswerRecognizer {
             return Reading(text: result.mark.rawValue, confidence: result.confidence,
                            margin: result.confidence, kind: .mark)
         case .digits, .choice:
+            // Digits only: an alphabet of A–D or ①–④ folds to digits through
+            // `canonical`, anything else leaves the reading unconstrained.
+            let alphabet: [Int]? = kind == .choice
+                ? options.flatMap { (set: [String]) -> [Int]? in
+                    let digits = set.compactMap { Int(AnswerKind.canonical($0)) }
+                    return digits.count == set.count && !digits.isEmpty ? digits : nil
+                }
+                : nil
             guard let digits,
-                  let result = try? digits.recognize(clean, arity: kind == .choice ? .single : .any)
+                  let result = try? digits.recognize(clean, arity: kind == .choice ? .single : .any,
+                                                     options: alphabet,
+                                                     merging: furnitureCleared)
             else { return nil }
             return Reading(text: result.text, confidence: result.confidence,
                            margin: result.margin, kind: .digits,
@@ -200,10 +219,11 @@ final class AnswerRecognizer {
     /// over the lines is not cut in half. Defaults to the whole quad.
     func read(frame: GrayBitmap, quad: [CGPoint], aspect: CGFloat, expected: String,
               declaredType: String? = nil,
-              printedBounds: CGRect = CellPatch.wholePatch) -> Reading? {
+              printedBounds: CGRect = CellPatch.wholePatch,
+              options: [String]? = nil) -> Reading? {
         guard let patch = CellPatch(bitmap: frame, quad: quad, aspect: aspect,
                                     printedBounds: printedBounds) else { return nil }
-        return read(patch, expected: expected, declaredType: declaredType)
+        return read(patch, expected: expected, declaredType: declaredType, options: options)
     }
 }
 
@@ -230,9 +250,18 @@ struct AnswerAccumulator {
         /// waiting and report the cell as unreadable rather than leaving it
         /// blank forever.
         static let givesUpAfter = 8
+        /// The leader must also be what most LOOKS said, not merely most
+        /// confident readings. Unconfident looks cast no vote, so a cell read
+        /// as "1" three times and illegible three times used to settle on "1"
+        /// with a 100% share — and on the real scans that is exactly the
+        /// shape of a misread: the frames that see the answer cannot read it,
+        /// and the ones that can read something are reading a parenthesis.
+        static let minShareOfLooks = 0.6
     }
 
     private var votes: [String: Double] = [:]
+    /// Confident readings per text, unweighted. See `Tuning.minShareOfLooks`.
+    private var counts: [String: Int] = [:]
     private(set) var samples = 0
     /// Frames where something was clearly written but not confidently read.
     private(set) var unsureSamples = 0
@@ -248,6 +277,7 @@ struct AnswerAccumulator {
         }
         // Weighted by confidence, so a marginal frame nudges rather than votes.
         votes[reading.text, default: 0] += reading.confidence
+        counts[reading.text, default: 0] += 1
     }
 
     /// Seen plenty and still no agreement — the honest answer is "I can't read
@@ -267,10 +297,12 @@ struct AnswerAccumulator {
     var isSettled: Bool {
         guard samples >= Tuning.minSamples, let best else { return false }
         return best.share >= Tuning.minLeaderShare
+            && Double(counts[best.text] ?? 0) >= Tuning.minShareOfLooks * Double(samples)
     }
 
     mutating func reset() {
         votes.removeAll()
+        counts.removeAll()
         samples = 0
         unsureSamples = 0
     }
