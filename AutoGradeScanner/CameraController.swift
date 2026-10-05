@@ -23,7 +23,7 @@ final class CameraController: NSObject, ObservableObject {
     // them, its intrinsics mapped into the upright frame's normalized
     // coordinates. The scanner grades the stream in place; nothing here waits
     // for, or takes, a still photograph.
-    var onLiveFrame: ((UIImage, TimeInterval, simd_double3x3?, CellPixelSource?) -> Void)?
+    var onLiveFrame: ((UIImage, TimeInterval, simd_double3x3?, CellPixelSource?, FrameMotion) -> Void)?
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "autograde.camera.session")
@@ -32,6 +32,9 @@ final class CameraController: NSObject, ObservableObject {
 
     private var configured = false
     private var currentPosition: AVCaptureDevice.Position = .back
+    // Read from videoQueue for `isAdjustingFocus`, a thread-safe property; set
+    // once, on sessionQueue, before frames start arriving.
+    private var videoDevice: AVCaptureDevice?
     private var frameIndex = 0
 
     // Sensor -> upright rotation for the analysis path. Only ever touched on
@@ -94,6 +97,7 @@ final class CameraController: NSObject, ObservableObject {
            session.canAddInput(input) {
             session.addInput(input)
             configureFocus(device)
+            videoDevice = device
         }
 
         // The .photo preset gives the *photo* output full sensor resolution but
@@ -192,7 +196,12 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             let source = PixelBufferCellSource(buffer: pixelBuffer,
                                                orientation: orientation,
                                                context: ciContext)
-            onLiveFrame(image, timestamp, intrinsics, source)
+            // What the camera was doing while this frame was exposed. The
+            // engine waits for frames where it was doing nothing — a reading
+            // taken mid-turn or mid-focus is a reading of a smear.
+            let motion = FrameMotion(angularSpeed: pose.angularSpeed(at: timestamp),
+                                     isFocusing: videoDevice?.isAdjustingFocus ?? false)
+            onLiveFrame(image, timestamp, intrinsics, source, motion)
         }
 
     }

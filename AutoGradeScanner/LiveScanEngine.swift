@@ -13,6 +13,15 @@ import simd
 // While locked on, tracking state (last window + last homography) feeds the
 // matcher's fast path: one window instead of three, and a least-squares
 // refine of the previous solution instead of full RANSAC.
+/// What the camera was doing while one frame was exposed.
+struct FrameMotion {
+    /// How fast it was turning, radians per second; nil when the gyro had no
+    /// samples covering that moment (simulator, motion stopped).
+    let angularSpeed: Double?
+    /// The lens was moving to refocus.
+    let isFocusing: Bool
+}
+
 @MainActor
 final class LiveScanEngine {
 
@@ -102,6 +111,16 @@ final class LiveScanEngine {
         /// stopping them, and it is usually not the model.
         let stuckCells: Int
 
+        /// The camera's rotation rate on the last aligned frame, rad/s.
+        let angularSpeed: Double?
+        /// The lens was refocusing on the last aligned frame.
+        let isFocusing: Bool
+        /// The last aligned frame was still enough to read from.
+        let isSteady: Bool
+        /// Cells are waiting to be read and the camera has not held still for
+        /// long enough to read any of them.
+        let waitingForSteady: Bool
+
         /// What, if anything, is worth telling the teacher about the framing.
         ///
         /// Cell size and blur are different problems with different fixes, and
@@ -111,6 +130,9 @@ final class LiveScanEngine {
         enum Framing { case fine, tooFar, tooShaky }
 
         var framing: Framing {
+            // First, because until the camera holds still nothing is read at
+            // all, and the cell-size figures below are taken from reads.
+            if aligned && waitingForSteady { return .tooShaky }
             guard aligned, typicalCellPixels > 0 else { return .fine }
             if typicalCellPixels < Sampling.minUsefulCellPixels { return .tooFar }
             // Cells big enough to read, still not being read.
@@ -237,6 +259,15 @@ final class LiveScanEngine {
     /// Alignment leverage at each cell on the most recent aligned frame.
     private var cellLeverage: [Int: Double] = [:]
     private var blankStreak: [Int: Int] = [:]
+    /// Consecutive aligned frames on which each cell was steady (see
+    /// `Steadiness`), and where its centre was on the last one, in frame
+    /// pixels.
+    private var steadyStreak: [Int: Int] = [:]
+    private var lastCellCentre: [Int: CGPoint] = [:]
+    /// Aligned frames in a row on which no waiting cell was steady.
+    private var unsteadyFrames = 0
+    private var lastMotion: FrameMotion?
+    private var lastFrameSteady = true
 
     /// The crop each question was last read from, kept so a teacher reviewing
     /// a verdict sees what the model saw. Only the most recent one per
@@ -378,7 +409,8 @@ final class LiveScanEngine {
     func submit(frame: UIImage,
                 timestamp: TimeInterval = CACurrentMediaTime(),
                 intrinsics: simd_double3x3? = nil,
-                pixels: CellPixelSource? = nil) {
+                pixels: CellPixelSource? = nil,
+                motion: FrameMotion? = nil) {
         guard !busy, let matcher = matchers[currentPage] else { return }
         busy = true
         let hint = trackingHint
@@ -397,7 +429,8 @@ final class LiveScanEngine {
                 self.busy = false
                 guard self.pageGeneration == generation else { return }
                 self.integrate(frame: frame, tracked: tracked ?? nil, millis: millis,
-                               timestamp: timestamp, intrinsics: intrinsics, pixels: pixels)
+                               timestamp: timestamp, intrinsics: intrinsics, pixels: pixels,
+                               motion: motion)
             }
         }
     }
@@ -432,6 +465,9 @@ final class LiveScanEngine {
         cellCropReadable = [:]
         cellCropLeverage = [:]
         cellSampledPixels = [:]
+        steadyStreak = [:]
+        lastCellCentre = [:]
+        unsteadyFrames = 0
         lastCellPixels = 0
         lastFramePixels = 0
         pageKeyframes = [:]
@@ -463,6 +499,9 @@ final class LiveScanEngine {
         anchorTimestamp = 0
         anchorIntrinsics = nil
         anchorSheetQuad = nil
+        steadyStreak = [:]
+        lastCellCentre = [:]
+        unsteadyFrames = 0
     }
 
     // MARK: - Pages
@@ -539,6 +578,35 @@ final class LiveScanEngine {
         let remaining: Int
 
         var isEmpty: Bool { pages.isEmpty }
+    }
+
+    /// When a frame is still enough to read from.
+    ///
+    /// Reading used to start on the second frame that saw a cell, whatever
+    /// the camera was doing. On the sixteen real scans that meant cells were
+    /// read while the phone was still being brought into position — the
+    /// teacher's own description of the 111s and the crops that slid off the
+    /// answer. Waiting is cheap when it is measured: a fixed delay costs time
+    /// on a phone already held still and is not long enough on one that is
+    /// not, so the wait here lasts exactly until the camera stops moving.
+    enum Steadiness {
+        /// Above this rotation rate the frame is smeared. At 4K a cell is
+        /// some 300px wide on a sensor with a ~2800px focal length, so 0.15
+        /// rad/s moves the image about 14px over a 1/30s exposure — around
+        /// a stroke's width once the cell is sampled down to recognition's
+        /// 128px. Hands held still turn at a few hundredths.
+        static let maxAngularSpeed = 0.15
+        /// How far a cell may have moved since the previous aligned frame, in
+        /// cell widths. Catches what the gyro cannot see — the phone sliding
+        /// without turning — and alignment that jitters between frames, which
+        /// is not a fit to read through either.
+        static let maxCellShift = 0.15
+        /// Steady looks in a row before a cell is first read: about a quarter
+        /// of a second at tracking cadence.
+        static let looksBeforeReading = 2
+        /// Aligned frames in a row with nothing steady enough to read before
+        /// the scanner says 拿穩一點 — about a second.
+        static let shakyFramesBeforeHint = 10
     }
 
     enum Sampling {
@@ -684,7 +752,8 @@ final class LiveScanEngine {
                            millis: Double,
                            timestamp: TimeInterval,
                            intrinsics: simd_double3x3?,
-                           pixels: CellPixelSource? = nil) {
+                           pixels: CellPixelSource? = nil,
+                           motion: FrameMotion? = nil) {
         lastAlignMillis = millis
         guard let tracked else { return miss() }
         let h = tracked.homography
@@ -760,6 +829,39 @@ final class LiveScanEngine {
                                  width: sxs.max()! - sxs.min()!, height: sys.max()! - sys.min()!)
         }
 
+        // Is this frame one to read from? The camera itself first — turning,
+        // or refocusing — then, per cell, whether it is where it was on the
+        // previous aligned frame. Frames without motion data (the headless
+        // self-test, the simulator) are judged on the second test alone.
+        let framePixels = pixels?.frameSize ?? lastFrameSize
+        let frameSteady = !(motion?.isFocusing ?? false)
+            && (motion?.angularSpeed ?? 0) <= Steadiness.maxAngularSpeed
+        lastMotion = motion
+        lastFrameSteady = frameSteady
+        var waiting = false, waitingSteady = false
+        for i in currentSlots {
+            guard confirmedNow.contains(i), let quad = rawQuads[i], quad.count == 4 else {
+                steadyStreak[i] = 0
+                lastCellCentre[i] = nil
+                continue
+            }
+            let centre = CGPoint(x: quad.map(\.x).reduce(0, +) / 4 * framePixels.width,
+                                 y: quad.map(\.y).reduce(0, +) / 4 * framePixels.height)
+            let cellWidth = hypot((quad[1].x - quad[0].x) * framePixels.width,
+                                  (quad[1].y - quad[0].y) * framePixels.height)
+            let shift = lastCellCentre[i].map {
+                hypot(centre.x - $0.x, centre.y - $0.y) / max(cellWidth, 1)
+            }
+            lastCellCentre[i] = centre
+            let steady = frameSteady && (shift.map { $0 <= Steadiness.maxCellShift } ?? false)
+            steadyStreak[i] = steady ? steadyStreak[i, default: 0] + 1 : 0
+            if verdicts[i] == nil {
+                waiting = true
+                if steady { waitingSteady = true }
+            }
+        }
+        unsteadyFrames = waiting && !waitingSteady ? unsteadyFrames + 1 : 0
+
         // Recognition reads from the capture buffer at sensor resolution when
         // one came with the frame, and from the downscaled alignment image
         // otherwise. Building the fallback costs a full-frame grayscale pass,
@@ -778,7 +880,6 @@ final class LiveScanEngine {
         // crop is what makes that affordable: it is arithmetic on a quad we
         // already projected, so it costs nothing on frames where no cell
         // needs reading.
-        let framePixels = pixels?.frameSize ?? lastFrameSize
         lastFramePixels = Int(max(framePixels.width, framePixels.height))
         if let firstVisible = confirmedNow.sorted().first, let quad = rawQuads[firstVisible] {
             lastCellPixels = Self.sampledSide(of: quad, in: framePixels)
@@ -796,6 +897,10 @@ final class LiveScanEngine {
             }
             seenStreak[i, default: 0] += 1
             guard seenStreak[i, default: 0] >= 2, verdicts[i] == nil else { continue }
+            // Not until the camera has held still on this cell for a moment.
+            // A frame skipped here is not a look: it neither votes nor counts
+            // towards writing the cell off as blank.
+            guard steadyStreak[i, default: 0] >= Steadiness.looksBeforeReading else { continue }
 
             let exp = i < expected.count ? expected[i] : ""
             guard !exp.isEmpty else { continue }
@@ -1079,6 +1184,8 @@ final class LiveScanEngine {
             visibleQuads = [:]
             visibleRects = [:]
             seenStreak = [:]
+            steadyStreak = [:]
+            lastCellCentre = [:]
             grace = [:]
             supportHistory = []
             trackingHint = nil
@@ -1137,6 +1244,10 @@ final class LiveScanEngine {
                          cellPixels: lastCellPixels,
                          framePixels: lastFramePixels,
                          typicalCellPixels: typicalCellPixels,
-                         stuckCells: stuckCells))
+                         stuckCells: stuckCells,
+                         angularSpeed: lastMotion?.angularSpeed,
+                         isFocusing: lastMotion?.isFocusing ?? false,
+                         isSteady: lastFrameSteady,
+                         waitingForSteady: unsteadyFrames >= Steadiness.shakyFramesBeforeHint))
     }
 }

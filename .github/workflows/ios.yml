@@ -59,7 +59,12 @@ jobs:
           # is fewer looks than a teacher gives a page in the first second.
           # Feeding only the pan tested the engine under a condition the real
           # flow never produces.
-          SIMCTL_CHILD_DEMO_SELFTEST_LIVE="$F/scan_top.jpg,$F/scan_top.jpg,$F/scan_bottom.jpg,$F/scan_bottom.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg" \
+          #
+          # Twelve whole-page frames rather than eight since cells wait for a
+          # steady camera: the first frame after each jump is a move, not a
+          # look, and reading starts on the third still frame — so eight left
+          # a blank cell exactly the six looks it needs, with nothing to spare.
+          SIMCTL_CHILD_DEMO_SELFTEST_LIVE="$F/scan_top.jpg,$F/scan_top.jpg,$F/scan_bottom.jpg,$F/scan_bottom.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg,$F/scan_full.jpg" \
           SIMCTL_CHILD_DEMO_SELFTEST_OUT="$PWD/selftest_live.png" \
           xcrun simctl launch --terminate-running-process --console-pty "$UDID" \
             com.cramschool.autogradescanner | tee live.log
