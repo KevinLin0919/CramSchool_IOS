@@ -31,12 +31,17 @@ final class DigitRecognizer {
         /// All ten, kept so callers can accumulate evidence across frames
         /// instead of re-deciding from scratch each time.
         let probabilities: [Double]
+        /// Set when the reading was re-decided among a question's options:
+        /// the lead is then over the runner-up OPTION, not over a class the
+        /// student could not have meant.
+        var optionMargin: Double? = nil
 
         /// Lead over the runner-up. A digit can carry a respectable softmax and
         /// still be a coin flip between two classes — which is exactly how the
         /// one misread cell in the real fixtures behaves (0.53 top, 0.45
         /// second). Softmax alone would wave that through.
         var margin: Double {
+            if let optionMargin { return optionMargin }
             let sorted = probabilities.sorted(by: >)
             return sorted.count >= 2 ? sorted[0] - sorted[1] : sorted.first ?? 0
         }
@@ -51,7 +56,9 @@ final class DigitRecognizer {
         /// shakiest character.
         let margin: Double
         let digits: [DigitReading]
-        /// Ink groups dropped because the cell holds one character.
+        /// Ink groups beyond the first in a cell that holds one character —
+        /// dropped as strays, or merged into the answer when the caller knows
+        /// every remaining stroke is the student's.
         var discarded: Int = 0
     }
 
@@ -85,6 +92,19 @@ final class DigitRecognizer {
         /// MNIST's own normalisation: fit the ink into 20px, centre in 28px.
         static let inkBox = 20.0
         static let canvas = 28
+        /// Stroke width, in pixels of that 20px box, that MNIST digits are
+        /// written with. A child's digit that runs two cells tall is a thin
+        /// line by the time it is shrunk to 20px, and the model reads a faint
+        /// ghost of it: the real-cell fixtures go from 5/6 to 6/6 once the
+        /// stroke is thickened back to this before shrinking.
+        static let targetStroke = 2.2
+        /// When the cell is a multiple-choice answer, the share of the model's
+        /// belief that has to fall on the paper's own options before the
+        /// best of them is taken seriously. Below it, the model is looking at
+        /// something that is not an option at all — a 5 written on a 1–4
+        /// question — and mapping that onto the nearest option is how a wrong
+        /// answer gets marked right.
+        static let minOptionMass = 0.5
     }
 
     private let model: MLModel
@@ -99,29 +119,46 @@ final class DigitRecognizer {
     }
 
     /// Returns nil when the cell is blank or nothing survives segmentation.
-    func recognize(_ patch: CellPatch, arity: Arity = .any) throws -> Result? {
+    ///
+    /// `options` is the paper's own alphabet for a multiple-choice cell —
+    /// 1…4 — and only ever narrows the reading to it; see `restricted`.
+    /// `merging` says every stroke left in the patch is the student's (the
+    /// printed furniture has been erased against the master and only strokes
+    /// touching the answer box were kept), so a second group is part of the
+    /// same character rather than a stray.
+    func recognize(_ patch: CellPatch, arity: Arity = .any,
+                   options: [Int]? = nil, merging: Bool = false) throws -> Result? {
         guard !patch.isBlank, patch.coverage <= CellPatch.Tuning.maxCoverage else { return nil }
 
         var groups = Self.segment(patch)
         guard !groups.isEmpty, groups.count <= Tuning.maxDigits else { return nil }
 
         var discarded = 0
-        // A multiple-choice cell holds one character, so a second blob is
-        // something else that got into the crop — printed rule, a neighbour's
-        // stroke, a speck. Reading it as a second digit produces a string that
-        // can never match the answer key, and splits the vote with the frames
-        // that only saw one blob until neither reaches a majority.
+        // A multiple-choice cell holds one character, so a second group is
+        // either more of that character or something else that got into the
+        // crop — printed rule, a neighbour's stroke, a speck. Reading each
+        // group as its own digit produced "111" off a "( 1 )": a string that
+        // can never match the answer key, and that settled as a confident
+        // wrong answer whenever every frame made the same mistake.
         if arity == .single, groups.count > 1 {
-            let byArea = groups
-                .map { mask in (mask: mask, area: mask.lazy.filter { $0 }.count) }
-                .sorted { $0.area > $1.area }
-            let winner = byArea[0], runnerUp = byArea[1]
-            // Only when the winner is clearly the winner. Similar sizes mean
-            // this cannot tell which one is the answer, and the honest result
-            // of that is the unsure it would have reached anyway.
-            if runnerUp.area == 0
-                || Double(runnerUp.area) / Double(winner.area) < Tuning.ambiguousAreaRatio {
-                discarded = groups.count - 1
+            discarded = groups.count - 1
+            if merging {
+                var union = [Bool](repeating: false, count: groups[0].count)
+                for group in groups {
+                    for i in 0..<union.count where group[i] { union[i] = true }
+                }
+                groups = [union]
+            } else {
+                let byArea = groups
+                    .map { mask in (mask: mask, area: mask.lazy.filter { $0 }.count) }
+                    .sorted { $0.area > $1.area }
+                let winner = byArea[0], runnerUp = byArea[1]
+                // Only when the winner is clearly the winner. Similar sizes
+                // mean this cannot tell which one is the answer, and the
+                // honest result of that is no reading at all.
+                guard runnerUp.area == 0
+                        || Double(runnerUp.area) / Double(winner.area) < Tuning.ambiguousAreaRatio
+                else { return nil }
                 groups = [winner.mask]
             }
         }
@@ -129,7 +166,12 @@ final class DigitRecognizer {
         var readings: [DigitReading] = []
         for group in groups {
             guard let grid = Self.mnistGrid(patch, subset: group) else { continue }
-            readings.append(try classify(grid))
+            let reading = try classify(grid)
+            if arity == .single, let options, !options.isEmpty {
+                readings.append(Self.restricted(reading, to: options))
+            } else {
+                readings.append(reading)
+            }
         }
         guard !readings.isEmpty else { return nil }
 
@@ -138,6 +180,37 @@ final class DigitRecognizer {
                       margin: readings.map(\.margin).min() ?? 0,
                       digits: readings,
                       discarded: discarded)
+    }
+
+    /// The reading, re-decided among the paper's own options.
+    ///
+    /// This uses the answer key's ALPHABET, never its answer: which four
+    /// options a question offers is a fact about the question, the same fact
+    /// the correction screen already reads to offer its buttons. What it buys
+    /// is the belief the model spent on classes the student could not have
+    /// meant. A child's 4 read as 4 at 0.49, with 9 and 7 splitting the rest,
+    /// is a 4 at 0.80 among 1–4 — confident enough to vote — where before it
+    /// was a cell that never settled. When most of the belief is NOT on the
+    /// options (`Tuning.minOptionMass`), nothing is re-decided: the reading
+    /// comes back with no confidence and the cell goes to the teacher.
+    ///
+    /// The probabilities kept are the model's own, untouched, so a caller
+    /// accumulating evidence still sees what the model saw.
+    static func restricted(_ reading: DigitReading, to options: [Int]) -> DigitReading {
+        let valid = options.filter { $0 >= 0 && $0 < reading.probabilities.count }
+        guard !valid.isEmpty else { return reading }
+        let mass = valid.reduce(0.0) { $0 + reading.probabilities[$1] }
+        let ranked = valid.sorted { reading.probabilities[$0] > reading.probabilities[$1] }
+        guard mass >= Tuning.minOptionMass, mass > 0 else {
+            // Not an option. Report the nearest one for diagnostics, with no
+            // confidence at all, so it can never vote.
+            return DigitReading(digit: ranked[0], confidence: 0, probabilities: reading.probabilities,
+                                optionMargin: 0)
+        }
+        let top = reading.probabilities[ranked[0]] / mass
+        let second = ranked.count > 1 ? reading.probabilities[ranked[1]] / mass : 0
+        return DigitReading(digit: ranked[0], confidence: top, probabilities: reading.probabilities,
+                            optionMargin: top - second)
     }
 
     /// Runs one 28x28 grid (0 = paper, 1 = ink) through the model.
@@ -227,7 +300,87 @@ final class DigitRecognizer {
     /// `subset` selects which of the patch's ink belongs to this digit; the
     /// grayscale values come from the patch itself, because MNIST digits are
     /// anti-aliased rather than binary and the model has never seen hard edges.
+    ///
+    /// The stroke is thickened first when shrinking would leave it thinner
+    /// than MNIST's own (`Tuning.targetStroke`). A digit twice the cell's
+    /// height, written with an ordinary pencil, arrives at 20px as a line a
+    /// third of a pixel wide; the supersampling below averages it into a grey
+    /// smear and the model, which was trained on bold strokes, guesses.
     static func mnistGrid(_ patch: CellPatch, subset: [Bool]) -> [Double]? {
+        guard let bounds = patch.inkBounds(of: subset) else { return nil }
+        let boxWidth = bounds.maxX - bounds.minX + 1
+        let boxHeight = bounds.maxY - bounds.minY + 1
+        let scale = Tuning.inkBox / Double(max(boxWidth, boxHeight))
+        let needed = Tuning.targetStroke / scale
+        let radius = Int(((needed - strokeWidth(subset, width: patch.width,
+                                                 height: patch.height)) / 2).rounded())
+        guard radius >= 1 else {
+            return rasterize(intensity: patch.intensity, subset: subset, patch: patch)
+        }
+        let (intensity, grown) = thickened(patch, subset: subset, radius: radius)
+        return rasterize(intensity: intensity, subset: grown, patch: patch)
+    }
+
+    /// Mean stroke width of a mask, in pixels: twice its area over its
+    /// perimeter, which for a thin stroke is area over length. Pixels on the
+    /// image border count as perimeter, as if the paper ended there.
+    static func strokeWidth(_ subset: [Bool], width: Int, height: Int) -> Double {
+        var area = 0, interior = 0
+        for y in 0..<height {
+            for x in 0..<width where subset[y * width + x] {
+                area += 1
+                guard x > 0, x < width - 1, y > 0, y < height - 1 else { continue }
+                let i = y * width + x
+                if subset[i - 1], subset[i + 1], subset[i - width], subset[i + width] {
+                    interior += 1
+                }
+            }
+        }
+        guard area > 0 else { return 0 }
+        return 2 * Double(area) / Double(max(area - interior, 1))
+    }
+
+    /// The digit grown by `radius` pixels (a diamond, 4-connected steps), the
+    /// new pixels taking the darkest ink within `radius` in either axis so the
+    /// thickened stroke stays as dark as the one it came from.
+    private static func thickened(_ patch: CellPatch, subset: [Bool],
+                                  radius: Int) -> (intensity: [Double], subset: [Bool]) {
+        let width = patch.width, height = patch.height
+        var grown = subset
+        for _ in 0..<radius {
+            var next = grown
+            for y in 0..<height {
+                for x in 0..<width where !grown[y * width + x] {
+                    let i = y * width + x
+                    if (x > 0 && grown[i - 1]) || (x < width - 1 && grown[i + 1])
+                        || (y > 0 && grown[i - width]) || (y < height - 1 && grown[i + width]) {
+                        next[i] = true
+                    }
+                }
+            }
+            grown = next
+        }
+        // Square max filter over the digit's own ink, zero outside it.
+        var intensity = patch.intensity
+        for y in 0..<height {
+            for x in 0..<width {
+                let i = y * width + x
+                guard grown[i], !subset[i] else { continue }
+                var strongest = 0.0
+                for yy in max(0, y - radius)...min(height - 1, y + radius) {
+                    for xx in max(0, x - radius)...min(width - 1, x + radius) {
+                        let j = yy * width + xx
+                        if subset[j], patch.intensity[j] > strongest { strongest = patch.intensity[j] }
+                    }
+                }
+                intensity[i] = strongest
+            }
+        }
+        return (intensity, grown)
+    }
+
+    private static func rasterize(intensity: [Double], subset: [Bool],
+                                  patch: CellPatch) -> [Double]? {
         guard let bounds = patch.inkBounds(of: subset) else { return nil }
         let boxWidth = bounds.maxX - bounds.minX + 1
         let boxHeight = bounds.maxY - bounds.minY + 1
@@ -236,7 +389,7 @@ final class DigitRecognizer {
         // not black, and MNIST's is saturated; without this the model sees a
         // faint ghost of the digit it was trained on.
         var inkValues: [Double] = []
-        for i in 0..<subset.count where subset[i] { inkValues.append(patch.intensity[i]) }
+        for i in 0..<subset.count where subset[i] { inkValues.append(intensity[i]) }
         guard !inkValues.isEmpty else { return nil }
         inkValues.sort()
         let peak = inkValues[Int(Double(inkValues.count - 1) * 0.95)]
@@ -248,7 +401,7 @@ final class DigitRecognizer {
             let ix = Int(px), iy = Int(py)
             let index = iy * patch.width + ix
             guard subset[index] else { return 0 }
-            return min(max((patch.intensity[index] - patch.threshold) / span, 0), 1)
+            return min(max((intensity[index] - patch.threshold) / span, 0), 1)
         }
 
         // Fit the longer side into 20px, keeping the aspect ratio.

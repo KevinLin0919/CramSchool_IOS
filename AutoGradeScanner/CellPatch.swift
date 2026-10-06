@@ -45,6 +45,14 @@ struct GrayBitmap {
         pixels = buffer
     }
 
+    /// Pixels already in hand, row-major, 0 = black.
+    init(width: Int, height: Int, pixels: [UInt8]) {
+        precondition(pixels.count == width * height, "pixels must be width * height")
+        self.width = width
+        self.height = height
+        self.pixels = pixels
+    }
+
     /// These pixels as an image, for keeping alongside a verdict.
     ///
     /// It matters that this is the bitmap recognition actually read rather
@@ -225,6 +233,31 @@ struct CellPatch {
         /// the cell and touches every edge — would be erased, and a filled
         /// bubble is an answer.
         static let frameMaxFill = 0.5
+
+        // MARK: printed parentheses, as a pair
+
+        /// A parenthesis is a thin arc: at least this many times taller than
+        /// it is wide. An open ○ — which children draw as a C with a third of
+        /// it missing — is nearly as wide as it is tall, so it can never
+        /// qualify, however much it curves.
+        static let bracketElongation = 2.0
+        /// Its height, as a share of the printed cell's. The rule-based test
+        /// above wants 70%, which is exactly what let these through: when a
+        /// template's box is drawn inside the parentheses rather than around
+        /// them, the arcs fall outside it and are rarely that tall.
+        static let bracketMinHeight = 0.35
+        static let bracketMaxHeight = 1.3
+        /// How far its middle bows out past its two ends, as a share of its
+        /// height. A handwritten 1 — straight, slanted or hooked — bows by
+        /// nearly nothing; a printed ( bows by a tenth or more.
+        static let bracketMinBulge = 0.05
+        /// The two arcs face each other across most of the answer: at least
+        /// this share of the cell's width apart…
+        static let bracketMinGap = 0.35
+        /// …overlapping vertically by at least half the shorter one…
+        static let bracketMinOverlap = 0.5
+        /// …and of similar height, a printed pair being one glyph mirrored.
+        static let bracketHeightRatio = 0.6
     }
 
     /// Sample `quad` (pixel coordinates in `bitmap`, corners tl→tr→br→bl) into
@@ -258,6 +291,26 @@ struct CellPatch {
         self.init(width: w, height: h, intensity: values, printedBounds: printedBounds)
     }
 
+    /// Sample `quad` onto exactly `width`×`height` pixels.
+    ///
+    /// For callers that work at a fixed scale of the page — registration
+    /// compares a frame against a template pixel for pixel, so the two grids
+    /// have to agree to the pixel, not to whatever an aspect ratio rounds to.
+    init?(bitmap: GrayBitmap, quad: [CGPoint], width w: Int, height h: Int,
+          printedBounds: CGRect = CellPatch.wholePatch) {
+        guard quad.count == 4, w > 0, h > 0, let map = UnitQuad(quad: quad) else { return nil }
+        var values = [Double](repeating: 0, count: w * h)
+        for j in 0..<h {
+            let v = (CGFloat(j) + 0.5) / CGFloat(h)
+            for i in 0..<w {
+                let u = (CGFloat(i) + 0.5) / CGFloat(w)
+                let p = map.point(u, v)
+                values[j * w + i] = 1 - bitmap.sample(p.x, p.y)
+            }
+        }
+        self.init(width: w, height: h, intensity: values, printedBounds: printedBounds)
+    }
+
     /// Direct construction, for tests and for callers that already hold a patch.
     init(width: Int, height: Int, intensity: [Double],
          printedBounds: CGRect = CellPatch.wholePatch) {
@@ -288,6 +341,18 @@ struct CellPatch {
         mask = flags
         coverage = intensity.isEmpty ? 0
             : Double(flags.lazy.filter { $0 }.count) / Double(intensity.count)
+    }
+
+    /// A copy holding only the ink at `keep`, judged against this patch's own
+    /// ink/paper split — erasing must not move the threshold, for the same
+    /// reason as in `withoutPrintedMarks`.
+    func keeping(_ keep: [Bool]) -> CellPatch {
+        precondition(keep.count == intensity.count, "keep must be width * height")
+        var kept = intensity
+        for i in 0..<kept.count where !keep[i] { kept[i] = 0 }
+        return CellPatch(width: width, height: height, intensity: kept,
+                         threshold: threshold, separation: separation,
+                         printedBounds: printedBounds)
     }
 
     /// A copy with the cell's printed furniture erased — the answer box's own
@@ -374,6 +439,21 @@ struct CellPatch {
             drop[label] = horizontal || vertical || frame
         }
 
+        // A printed "（ ）" survives everything above whenever the template's
+        // box was drawn inside it: the arcs then sit outside the box, short of
+        // its full height, and each one is read as a 1 — "111" off a cell that
+        // holds a 1, measured on 40 of 85 wrong readings across sixteen real
+        // scans. One arc on its own looks too much like a handwritten stroke to
+        // erase; two arcs bowing away from each other, facing across the
+        // answer, matched in height, look like nothing a child writes.
+        if let pair = Self.bracketPair(labels: labels, count: count, area: area,
+                                       minX: minX, maxX: maxX, minY: minY, maxY: maxY,
+                                       excluded: drop, width: width,
+                                       cellW: cellW, cellH: cellH) {
+            drop[pair.left] = true
+            drop[pair.right] = true
+        }
+
         guard drop.dropFirst().contains(true) else { return self }
 
         var cleaned = intensity
@@ -381,6 +461,85 @@ struct CellPatch {
         return CellPatch(width: width, height: height, intensity: cleaned,
                          threshold: threshold, separation: separation,
                          printedBounds: printedBounds)
+    }
+
+    /// The best-matched pair of printed parentheses among the components, if
+    /// any: a left arc bowing left and a right arc bowing right, facing each
+    /// other across the cell. See `Tuning.bracket…`.
+    private static func bracketPair(labels: [Int], count: Int, area: [Int],
+                                    minX: [Int], maxX: [Int], minY: [Int], maxY: [Int],
+                                    excluded: [Bool], width: Int,
+                                    cellW: Double, cellH: Double) -> (left: Int, right: Int)? {
+        // Shape first, from the bounding boxes alone — most components are
+        // ruled out here and never need their rows measured.
+        var tall: [Int] = []
+        for label in 1...count where !excluded[label] && area[label] > 0 {
+            let w = maxX[label] - minX[label] + 1
+            let h = maxY[label] - minY[label] + 1
+            guard Double(h) >= Tuning.bracketElongation * Double(w),
+                  Double(h) >= Tuning.bracketMinHeight * cellH,
+                  Double(h) <= Tuning.bracketMaxHeight * cellH else { continue }
+            tall.append(label)
+        }
+        guard tall.count >= 2 else { return nil }
+
+        // Mean x of each candidate's ink, row by row.
+        var rowSum: [Int: [Double]] = [:], rowCount: [Int: [Int]] = [:]
+        for label in tall {
+            let h = maxY[label] - minY[label] + 1
+            rowSum[label] = [Double](repeating: 0, count: h)
+            rowCount[label] = [Int](repeating: 0, count: h)
+        }
+        let wanted = Set(tall)
+        for index in 0..<labels.count {
+            let label = labels[index]
+            guard label > 0, wanted.contains(label) else { continue }
+            let row = index / width - minY[label]
+            rowSum[label]![row] += Double(index % width)
+            rowCount[label]![row] += 1
+        }
+
+        // Positive: the middle sits right of the ends, i.e. ")".
+        func bulge(_ label: Int) -> Double? {
+            let sums = rowSum[label]!, counts = rowCount[label]!
+            let h = sums.count
+            func band(_ a: Double, _ b: Double) -> Double? {
+                let lo = Int(a * Double(h))
+                let hi = max(Int(b * Double(h)), lo + 1)
+                var total = 0.0, rows = 0
+                for row in lo..<min(hi, h) where counts[row] > 0 {
+                    total += sums[row] / Double(counts[row])
+                    rows += 1
+                }
+                return rows > 0 ? total / Double(rows) : nil
+            }
+            guard let top = band(0, 0.2), let mid = band(0.4, 0.6),
+                  let bottom = band(0.8, 1.0) else { return nil }
+            return mid - (top + bottom) / 2
+        }
+
+        var lefts: [(label: Int, h: Int)] = [], rights: [(label: Int, h: Int)] = []
+        for label in tall {
+            let h = maxY[label] - minY[label] + 1
+            guard let b = bulge(label), abs(b) >= Tuning.bracketMinBulge * Double(h) else { continue }
+            if b > 0 { rights.append((label, h)) } else { lefts.append((label, h)) }
+        }
+
+        var best: (score: Double, left: Int, right: Int)?
+        for l in lefts {
+            for r in rights where minX[r.label] > maxX[l.label] {
+                let gap = minX[r.label] - maxX[l.label]
+                guard Double(gap) >= Tuning.bracketMinGap * cellW else { continue }
+                let overlap = min(maxY[l.label], maxY[r.label]) - max(minY[l.label], minY[r.label]) + 1
+                guard Double(overlap) >= Tuning.bracketMinOverlap * Double(min(l.h, r.h)) else { continue }
+                let ratio = Double(l.h) / Double(r.h)
+                guard ratio >= Tuning.bracketHeightRatio,
+                      ratio <= 1 / Tuning.bracketHeightRatio else { continue }
+                let score = Double(overlap) / Double(max(l.h, r.h))
+                if best == nil || score > best!.score { best = (score, l.label, r.label) }
+            }
+        }
+        return best.map { ($0.left, $0.right) }
     }
 
     /// Otsu's method over a 256-bin histogram: pick the split that maximises

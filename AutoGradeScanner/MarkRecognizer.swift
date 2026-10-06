@@ -63,9 +63,15 @@ enum MarkRecognizer {
         // actually uploaded — not because the model was weaker, but because
         // the ink being described was a parenthesis, or the printed heading,
         // or a stroke that leaked in from the row above.
+        //
+        // Measured from the printed box, not the patch: the patch is read wider
+        // than the box, and the box is where the answer is.
+        let centre = (x: Double(patch.width) * Double(patch.printedBounds.midX),
+                      y: Double(patch.height) * Double(patch.printedBounds.midY))
         guard let mark = MarkFeatures.isolate(mask: patch.mask,
                                               width: patch.width,
-                                              height: patch.height) else { return nil }
+                                              height: patch.height,
+                                              centre: centre) else { return nil }
 
         let features = MarkFeatures.extract(mark: mark,
                                             width: patch.width,

@@ -13,6 +13,15 @@ import simd
 // While locked on, tracking state (last window + last homography) feeds the
 // matcher's fast path: one window instead of three, and a least-squares
 // refine of the previous solution instead of full RANSAC.
+/// What the camera was doing while one frame was exposed.
+struct FrameMotion {
+    /// How fast it was turning, radians per second; nil when the gyro had no
+    /// samples covering that moment (simulator, motion stopped).
+    let angularSpeed: Double?
+    /// The lens was moving to refocus.
+    let isFocusing: Bool
+}
+
 @MainActor
 final class LiveScanEngine {
 
@@ -102,6 +111,22 @@ final class LiveScanEngine {
         /// stopping them, and it is usually not the model.
         let stuckCells: Int
 
+        /// The camera's rotation rate on the last aligned frame, rad/s.
+        let angularSpeed: Double?
+        /// The lens was refocusing on the last aligned frame.
+        let isFocusing: Bool
+        /// The last aligned frame was still enough to read from.
+        let isSteady: Bool
+        /// Cells are waiting to be read and the camera has not held still for
+        /// long enough to read any of them.
+        let waitingForSteady: Bool
+        /// On the last aligned frame: cells whose print was found and agreed
+        /// with, out of those looked for.
+        let registered: Int
+        let registrationAttempts: Int
+        /// Wall time the last frame spent locating and reading cells, ms.
+        let readMillis: Double
+
         /// What, if anything, is worth telling the teacher about the framing.
         ///
         /// Cell size and blur are different problems with different fixes, and
@@ -111,6 +136,9 @@ final class LiveScanEngine {
         enum Framing { case fine, tooFar, tooShaky }
 
         var framing: Framing {
+            // First, because until the camera holds still nothing is read at
+            // all, and the cell-size figures below are taken from reads.
+            if aligned && waitingForSteady { return .tooShaky }
             guard aligned, typicalCellPixels > 0 else { return .fine }
             if typicalCellPixels < Sampling.minUsefulCellPixels { return .tooFar }
             // Cells big enough to read, still not being read.
@@ -156,6 +184,9 @@ final class LiveScanEngine {
     private let expected: [String]
     /// What the template says each cell is, parallel to `expected`.
     private let answerTypes: [String]
+    /// Each multiple-choice cell's options — its alphabet, not its answer —
+    /// parallel to `expected`; nil for every other kind of cell.
+    private let choiceOptions: [[String]?]
 
     /// Which page each flat question slot belongs to, and the reverse lookup.
     /// The flat slot stays the index space the whole session works in — every
@@ -234,18 +265,40 @@ final class LiveScanEngine {
     /// Alignment leverage at each cell on the most recent aligned frame.
     private var cellLeverage: [Int: Double] = [:]
     private var blankStreak: [Int: Int] = [:]
+    /// Aligned frames in a row taken mid-sweep while cells were waiting.
+    private var unsteadyFrames = 0
+    /// Where each cell was found on the aligned frame numbered `serial`, in
+    /// canonical pixels, for tracking it on the next one.
+    private var lastPlacement: [Int: (dx: Int, dy: Int, serial: Int)] = [:]
+    private var alignedSerial = 0
+    /// Wall time the last frame spent locating and reading cells.
+    private var lastReadMillis = 0.0
+    private var lastMotion: FrameMotion?
+    private var lastFrameSteady = true
+
+    // Registration (see CellRegistration). The master's print per page, built
+    // with its matcher; per cell, what to search for and the window to read
+    // through once found, built on first use.
+    private var masterInk: [Int: MasterInk] = [:]
+    private var cellTemplates: [Int: CellTemplate] = [:]
+    private var cellWindows: [Int: ReadWindow] = [:]
+    private var unregistrable: Set<Int> = []
+    /// Steady looks in a row on which a cell's print could not be found.
+    private var registrationMisses: [Int: Int] = [:]
+    /// Each cell's read window, capped so it never reaches a neighbour.
+    private let windowPads: [(left: Double, right: Double, top: Double, bottom: Double)]
+    private var lastRegistered = 0
+    private var lastRegistrationAttempts = 0
 
     /// The crop each question was last read from, kept so a teacher reviewing
     /// a verdict sees what the model saw. Only the most recent one per
     /// question is held — a cell is sampled dozens of times and keeping them
     /// all would be memory spent on frames nobody will ever look at.
     private var cellImages: [Int: UIImage] = [:]
-    /// Sharpness of the crop currently held for each cell, so a later frame
-    /// only replaces it by being better.
-    private var cellSharpness: [Int: Double] = [:]
-    /// Whether the crop currently held came from a frame that could be read.
-    /// A readable frame is never displaced by an unreadable one.
-    private var cellCropReadable: [Int: Bool] = [:]
+    /// The best look held for each cell, and the best per reading — see
+    /// `keepCrop`.
+    private var heldCrops: [Int: CropCandidate] = [:]
+    private var cropsByText: [Int: [String: CropCandidate]] = [:]
     /// Alignment leverage on the frame the held crop came from.
     ///
     /// Not the same as `cellLeverage`, which every aligned frame overwrites —
@@ -301,8 +354,12 @@ final class LiveScanEngine {
         let pages = questions.map(\.pageIndex)
         self.boxes = rects
         self.readBoxes = Self.widened(rects, pageOf: pages)
+        self.windowPads = Self.pads(rects, pageOf: pages,
+                                    padX: CGFloat(ReadWindow.Tuning.padX),
+                                    padY: CGFloat(ReadWindow.Tuning.padY))
         self.expected = questions.map(\.answer)
         self.answerTypes = questions.map(\.answerType)
+        self.choiceOptions = questions.map { Self.options(for: $0, in: template) }
         self.pageOf = pages
 
         var slots = Array(repeating: [Int](), count: template.pages.count)
@@ -342,8 +399,15 @@ final class LiveScanEngine {
     private func build(page: Int, prefetchingNext: Bool = true) {
         guard template.pages.indices.contains(page), matchers[page] == nil else { return }
         let master = template.pages[page].master
+        let pageSize = master.size
+        let slots = slotsByPage.indices.contains(page) ? slotsByPage[page] : []
+        let cells = slots.map { (slot: $0, box: boxes[$0], pads: windowPads[$0]) }
         Task.detached(priority: .userInitiated) { [weak self] in
             let built = try? XFeatTemplateMatcher(template: master)
+            // The page's print, for registering cells against. Built here, off
+            // the main thread and before the first frame can align, so it is
+            // always ready by the time a cell is read.
+            let ink = MasterInk(master)
             // The inner closure captures `self` again rather than reaching
             // for the outer `weak var` — referencing that from concurrent
             // code is an error under Swift 6.
@@ -353,9 +417,32 @@ final class LiveScanEngine {
                 // no matcher, so `isReady` reports false for it and switching
                 // to it tries again.
                 if let built { self.matchers[page] = built }
+                if let ink { self.masterInk[page] = ink }
                 self.publish()
                 if prefetchingNext, let next = self.pageAfter(page) {
                     self.build(page: next, prefetchingNext: false)
+                }
+            }
+            // Every cell's template and window too, after the page is already
+            // usable: built lazily they cost the main thread several ms per
+            // cell on the first frame that reads them — a visible stall the
+            // moment a whole page comes into view.
+            guard let ink else { return }
+            var prepared: [(slot: Int, template: CellTemplate, window: ReadWindow?)] = []
+            for cell in cells {
+                let t = CellTemplate(box: cell.box, ink: ink, pageSize: pageSize)
+                let w = t.isUsable ? ReadWindow(box: cell.box, pads: cell.pads, template: t, ink: ink) : nil
+                prepared.append((cell.slot, t, w))
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for cell in prepared {
+                    if let w = cell.window {
+                        self.cellTemplates[cell.slot] = cell.template
+                        self.cellWindows[cell.slot] = w
+                    } else {
+                        self.unregistrable.insert(cell.slot)
+                    }
                 }
             }
         }
@@ -374,7 +461,8 @@ final class LiveScanEngine {
     func submit(frame: UIImage,
                 timestamp: TimeInterval = CACurrentMediaTime(),
                 intrinsics: simd_double3x3? = nil,
-                pixels: CellPixelSource? = nil) {
+                pixels: CellPixelSource? = nil,
+                motion: FrameMotion? = nil) {
         guard !busy, let matcher = matchers[currentPage] else { return }
         busy = true
         let hint = trackingHint
@@ -393,7 +481,8 @@ final class LiveScanEngine {
                 self.busy = false
                 guard self.pageGeneration == generation else { return }
                 self.integrate(frame: frame, tracked: tracked ?? nil, millis: millis,
-                               timestamp: timestamp, intrinsics: intrinsics, pixels: pixels)
+                               timestamp: timestamp, intrinsics: intrinsics, pixels: pixels,
+                               motion: motion)
             }
         }
     }
@@ -424,10 +513,13 @@ final class LiveScanEngine {
         cellLeverage = [:]
         blankStreak = [:]
         cellImages = [:]
-        cellSharpness = [:]
-        cellCropReadable = [:]
+        heldCrops = [:]
+        cropsByText = [:]
+        registrationMisses = [:]
         cellCropLeverage = [:]
         cellSampledPixels = [:]
+        unsteadyFrames = 0
+        lastPlacement = [:]
         lastCellPixels = 0
         lastFramePixels = 0
         pageKeyframes = [:]
@@ -459,6 +551,8 @@ final class LiveScanEngine {
         anchorTimestamp = 0
         anchorIntrinsics = nil
         anchorSheetQuad = nil
+        unsteadyFrames = 0
+        lastPlacement = [:]
     }
 
     // MARK: - Pages
@@ -535,6 +629,63 @@ final class LiveScanEngine {
         let remaining: Int
 
         var isEmpty: Bool { pages.isEmpty }
+    }
+
+    /// When a frame is still enough to read from.
+    ///
+    /// Reading used to start on the second frame that saw a cell, whatever
+    /// the camera was doing. On the sixteen real scans that meant cells were
+    /// read while the phone was still being brought into position — the
+    /// teacher's own description of the 111s and the crops that slid off the
+    /// answer. Waiting is cheap when it is measured: a fixed delay costs time
+    /// on a phone already held still and is not long enough on one that is
+    /// not, so the wait here lasts exactly until the camera stops moving.
+    enum Steadiness {
+        /// Above this rotation rate a frame is smeared past reading: at 4K
+        /// and a 1/30s exposure, 0.35 rad/s drags the image some 30px, most
+        /// of a stroke's length once a cell is sampled for recognition.
+        /// Panning across a page at an ordinary pace stays under it.
+        ///
+        /// This gate used to ask far more — the camera under 0.15 rad/s, the
+        /// lens not refocusing, and every cell within 0.15 of its width of
+        /// where it was a frame before, two frames running. A hand never
+        /// manages all of that at once (the alignment's own frame-to-frame
+        /// jitter is about that size), and on the first build that carried it
+        /// eight cells in ten were still unread after ten seconds of
+        /// scanning. Where a cell is, is registration's job now; this is
+        /// only here to skip frames taken mid-sweep.
+        static let maxAngularSpeed = 0.35
+        /// Aligned frames in a row taken mid-sweep, with cells waiting, before
+        /// the scanner says 拿穩一點 — about a second.
+        static let shakyFramesBeforeHint = 10
+    }
+
+    enum Registration {
+        /// Looks at a cell whose print cannot be found before it is read the
+        /// old way, where the homography says, so a cell is never left stuck
+        /// behind registration.
+        static let fallbackAfter = 3
+        /// Full searches per frame, the cells with the fewest looks going
+        /// first. A full search samples five cells' worth of frame and scores
+        /// two thousand placements; one per waiting cell per frame is what
+        /// made the first build crawl. Cells located on the previous frame are
+        /// tracked instead, which costs a fraction of that and is not
+        /// counted here.
+        static let maxSearchesPerFrame = 3
+        /// How far tracking looks around the previous placement, canonical
+        /// pixels (a tenth of a cell).
+        static let trackRadius = 8
+        /// Cells placed in the same frame are compared once there are this
+        /// many…
+        static let minCellsToCompare = 3
+        /// …and one whose correction is further than this, in cells, from the
+        /// frame's median correction is not trusted. Across a frame the
+        /// homography's error changes by a fraction of a cell; a placement a
+        /// row away has found some other row's print.
+        static let maxDisagreement = 0.35
+        /// The neighbourhood is rendered this much finer than the canonical
+        /// grid it is sampled onto, so the sampling does not alias.
+        static let renderScale = 1.5
     }
 
     enum Sampling {
@@ -680,7 +831,8 @@ final class LiveScanEngine {
                            millis: Double,
                            timestamp: TimeInterval,
                            intrinsics: simd_double3x3?,
-                           pixels: CellPixelSource? = nil) {
+                           pixels: CellPixelSource? = nil,
+                           motion: FrameMotion? = nil) {
         lastAlignMillis = millis
         guard let tracked else { return miss() }
         let h = tracked.homography
@@ -756,6 +908,17 @@ final class LiveScanEngine {
                                  width: sxs.max()! - sxs.min()!, height: sys.max()! - sys.min()!)
         }
 
+        // Is this frame one to read from? Only a camera actually turning fast
+        // says no — see `Steadiness`. Frames without motion data (the
+        // headless self-test, the simulator) always qualify.
+        let framePixels = pixels?.frameSize ?? lastFrameSize
+        let frameSteady = (motion?.angularSpeed ?? 0) <= Steadiness.maxAngularSpeed
+        lastMotion = motion
+        lastFrameSteady = frameSteady
+        alignedSerial += 1
+        let waiting = currentSlots.contains { confirmedNow.contains($0) && verdicts[$0] == nil }
+        unsteadyFrames = waiting && !frameSteady ? unsteadyFrames + 1 : 0
+
         // Recognition reads from the capture buffer at sensor resolution when
         // one came with the frame, and from the downscaled alignment image
         // otherwise. Building the fallback costs a full-frame grayscale pass,
@@ -774,12 +937,13 @@ final class LiveScanEngine {
         // crop is what makes that affordable: it is arithmetic on a quad we
         // already projected, so it costs nothing on frames where no cell
         // needs reading.
-        let framePixels = pixels?.frameSize ?? lastFrameSize
         lastFramePixels = Int(max(framePixels.width, framePixels.height))
         if let firstVisible = confirmedNow.sorted().first, let quad = rawQuads[firstVisible] {
             lastCellPixels = Self.sampledSide(of: quad, in: framePixels)
         }
 
+        // Which cells are read on this frame.
+        var toRead: [Int] = []
         for i in currentSlots {
             guard confirmedNow.contains(i) else {
                 seenStreak[i] = 0
@@ -792,12 +956,121 @@ final class LiveScanEngine {
             }
             seenStreak[i, default: 0] += 1
             guard seenStreak[i, default: 0] >= 2, verdicts[i] == nil else { continue }
-
+            // Not mid-sweep. A frame skipped here is not a look: it neither
+            // votes nor counts towards writing the cell off as blank.
+            guard frameSteady else { continue }
             let exp = i < expected.count ? expected[i] : ""
             guard !exp.isEmpty else { continue }
+            toRead.append(i)
+        }
 
-            if let source, let quad = readQuads[i],
-               let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
+        // Where each of them is actually printed in this frame — see
+        // CellRegistration. Found first for all of them, because one cell's
+        // placement is checked against the others' before any is trusted.
+        let readStarted = CACurrentMediaTime()
+        var placed: [Int: (placement: CellRegistration.Placement, region: FrameRegion)] = [:]
+        var looked = Set<Int>()
+        if let source {
+            var searches = 0
+            let byLooks = toRead.sorted {
+                (accumulators[$0]?.samples ?? 0, $0) < (accumulators[$1]?.samples ?? 0, $1)
+            }
+            for i in byLooks {
+                guard let prepared = registration(for: i) else { continue }
+                let t = prepared.template
+                // Found on the previous aligned frame: follow it from there.
+                if let last = lastPlacement[i], last.serial == alignedSerial - 1 {
+                    let r = Registration.trackRadius
+                    looked.insert(i)
+                    let rect = t.templateRect
+                        .offsetBy(dx: CGFloat(Double(last.dx) / t.scaleX),
+                                  dy: CGFloat(Double(last.dy) / t.scaleY))
+                        .insetBy(dx: CGFloat(-Double(r) / t.scaleX), dy: CGFloat(-Double(r) / t.scaleY))
+                    let quad = h.projectedCorners(of: rect)
+                    let side = Int(Double(max(t.width, t.height) + 2 * r) * Registration.renderScale)
+                    if let region = source.region(covering: quad, maxSide: side),
+                       let field = CellPatch(bitmap: region.bitmap, quad: quad.map(region.pixel),
+                                             width: t.width + 2 * r, height: t.height + 2 * r),
+                       let step = CellRegistration.track(t, in: field, radius: r) {
+                        placed[i] = (CellRegistration.Placement(dx: last.dx + step.dx,
+                                                                dy: last.dy + step.dy,
+                                                                score: step.score), region)
+                        continue
+                    }
+                }
+                guard searches < Registration.maxSearchesPerFrame else { continue }
+                searches += 1
+                looked.insert(i)
+                let searchQuad = h.projectedCorners(of: t.searchRect)
+                let side = Int(Double(max(t.fieldWidth, t.fieldHeight)) * Registration.renderScale)
+                guard let region = source.region(covering: searchQuad, maxSide: side),
+                      let field = CellPatch(bitmap: region.bitmap, quad: searchQuad.map(region.pixel),
+                                            width: t.fieldWidth, height: t.fieldHeight),
+                      let placement = CellRegistration.locate(t, in: field) else { continue }
+                placed[i] = (placement, region)
+            }
+            // The homography's error varies smoothly across the page, so cells
+            // read together need about the same correction. One that wants a
+            // very different one has locked onto something else.
+            if placed.count >= Registration.minCellsToCompare {
+                var shifts: [Int: (x: Double, y: Double)] = [:]
+                for (i, hit) in placed {
+                    guard let t = cellTemplates[i] else { continue }
+                    shifts[i] = (Double(hit.placement.dx) / Double(t.cellPixels.width),
+                                 Double(hit.placement.dy) / Double(t.cellPixels.height))
+                }
+                let mx = Self.median(shifts.values.map(\.x))
+                let my = Self.median(shifts.values.map(\.y))
+                for i in Array(placed.keys) {
+                    guard let shift = shifts[i] else { continue }
+                    if hypot(shift.x - mx, shift.y - my) > Registration.maxDisagreement {
+                        placed[i] = nil
+                    }
+                }
+            }
+        }
+        for (i, hit) in placed {
+            lastPlacement[i] = (hit.placement.dx, hit.placement.dy, alignedSerial)
+        }
+        lastRegistered = placed.count
+        lastRegistrationAttempts = looked.count
+
+        for i in toRead {
+            let exp = expected[i]
+            let type = i < answerTypes.count ? answerTypes[i] : nil
+            var reading: AnswerRecognizer.Reading?
+
+            if let hit = placed[i], let t = cellTemplates[i], let window = cellWindows[i] {
+                // Placed: read through the cell's own window, moved to where
+                // its print was found, with that print erased.
+                registrationMisses[i] = 0
+                let corrected = boxes[i].offsetBy(dx: CGFloat(Double(hit.placement.dx) / t.scaleX),
+                                                  dy: CGFloat(Double(hit.placement.dy) / t.scaleY))
+                let quad = h.projectedCorners(of: window.rect(around: corrected)).map(hit.region.pixel)
+                guard let patch = CellPatch(bitmap: hit.region.bitmap, quad: quad,
+                                            width: window.width, height: window.height,
+                                            printedBounds: window.printedBounds),
+                      let cleaned = window.cleaned(patch) else { continue }
+                reading = recognizer.read(cleaned.patch, expected: exp, declaredType: type,
+                                          options: choiceOptions[i], furnitureCleared: true)
+                keepCrop(i, bitmap: cleaned.evidence, quad: rawQuads[i] ?? quad,
+                         framePixels: framePixels, readable: reading != nil,
+                         registered: true, text: reading?.text)
+            } else if registration(for: i) != nil, !looked.contains(i) {
+                // Its turn to be searched for has not come this frame.
+                continue
+            } else if registration(for: i) != nil,
+                      registrationMisses[i, default: 0] < Registration.fallbackAfter {
+                // Its print is on the master but could not be found here: this
+                // frame is not on the cell, or not provably. Not a look.
+                registrationMisses[i, default: 0] += 1
+                continue
+            } else if let source, let quad = readQuads[i],
+                      let cut = source.cell(quad: quad, maxSide: Self.cellRenderSide) {
+                // Nothing printed to register against, or registration has
+                // kept failing on a steady camera: read where the homography
+                // says, as before, rather than leave the cell stuck.
+                //
                 // The widened box, because that is the region being sampled —
                 // passing the printed box's ratio here would squash the crop
                 // by whatever the two differ, which is exactly the distortion
@@ -806,57 +1079,40 @@ final class LiveScanEngine {
                 let pageAspect = masterAspect.indices.contains(currentPage)
                     ? masterAspect[currentPage] : 1
                 let aspect = box.height > 0 ? (box.width * pageAspect) / box.height : 1
-                let type = i < answerTypes.count ? answerTypes[i] : nil
-                let reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
-                                              aspect: aspect, expected: exp,
-                                              declaredType: type,
-                                              printedBounds: Self.printedBounds(
-                                                  of: boxes[i], within: box))
-                // Keep the best look at this cell, judged after trying to read
-                // it rather than before.
-                //
-                // This crop is the evidence a teacher is shown when a verdict
-                // looks wrong, and the image uploaded as a labelled sample
-                // when they correct it. Ranking frames by sharpness alone
-                // picked the wrong ones: a crop that had slipped off the cell
-                // onto a shadow edge scores enormously on a Laplacian, and
-                // three of them made it into a real scan. A frame that
-                // produced a reading is a frame that was actually on the cell,
-                // so those compete first and the rest are only a fallback —
-                // because a cell nothing could read still has to show the
-                // teacher something.
-                if verdicts[i] == nil {
-                    // Measured on the printed box, not the widened one. This
-                    // number drives the 靠近一點 hint, and it means "how much
-                    // of the sensor is the answer cell using" — widening the
-                    // read window does not put a single extra pixel on the
-                    // answer, so letting it inflate the figure would move the
-                    // advice while the thing it is advising about is
-                    // unchanged.
-                    keepCrop(i, cut: cut, quad: rawQuads[i] ?? quad,
-                             framePixels: framePixels, readable: reading != nil)
-                }
-                if let reading {
-                    blankStreak[i] = 0
-                    if reading.discarded > 0 {
-                        discardedGroups[i] = max(discardedGroups[i] ?? 0, reading.discarded)
-                    }
-                    var votes = accumulators[i] ?? AnswerAccumulator()
-                    votes.add(reading)
-                    accumulators[i] = votes
-                    if votes.isSettled, let best = votes.best {
-                        lockIn(i, recognized: best.text, expected: exp)
-                    } else if votes.hasGivenUp {
-                        // Plenty of clear looks, still no agreement. Saying so
-                        // is better than picking the loudest guess and marking
-                        // a student wrong on it.
-                        recognizedText[i] = votes.best?.text
-                        verdicts[i] = .unsure
-                    }
-                    continue
-                }
-                blankStreak[i, default: 0] += 1
+                reading = recognizer.read(frame: cut.bitmap, quad: cut.quad,
+                                          aspect: aspect, expected: exp,
+                                          declaredType: type,
+                                          printedBounds: Self.printedBounds(of: boxes[i], within: box),
+                                          options: choiceOptions[i])
+                // Measured on the printed box, not the widened one: that is
+                // the number the 靠近一點 hint is about.
+                keepCrop(i, bitmap: cut.bitmap, quad: rawQuads[i] ?? quad,
+                         framePixels: framePixels, readable: reading != nil,
+                         registered: false, text: reading?.text)
+            } else {
+                continue
             }
+
+            if let reading {
+                blankStreak[i] = 0
+                if reading.discarded > 0 {
+                    discardedGroups[i] = max(discardedGroups[i] ?? 0, reading.discarded)
+                }
+                var votes = accumulators[i] ?? AnswerAccumulator()
+                votes.add(reading)
+                accumulators[i] = votes
+                if votes.isSettled, let best = votes.best {
+                    lockIn(i, recognized: best.text, expected: exp)
+                } else if votes.hasGivenUp {
+                    // Plenty of clear looks, still no agreement. Saying so
+                    // is better than picking the loudest guess and marking
+                    // a student wrong on it.
+                    recognizedText[i] = votes.best?.text
+                    verdicts[i] = .unsure
+                }
+                continue
+            }
+            blankStreak[i, default: 0] += 1
 
             // Nothing legible after several consecutive clear looks at the
             // same cell. Consecutive is the point: the count resets the moment
@@ -878,33 +1134,84 @@ final class LiveScanEngine {
                 }
             }
         }
+        lastReadMillis = toRead.isEmpty ? 0 : (CACurrentMediaTime() - readStarted) * 1000
         visibleQuads = nowQuads
         visibleRects = nowRects
         publish(aligned: true)
         scheduleAdvanceIfPageDone()
     }
 
-    /// Records this frame's crop if it is the best look at the cell so far.
+    /// One look at a cell that could be kept as its evidence.
+    private struct CropCandidate {
+        let bitmap: GrayBitmap
+        let sharpness: Double
+        let registered: Bool
+        let readable: Bool
+        let leverage: Double?
+        let sampledPixels: Int
+
+        /// Three tiers, then sharpness. A crop whose print was found where it
+        /// belongs is provably on the cell; one that produced a reading was
+        /// probably on it; sharpness only ranks crops within a tier, because
+        /// a crop that has slid onto the paper's shadow is the sharpest of
+        /// all and contains none of the answer.
+        func beats(_ other: CropCandidate?) -> Bool {
+            guard let other else { return true }
+            if registered != other.registered { return registered }
+            if readable != other.readable { return readable }
+            return sharpness > other.sharpness
+        }
+    }
+
+    /// Records this frame's crop if it is the best look at the cell so far —
+    /// overall, and among the looks that read `text`.
     ///
-    /// Two tiers, not one score. Whether the frame could be read at all
-    /// outranks how sharp it is, because sharpness answers "is there a hard
-    /// edge here" and a crop that has slid onto the paper's shadow answers
-    /// that emphatically while containing none of the answer. Within a tier,
-    /// sharpness decides.
-    private func keepCrop(_ i: Int, cut: (bitmap: GrayBitmap, quad: [CGPoint]),
-                          quad: [CGPoint], framePixels: CGSize, readable: Bool) {
-        let held = cellCropReadable[i] ?? false
-        if held && !readable { return }
-        let sharp = cut.bitmap.sharpness()
-        // A newly readable frame replaces an unreadable one whatever its
-        // sharpness — being on the cell is the more important fact.
-        let better = (readable && !held) || sharp > (cellSharpness[i] ?? -1)
-        guard better else { return }
-        cellSharpness[i] = sharp
-        cellCropReadable[i] = readable
-        cellCropLeverage[i] = cellLeverage[i]
-        cellImages[i] = cut.bitmap.makeImage()
-        cellSampledPixels[i] = Self.sampledSide(of: quad, in: framePixels)
+    /// The second is what the teacher is shown once the cell settles: the
+    /// crop behind a verdict should be one that read that verdict, not the
+    /// sharpest frame of the session, which may have read something else.
+    private func keepCrop(_ i: Int, bitmap: GrayBitmap, quad: [CGPoint], framePixels: CGSize,
+                          readable: Bool, registered: Bool, text: String?) {
+        guard verdicts[i] == nil else { return }
+        let candidate = CropCandidate(bitmap: bitmap, sharpness: bitmap.sharpness(),
+                                      registered: registered, readable: readable,
+                                      leverage: cellLeverage[i],
+                                      sampledPixels: Self.sampledSide(of: quad, in: framePixels))
+        if let text, candidate.beats(cropsByText[i]?[text]) {
+            cropsByText[i, default: [:]][text] = candidate
+        }
+        if candidate.beats(heldCrops[i]) { hold(candidate, for: i) }
+    }
+
+    private func hold(_ candidate: CropCandidate, for i: Int) {
+        heldCrops[i] = candidate
+        cellImages[i] = candidate.bitmap.makeImage()
+        cellCropLeverage[i] = candidate.leverage
+        cellSampledPixels[i] = candidate.sampledPixels
+    }
+
+    /// What registration needs for one cell, built on first use and kept.
+    /// nil when the master has nothing printed near the cell to register
+    /// against, or when the page's ink is not ready yet.
+    private func registration(for i: Int) -> (template: CellTemplate, window: ReadWindow)? {
+        if let t = cellTemplates[i], let w = cellWindows[i] { return (t, w) }
+        guard !unregistrable.contains(i), let ink = masterInk[currentPage],
+              template.pages.indices.contains(currentPage) else { return nil }
+        let t = CellTemplate(box: boxes[i], ink: ink, pageSize: template.pages[currentPage].master.size)
+        guard t.isUsable else {
+            unregistrable.insert(i)
+            return nil
+        }
+        let w = ReadWindow(box: boxes[i], pads: windowPads[i], template: t, ink: ink)
+        cellTemplates[i] = t
+        cellWindows[i] = w
+        return (t, w)
+    }
+
+    private static func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        guard !sorted.isEmpty else { return 0 }
+        let mid = sorted.count / 2
+        return sorted.count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
     }
 
     /// Median leverage across the cells currently on screen. Zero before the
@@ -998,6 +1305,48 @@ final class LiveScanEngine {
         }
     }
 
+    /// The same caps as `widened`, with separate pads per axis, returned as
+    /// distances in normalized page units: how far a registered cell's read
+    /// window may reach past its box on each side.
+    private static func pads(_ boxes: [CGRect], pageOf: [Int], padX: CGFloat,
+                             padY: CGFloat) -> [(left: Double, right: Double, top: Double, bottom: Double)] {
+        boxes.indices.map { i in
+            let box = boxes[i]
+            var top = box.height * padY, bottom = box.height * padY
+            var left = box.width * padX, right = box.width * padX
+            for j in boxes.indices where j != i && pageOf[j] == pageOf[i] {
+                let other = boxes[j]
+                if other.maxX > box.minX, other.minX < box.maxX {
+                    if other.maxY <= box.minY {
+                        top = min(top, (box.minY - other.maxY) / 2)
+                    } else if other.minY >= box.maxY {
+                        bottom = min(bottom, (other.minY - box.maxY) / 2)
+                    } else {
+                        top = 0
+                        bottom = 0
+                    }
+                }
+                if other.maxY > box.minY, other.minY < box.maxY {
+                    if other.maxX <= box.minX {
+                        left = min(left, (box.minX - other.maxX) / 2)
+                    } else if other.minX >= box.maxX {
+                        right = min(right, (other.minX - box.maxX) / 2)
+                    } else {
+                        left = 0
+                        right = 0
+                    }
+                }
+            }
+            // Never past the sheet: that is paper nobody photographed.
+            left = min(left, box.minX)
+            right = min(right, 1 - box.maxX)
+            top = min(top, box.minY)
+            bottom = min(bottom, 1 - box.maxY)
+            return (Double(max(0, left)), Double(max(0, right)),
+                    Double(max(0, top)), Double(max(0, bottom)))
+        }
+    }
+
     /// Where the printed cell falls inside the widened one, in fractions of
     /// the widened one. What `CellPatch` needs in order to keep every "share
     /// of the cell" threshold meaning a share of the printed cell.
@@ -1057,6 +1406,8 @@ final class LiveScanEngine {
     }
 
     private func lockIn(_ index: Int, recognized: String, expected: String) {
+        // The evidence behind a verdict should be a look that read it.
+        if let matching = cropsByText[index]?[recognized] { hold(matching, for: index) }
         recognizedText[index] = recognized
         verdicts[index] = AnswerKind.canonical(recognized) == AnswerKind.canonical(expected)
             ? .correct : .wrong
@@ -1074,6 +1425,7 @@ final class LiveScanEngine {
             visibleQuads = [:]
             visibleRects = [:]
             seenStreak = [:]
+            lastPlacement = [:]
             grace = [:]
             supportHistory = []
             trackingHint = nil
@@ -1132,6 +1484,13 @@ final class LiveScanEngine {
                          cellPixels: lastCellPixels,
                          framePixels: lastFramePixels,
                          typicalCellPixels: typicalCellPixels,
-                         stuckCells: stuckCells))
+                         stuckCells: stuckCells,
+                         angularSpeed: lastMotion?.angularSpeed,
+                         isFocusing: lastMotion?.isFocusing ?? false,
+                         isSteady: lastFrameSteady,
+                         waitingForSteady: unsteadyFrames >= Steadiness.shakyFramesBeforeHint,
+                         registered: lastRegistered,
+                         registrationAttempts: lastRegistrationAttempts,
+                         readMillis: lastReadMillis))
     }
 }

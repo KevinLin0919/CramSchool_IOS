@@ -22,6 +22,11 @@ protocol PoseProvider: AnyObject {
     // True after ~1.5 s without meaningful rotation — the "iPad on a stand"
     // case, where consumers can relax their processing cadence.
     var isStationary: Bool { get }
+
+    // How fast the camera was turning at `time` (host clock), in radians per
+    // second, averaged over the few hundredths of a second before it. nil
+    // when motion data does not cover that moment.
+    func angularSpeed(at time: TimeInterval) -> Double?
 }
 
 // Gyro-only implementation: compensates handheld rotation, which dominates
@@ -73,6 +78,27 @@ final class GyroPoseProvider: PoseProvider {
         lock.lock(); defer { lock.unlock() }
         guard let last = samples.last else { return false }
         return last.time - lastMotionAt > 1.5
+    }
+
+    // Long enough to average out sample noise, short enough to describe the
+    // exposure rather than the last second of hand movement.
+    private static let speedWindow = 0.05
+
+    func angularSpeed(at time: TimeInterval) -> Double? {
+        lock.lock()
+        let samples = self.samples
+        lock.unlock()
+        guard let first = samples.first, let last = samples.last else { return nil }
+        // The frame may be stamped a moment after the newest gyro sample.
+        let end = min(time, last.time)
+        let start = end - GyroPoseProvider.speedWindow
+        guard start >= first.time, time - last.time < 0.1,
+              let now = GyroPoseProvider.attitude(at: end, in: samples),
+              let before = GyroPoseProvider.attitude(at: start, in: samples) else { return nil }
+        let delta = before.inverse * now
+        // q and -q are the same rotation; take the shorter way round.
+        let angle = 2 * acos(min(1, abs(delta.real)))
+        return angle / GyroPoseProvider.speedWindow
     }
 
     func stop() {
