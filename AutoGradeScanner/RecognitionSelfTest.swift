@@ -382,6 +382,21 @@ enum RecognitionSelfTest {
               MarkRecognizer.recognize(offCentre)?.mark == .circle,
               "ring in an off-centre box, an arc nearer the patch middle")
 
+        // A choice question's options are its alphabet, not the answers that
+        // happen to be right on this paper. Keyed only 2, 3 and 4, it still
+        // offers 1; a 5 anywhere makes it 1–5; letters run from A.
+        let keyedTwoToFour = AnswerKind.choiceOptions(from: ["2", "3", "4", "4", "2"])
+        let keyedToFive = AnswerKind.choiceOptions(from: ["1", "5"])
+        let circled = AnswerKind.choiceOptions(from: ["②", "③"])
+        let lettered = AnswerKind.choiceOptions(from: ["B", "C"])
+        check("options.fullAlphabet",
+              keyedTwoToFour == ["1", "2", "3", "4"]
+                && keyedToFive == ["1", "2", "3", "4", "5"]
+                && circled == ["1", "2", "3", "4"]
+                && lettered == ["A", "B", "C", "D"],
+              "2/3/4 → \(keyedTwoToFour ?? []), 1/5 → \(keyedToFive ?? []), "
+                + "②③ → \(circled ?? []), B/C → \(lettered ?? [])")
+
         if let recognizer,
            let data = FileManager.default.contents(atPath: referencePath),
            let reference = try? JSONDecoder().decode(Reference.self, from: data),

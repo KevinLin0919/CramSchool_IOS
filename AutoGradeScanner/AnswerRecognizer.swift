@@ -77,6 +77,43 @@ enum AnswerKind {
         if crossForms.contains(trimmed) { return Mark.cross.rawValue }
         return String(trimmed.map { circledDigits[$0] ?? $0 })
     }
+
+    /// Every option a multiple-choice question offers, given answers seen on
+    /// the paper: 1–4, or A–D, reaching 5 (or E) only when an answer does.
+    ///
+    /// The options used to be the distinct answers themselves, which is the
+    /// same thing only on a paper where every option happens to be right
+    /// somewhere. 4上 1-2 家鄉地形 keys nothing but 2, 3 and 4, so a student
+    /// who wrote 1 could be neither read — the recognizer only chooses among
+    /// the options — nor entered on the correction screen.
+    ///
+    /// Works the same on answer keys and on option lists already filed, so a
+    /// record that carries the old, short list is mended where it is shown.
+    /// Answers that are not one digit or one capital letter each keep the old
+    /// rule: their distinct values, when there are enough to be a set at all.
+    static func choiceOptions(from answers: [String]) -> [String]? {
+        let keys = Set(answers.map(canonical).filter { !$0.isEmpty })
+        guard !keys.isEmpty else { return nil }
+
+        let digits = keys.compactMap { $0.count == 1 ? Int($0) : nil }
+        if digits.count == keys.count, let top = digits.max(), digits.allSatisfy({ $0 >= 1 }) {
+            return (1...max(4, top)).map(String.init)
+        }
+
+        let a = ("A" as Unicode.Scalar).value, z = ("Z" as Unicode.Scalar).value
+        let capitals = keys.compactMap { key -> UInt32? in
+            let scalars = key.unicodeScalars
+            guard scalars.count == 1, let value = scalars.first?.value,
+                  (a...z).contains(value) else { return nil }
+            return value
+        }
+        if capitals.count == keys.count, let top = capitals.max() {
+            let last = max(top, ("D" as Unicode.Scalar).value)
+            return (a...last).compactMap { Unicode.Scalar($0).map { String(Character($0)) } }
+        }
+
+        return keys.count >= 3 ? keys.sorted() : nil
+    }
 }
 
 final class AnswerRecognizer {
