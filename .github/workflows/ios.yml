@@ -114,6 +114,10 @@ jobs:
           grep -q "RECOG PASS register.findsTheShift" recog.log
           grep -q "RECOG PASS register.refusesBlankPaper" recog.log
           grep -q "RECOG PASS register.erasesPrintKeepsStroke" recog.log
+          # A choice cell's options are 1–4 (or 1–5) even when the answer key
+          # never uses one of them; otherwise that digit can be neither read
+          # nor entered on the correction screen.
+          grep -q "RECOG PASS options.fullAlphabet" recog.log
           ! grep -q "RECOG FAIL" recog.log
       - name: Upload self-test output
         if: always()
