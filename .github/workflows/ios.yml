@@ -3,8 +3,13 @@ name: iOS starter workflow
 on:
   push:
     branches: [ "main", "develop", "coreml-xfeat", "demo-*", "client-*", "scan-*" ]
+    # Documentation alone never needs a build — and on main or develop a build
+    # is a TestFlight upload that teachers (or QAT) would receive for nothing,
+    # paid for in macOS runner minutes.
+    paths-ignore: [ "**.md", "docs/**" ]
   pull_request:
     branches: [ "main" ]
+    paths-ignore: [ "**.md", "docs/**" ]
   workflow_dispatch:
 
 jobs:
