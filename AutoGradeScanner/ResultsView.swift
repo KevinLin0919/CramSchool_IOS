@@ -908,7 +908,12 @@ private struct CorrectionSheet: View {
             // The template's own alphabet. Without one — an older record, or
             // a paper with too few distinct answers to infer from — fall back
             // to typing rather than inventing options that may not exist.
-            if let options = answer.options, options.count >= 3 {
+            //
+            // Filled out again here because records filed before 1–4 was
+            // completed carry the bare answers, and a paper keyed only 2, 3
+            // and 4 would go on hiding the 1 its student wrote.
+            if let options = answer.options.flatMap(AnswerKind.choiceOptions(from:)),
+               options.count >= 3 {
                 grid(options, columns: Self.columns(for: options.count),
                      current: answer.teacherValue)
             } else {

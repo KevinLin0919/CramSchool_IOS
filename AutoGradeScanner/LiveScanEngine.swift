@@ -791,10 +791,10 @@ final class LiveScanEngine {
 
     /// Every option this question offers, or nil when it does not offer a set.
     ///
-    /// Only multiple choice has one. The set is the distinct answers the
-    /// template's own choice cells hold, sorted — so a paper labelled 1–4
-    /// yields 1–4 and one labelled A–D yields A–D, without anyone having to
-    /// declare which convention this school uses.
+    /// Only multiple choice has one. The template's own choice answers say
+    /// which convention the paper uses — digits or letters — and
+    /// `AnswerKind.choiceOptions` fills in the rest of it, so an option nobody
+    /// on this paper happens to be right with is still one a student can pick.
     ///
     /// Reading the answer key to learn the ALPHABET is not reading it to
     /// learn the answer: which four options exist is a fact about the
@@ -802,15 +802,9 @@ final class LiveScanEngine {
     static func options(for question: ResolvedTemplate.Question,
                         in template: ResolvedTemplate) -> [String]? {
         guard question.answerType == "choice" else { return nil }
-        let set = Set(template.questions
+        return AnswerKind.choiceOptions(from: template.questions
             .filter { $0.answerType == "choice" }
-            .map { AnswerKind.canonical($0.answer) }
-            .filter { !$0.isEmpty })
-        // Two is not a set of options, it is a paper where everyone happened
-        // to be right twice. Below three, offering "the options" would be
-        // offering a guess.
-        guard set.count >= 3 else { return nil }
-        return set.sorted()
+            .map(\.answer))
     }
 
     /// The paper's sides, for the record to keep. Labels are resolved here
