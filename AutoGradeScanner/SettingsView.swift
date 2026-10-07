@@ -114,6 +114,7 @@ struct SettingsView: View {
         Section {
             if enrolled {
                 LabeledContent("目前帳號", value: Credentials.teacherName ?? "已註冊")
+                LabeledContent("角色", value: roleLabel)
                 LabeledContent("登入方式",
                                value: method == .microsoft ? "學校帳號" : "邀請碼")
                 if let expiry = expiryText {
@@ -154,6 +155,20 @@ struct SettingsView: View {
         } footer: {
             Text(deviceFooter)
         }
+    }
+
+    /// Which of the three roles this account holds, in the words the rest of
+    /// the app uses for them.
+    ///
+    /// Read from the model rather than from `Credentials`: a role changed on
+    /// the server arrives with the next sync, and this row has to change at
+    /// the same moment the template tools appear or disappear — not the next
+    /// time Settings happens to be opened. An unknown role reads as 老師, as it
+    /// does everywhere else.
+    private var roleLabel: String {
+        if model.isAdmin { return "管理員" }
+        if model.canManageTemplates { return "模板管理者" }
+        return "老師"
     }
 
     /// Only shown when there is one. An invite-code authorisation has no
