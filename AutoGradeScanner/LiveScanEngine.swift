@@ -807,6 +807,52 @@ final class LiveScanEngine {
             .map(\.answer))
     }
 
+    /// What a teacher needs to mark one side by hand: the cells to put red ink
+    /// on, and nothing else.
+    ///
+    /// Drawn over the master rather than read off the live overlay, because
+    /// the live overlay only exists while the camera holds the paper — and the
+    /// teacher needs both hands and the paper itself to mark it. Built from
+    /// the locked verdicts, so it is the same answer whether the camera can
+    /// see the page or not.
+    struct MarkingSheet {
+        struct Mark: Identifiable {
+            let id: Int              // flat slot
+            let questionNumber: Int
+            let rect: CGRect         // normalized within the page's master
+            let verdict: Verdict     // .wrong or .unsure, never .correct
+            let expected: String
+        }
+
+        let page: Int
+        let label: String
+        let master: UIImage
+        let marks: [Mark]
+
+        var wrongCount: Int { marks.filter { $0.verdict == .wrong }.count }
+        var unsureCount: Int { marks.filter { $0.verdict == .unsure }.count }
+    }
+
+    /// The marking sheet for one side, or nil while any cell on it is still
+    /// undecided. A half-graded page would list half its mistakes, and a list
+    /// that looks complete while it is not is worse than no list.
+    func markingSheet(page: Int) -> MarkingSheet? {
+        guard template.pages.indices.contains(page), isComplete(page: page) else { return nil }
+        let questions = template.questions
+        let marks = slotsByPage[page].compactMap { i -> MarkingSheet.Mark? in
+            guard let verdict = verdicts[i], verdict != .correct else { return nil }
+            let number = i < questions.count ? questions[i].number : i + 1
+            return MarkingSheet.Mark(id: i, questionNumber: number, rect: boxes[i],
+                                     verdict: verdict,
+                                     expected: i < expected.count ? expected[i] : "")
+        }
+        return MarkingSheet(page: page, label: template.pageLabel(page),
+                            master: template.pages[page].master, marks: marks)
+    }
+
+    /// Where the paper would turn next, for a button that turns it by hand.
+    var nextPageToGrade: Int? { nextUnfinishedPage() }
+
     /// The paper's sides, for the record to keep. Labels are resolved here
     /// rather than at display time because the template's page count is known
     /// now and may not be later.

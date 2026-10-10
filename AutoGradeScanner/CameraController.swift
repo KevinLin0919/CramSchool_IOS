@@ -584,16 +584,31 @@ struct CameraPreviewView: UIViewRepresentable {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
 
+            // Once every cell on the side in view is decided, the overlay
+            // stops reporting progress and starts saying where the red pen
+            // goes. Greens and the white "still reading" boxes are progress;
+            // left on a finished page they bury the two or three cells that
+            // need the teacher, and a sheet covered in boxes of every colour
+            // reads as the app marking at random.
+            let compact = isCurrentPageComplete
             var seen = Set<Int>()
             for (id, rect, box) in displayedRects() {
+                if compact && (box.verdict == nil || box.verdict == .correct) { continue }
                 seen.insert(id)
                 let shape = boxLayers[id] ?? makeBoxLayer(id: id)
                 let path = roundedPath(for: rect)
                 shape.path = path
                 let color = Self.color(for: box.verdict)
                 shape.strokeColor = color.cgColor
-                shape.fillColor = color.withAlphaComponent(box.verdict == nil ? 0.05 : 0.15).cgColor
-                updateLabel(id: id, box: box, boxPath: path, color: color)
+                // Unfilled when compact: the student's own writing is what
+                // the teacher is checking against, and a tint over it is in
+                // the way. Orange is dashed so "check this yourself" never
+                // reads as a second shade of "wrong".
+                shape.fillColor = compact
+                    ? UIColor.clear.cgColor
+                    : color.withAlphaComponent(box.verdict == nil ? 0.05 : 0.15).cgColor
+                shape.lineDashPattern = compact && box.verdict == .unsure ? [7, 5] : nil
+                updateLabel(id: id, box: box, boxPath: path, color: color, compact: compact)
             }
             for (id, stale) in boxLayers where !seen.contains(id) {
                 stale.removeFromSuperlayer()
@@ -619,6 +634,11 @@ struct CameraPreviewView: UIViewRepresentable {
             labelLayers = [:]
         }
 
+        private var isCurrentPageComplete: Bool {
+            guard let update else { return false }
+            return update.pages.first { $0.id == update.currentPage }?.isComplete ?? false
+        }
+
         private static func color(for verdict: LiveScanEngine.Verdict?) -> UIColor {
             switch verdict {
             case .correct: return UIColor(AG.ok)
@@ -628,9 +648,13 @@ struct CameraPreviewView: UIViewRepresentable {
             }
         }
 
-        /// The expected answer, pinned just outside the box's top-left corner.
+        /// The expected answer, pinned just outside the box's right edge —
+        /// always the same side, so the eye learns where to look. Beside the
+        /// box rather than above it, where it used to sit, because above is
+        /// the line of print or the cell before, and a label there covers
+        /// exactly what the teacher is comparing against.
         private func updateLabel(id: Int, box: LiveScanEngine.Box,
-                                 boxPath: CGPath, color: UIColor) {
+                                 boxPath: CGPath, color: UIColor, compact: Bool) {
             let expected = box.expectedText.trimmingCharacters(in: .whitespaces)
             // Greens stay bare — labelling a cell with the answer the teacher
             // already knows is there is noise, and bare greens are what makes
@@ -649,7 +673,9 @@ struct CameraPreviewView: UIViewRepresentable {
                 return
             }
 
-            var text = expected
+            // "?" says the model could not decide — the answer shown is the
+            // key, not a claim about what the student wrote.
+            var text = box.verdict == .unsure ? "? \(expected)" : expected
             if showsReading, let read = box.readText, !read.isEmpty, read != expected {
                 // Diagnostic mode: a red box alone cannot tell you whether the
                 // student was wrong or the model was. This can.
@@ -674,14 +700,22 @@ struct CameraPreviewView: UIViewRepresentable {
             }
 
             let label = labelLayers[id] ?? makeLabelLayer(id: id)
+            // Bigger once the page is done: by then this is something to copy
+            // onto paper, not a glance while panning.
             label.string = NSAttributedString(string: text, attributes: [
-                .font: UIFont.systemFont(ofSize: 15, weight: .bold),
+                .font: UIFont.systemFont(ofSize: compact ? 18 : 15, weight: .bold),
                 .foregroundColor: UIColor.white,
             ])
             let size = label.preferredFrameSize()
             let padded = CGSize(width: size.width + 10, height: size.height + 4)
-            let corner = boxPath.boundingBox.origin
-            label.frame = CGRect(x: corner.x, y: corner.y - padded.height - 3,
+            let cell = boxPath.boundingBox
+            let gap: CGFloat = 4
+            // Right of the box; flipped to the left only when the right would
+            // run off the screen, as on the last column of a sheet.
+            let x = cell.maxX + gap + padded.width <= bounds.width
+                ? cell.maxX + gap
+                : cell.minX - gap - padded.width
+            label.frame = CGRect(x: x, y: cell.midY - padded.height / 2,
                                  width: padded.width, height: padded.height)
             label.backgroundColor = color.withAlphaComponent(0.92).cgColor
         }
