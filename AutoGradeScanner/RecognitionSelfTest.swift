@@ -518,6 +518,26 @@ enum RecognitionSelfTest {
             check("register.templateUsable", false, "could not read the synthetic master")
         }
 
+        // Rows one box apart, as on the 自然 paper: the middle cell's window
+        // has to reach the full padY up and down — the cell above's edge —
+        // or a 2 that rises a cell above its box is cut and read as 4. Boxes
+        // that touch must still get no reach into each other at all, and
+        // sideways keeps the midline.
+        let unit = CGRect(x: 0.4, y: 0.4, width: 0.1, height: 0.05)
+        let stacked = [unit.offsetBy(dx: 0, dy: -0.1), unit, unit.offsetBy(dx: 0, dy: 0.1),
+                       unit.offsetBy(dx: 0.2, dy: 0)]
+        let touching = [unit.offsetBy(dx: 0, dy: -0.05), unit]
+        let padY = Double(ReadWindow.Tuning.padY), padX = Double(ReadWindow.Tuning.padX)
+        let spaced = LiveScanEngine.pads(stacked, pageOf: [0, 0, 0, 0],
+                                         padX: CGFloat(padX), padY: CGFloat(padY))[1]
+        let tight = LiveScanEngine.pads(touching, pageOf: [0, 0],
+                                        padX: CGFloat(padX), padY: CGFloat(padY))[1]
+        check("window.reachesNeighbourEdge",
+              abs(spaced.top - padY * 0.05) < 1e-9 && abs(spaced.bottom - padY * 0.05) < 1e-9
+                && abs(spaced.right - min(padX * 0.1, 0.05)) < 1e-9 && tight.top < 1e-9,
+              String(format: "top %.3f bottom %.3f right %.3f; touching top %.3f",
+                     spaced.top, spaced.bottom, spaced.right, tight.top))
+
         // MARK: MNIST normalisation
 
         let corner = Shapes.corner()

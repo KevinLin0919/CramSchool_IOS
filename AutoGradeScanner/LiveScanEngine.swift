@@ -285,7 +285,7 @@ final class LiveScanEngine {
     private var unregistrable: Set<Int> = []
     /// Steady looks in a row on which a cell's print could not be found.
     private var registrationMisses: [Int: Int] = [:]
-    /// Each cell's read window, capped so it never reaches a neighbour.
+    /// Each cell's read window, capped so it never reaches into a neighbour's box.
     private let windowPads: [(left: Double, right: Double, top: Double, bottom: Double)]
     private var lastRegistered = 0
     private var lastRegistrationAttempts = 0
@@ -807,6 +807,52 @@ final class LiveScanEngine {
             .map(\.answer))
     }
 
+    /// What a teacher needs to mark one side by hand: the cells to put red ink
+    /// on, and nothing else.
+    ///
+    /// Drawn over the master rather than read off the live overlay, because
+    /// the live overlay only exists while the camera holds the paper — and the
+    /// teacher needs both hands and the paper itself to mark it. Built from
+    /// the locked verdicts, so it is the same answer whether the camera can
+    /// see the page or not.
+    struct MarkingSheet {
+        struct Mark: Identifiable {
+            let id: Int              // flat slot
+            let questionNumber: Int
+            let rect: CGRect         // normalized within the page's master
+            let verdict: Verdict     // .wrong or .unsure, never .correct
+            let expected: String
+        }
+
+        let page: Int
+        let label: String
+        let master: UIImage
+        let marks: [Mark]
+
+        var wrongCount: Int { marks.filter { $0.verdict == .wrong }.count }
+        var unsureCount: Int { marks.filter { $0.verdict == .unsure }.count }
+    }
+
+    /// The marking sheet for one side, or nil while any cell on it is still
+    /// undecided. A half-graded page would list half its mistakes, and a list
+    /// that looks complete while it is not is worse than no list.
+    func markingSheet(page: Int) -> MarkingSheet? {
+        guard template.pages.indices.contains(page), isComplete(page: page) else { return nil }
+        let questions = template.questions
+        let marks = slotsByPage[page].compactMap { i -> MarkingSheet.Mark? in
+            guard let verdict = verdicts[i], verdict != .correct else { return nil }
+            let number = i < questions.count ? questions[i].number : i + 1
+            return MarkingSheet.Mark(id: i, questionNumber: number, rect: boxes[i],
+                                     verdict: verdict,
+                                     expected: i < expected.count ? expected[i] : "")
+        }
+        return MarkingSheet(page: page, label: template.pageLabel(page),
+                            master: template.pages[page].master, marks: marks)
+    }
+
+    /// Where the paper would turn next, for a button that turns it by hand.
+    var nextPageToGrade: Int? { nextUnfinishedPage() }
+
     /// The paper's sides, for the record to keep. Labels are resolved here
     /// rather than at display time because the template's page count is known
     /// now and may not be later.
@@ -1299,11 +1345,29 @@ final class LiveScanEngine {
         }
     }
 
-    /// The same caps as `widened`, with separate pads per axis, returned as
-    /// distances in normalized page units: how far a registered cell's read
-    /// window may reach past its box on each side.
-    private static func pads(_ boxes: [CGRect], pageOf: [Int], padX: CGFloat,
-                             padY: CGFloat) -> [(left: Double, right: Double, top: Double, bottom: Double)] {
+    /// How far a registered cell's read window may reach past its box on each
+    /// side, in normalized page units: `widened`'s caps sideways, but up and
+    /// down as far as the neighbouring box's edge rather than halfway to it.
+    ///
+    /// Halfway undid the full cell `ReadWindow.Tuning.padY` exists for. Where
+    /// rows sit one box apart — the 是非題 on the 自然 paper do — halfway is
+    /// half a cell, and Q18's 2 rises a whole cell above its box: cut there,
+    /// the top of the stroke leaves the window and what is left reads 4,
+    /// which is what padY was raised to stop. Real scans read Q18 as 4 every
+    /// time while the Python mirror and the self-test, whose windows are not
+    /// capped, read it 2.
+    ///
+    /// Reaching the neighbour's edge is safe on this path because the window
+    /// keeps only strokes that reach into this cell's own box, and erases the
+    /// master's print, the neighbour's parentheses included — the
+    /// neighbour's answer is dropped for not touching this box, not for
+    /// being past a midline. It still never enters the neighbour's box, so a
+    /// grid of touching squares still reads each square on its own.
+    /// Sideways keeps the midline: children's digits overflow up and down
+    /// far more than across, and the 是非題 marks read through the same
+    /// windows are measured right as they are.
+    static func pads(_ boxes: [CGRect], pageOf: [Int], padX: CGFloat,
+                     padY: CGFloat) -> [(left: Double, right: Double, top: Double, bottom: Double)] {
         boxes.indices.map { i in
             let box = boxes[i]
             var top = box.height * padY, bottom = box.height * padY
@@ -1312,9 +1376,9 @@ final class LiveScanEngine {
                 let other = boxes[j]
                 if other.maxX > box.minX, other.minX < box.maxX {
                     if other.maxY <= box.minY {
-                        top = min(top, (box.minY - other.maxY) / 2)
+                        top = min(top, box.minY - other.maxY)
                     } else if other.minY >= box.maxY {
-                        bottom = min(bottom, (other.minY - box.maxY) / 2)
+                        bottom = min(bottom, other.minY - box.maxY)
                     } else {
                         top = 0
                         bottom = 0

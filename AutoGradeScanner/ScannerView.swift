@@ -34,6 +34,28 @@ struct ScannerView: View {
     @StateObject private var papers = GradingStore.shared
 
     @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
+    @AppStorage(LiveScanEngine.autoAdvanceKey) private var autoAdvancePage = true
+
+    /// Sides whose 紅筆對照 the teacher has put away, for this paper only.
+    /// Without it the sheet would come straight back on the next frame,
+    /// because the page it describes is still finished.
+    @State private var dismissedMarkingSheets: Set<Int> = []
+
+    /// The finished side in view, as something to mark by hand.
+    ///
+    /// Only when auto-advance is off: that switch is the teacher saying they
+    /// want the paper to stop between sides, and this is what stopping is for.
+    /// With it on, the page turns by itself and a sheet would only be in the
+    /// way. A side with nothing to correct gets no sheet — there is nothing
+    /// on it to copy.
+    @MainActor
+    private var markingSheet: LiveScanEngine.MarkingSheet? {
+        guard !autoAdvancePage, let live = liveUpdate, let engine = liveEngine,
+              !dismissedMarkingSheets.contains(live.currentPage),
+              let sheet = engine.markingSheet(page: live.currentPage),
+              !sheet.marks.isEmpty else { return nil }
+        return sheet
+    }
 
     /// The sitting chosen with the class, if it is for the paper on screen.
     private var currentExam: LocalExam? {
@@ -72,6 +94,21 @@ struct ScannerView: View {
                     .ignoresSafeArea()
 
                 overlayContent(in: geo)
+
+                if let sheet = markingSheet {
+                    markingSheetLayer(sheet, in: geo)
+                        // In after a beat, for the same reason the page turn
+                        // waits: the last cell resolves on the frame that
+                        // finishes the page, and covering it at once means
+                        // nobody sees it land. Out at once — 收起 is a tap,
+                        // and a sheet that lingers after it reads as a missed
+                        // tap.
+                        .transition(.asymmetric(
+                            insertion: AnyTransition.opacity
+                                .animation(.easeOut(duration: 0.25).delay(0.6)),
+                            removal: AnyTransition.opacity
+                                .animation(.easeOut(duration: 0.15))))
+                }
 
                 if model.selectedTemplate == nil {
                     noTemplateOverlay
@@ -141,6 +178,7 @@ struct ScannerView: View {
                             titleVisibility: .visible) {
             Button("重新掃描", role: .destructive) {
                 confirmingRescan = false
+                dismissedMarkingSheets = []
                 liveEngine?.reset()
             }
         } message: {
@@ -762,7 +800,31 @@ struct ScannerView: View {
     @MainActor
     private func nextPaper() {
         completedPaper = nil
+        dismissedMarkingSheets = []
         liveEngine?.reset()
+    }
+
+    // MARK: - 紅筆對照
+
+    @MainActor
+    private func markingSheetLayer(_ sheet: LiveScanEngine.MarkingSheet,
+                                   in geo: GeometryProxy) -> some View {
+        let next = liveEngine?.nextPageToGrade
+        let nextLabel = next.flatMap { page in
+            liveUpdate?.pages.first { $0.id == page }?.label
+        }
+        return MarkingSheetView(
+            sheet: sheet,
+            nextPageLabel: nextLabel,
+            onNextPage: {
+                dismissedMarkingSheets.insert(sheet.page)
+                if let next { liveEngine?.switchTo(page: next) }
+            },
+            onClose: { dismissedMarkingSheets.insert(sheet.page) })
+            .centeredContent(AG.Width.wide)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, geo.safeAreaInsets.bottom + 12)
     }
 
 }
