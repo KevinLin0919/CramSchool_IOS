@@ -9,7 +9,7 @@
 ## 這個 repo 是什麼
 
 SwiftUI App「浮島」（iOS 17+，iPhone 與 iPad）。老師掃描學生考卷，App 在手機上即時對位、讀出每一格、批改，
-結果存在手機上再上傳後端。三個分頁：考卷、掃描、結果。產品與設計的說明在 `README.md`。
+結果存在手機上再上傳後端。三個分頁：考卷、掃描、結果。產品簡介在 `README.md`，設計說明在 `docs/design.md`。
 
 | 檔案 | 負責 |
 |---|---|
@@ -56,7 +56,8 @@ xcodebuild build -project AutoGradeScanner.xcodeproj -scheme AutoGradeScanner \
 
 ## 文件
 
-- `README.md`：產品行為、判定規則、離線與上傳、裝置端辨識的設計說明。
+- `README.md`：給使用者的簡介。
+- `docs/design.md`：產品行為、判定規則、離線與上傳、裝置端辨識的設計說明。
 - `docs/adr/`：App 內部的決策（對位、覆蓋框、逐格定位、選項、數字模型）。系統層級的決策在後端 repo。
 - `docs/benchmarks/`：辨識基準集與歷次數字。
 - `docs/handoff.md`：2026-09-15 的現況交接，**已過時**，只當歷史參考。
