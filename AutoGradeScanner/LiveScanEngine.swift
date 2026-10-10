@@ -285,7 +285,7 @@ final class LiveScanEngine {
     private var unregistrable: Set<Int> = []
     /// Steady looks in a row on which a cell's print could not be found.
     private var registrationMisses: [Int: Int] = [:]
-    /// Each cell's read window, capped so it never reaches a neighbour.
+    /// Each cell's read window, capped so it never reaches into a neighbour's box.
     private let windowPads: [(left: Double, right: Double, top: Double, bottom: Double)]
     private var lastRegistered = 0
     private var lastRegistrationAttempts = 0
@@ -1299,11 +1299,29 @@ final class LiveScanEngine {
         }
     }
 
-    /// The same caps as `widened`, with separate pads per axis, returned as
-    /// distances in normalized page units: how far a registered cell's read
-    /// window may reach past its box on each side.
-    private static func pads(_ boxes: [CGRect], pageOf: [Int], padX: CGFloat,
-                             padY: CGFloat) -> [(left: Double, right: Double, top: Double, bottom: Double)] {
+    /// How far a registered cell's read window may reach past its box on each
+    /// side, in normalized page units: `widened`'s caps sideways, but up and
+    /// down as far as the neighbouring box's edge rather than halfway to it.
+    ///
+    /// Halfway undid the full cell `ReadWindow.Tuning.padY` exists for. Where
+    /// rows sit one box apart — the 是非題 on the 自然 paper do — halfway is
+    /// half a cell, and Q18's 2 rises a whole cell above its box: cut there,
+    /// the top of the stroke leaves the window and what is left reads 4,
+    /// which is what padY was raised to stop. Real scans read Q18 as 4 every
+    /// time while the Python mirror and the self-test, whose windows are not
+    /// capped, read it 2.
+    ///
+    /// Reaching the neighbour's edge is safe on this path because the window
+    /// keeps only strokes that reach into this cell's own box, and erases the
+    /// master's print, the neighbour's parentheses included — the
+    /// neighbour's answer is dropped for not touching this box, not for
+    /// being past a midline. It still never enters the neighbour's box, so a
+    /// grid of touching squares still reads each square on its own.
+    /// Sideways keeps the midline: children's digits overflow up and down
+    /// far more than across, and the 是非題 marks read through the same
+    /// windows are measured right as they are.
+    static func pads(_ boxes: [CGRect], pageOf: [Int], padX: CGFloat,
+                     padY: CGFloat) -> [(left: Double, right: Double, top: Double, bottom: Double)] {
         boxes.indices.map { i in
             let box = boxes[i]
             var top = box.height * padY, bottom = box.height * padY
@@ -1312,9 +1330,9 @@ final class LiveScanEngine {
                 let other = boxes[j]
                 if other.maxX > box.minX, other.minX < box.maxX {
                     if other.maxY <= box.minY {
-                        top = min(top, (box.minY - other.maxY) / 2)
+                        top = min(top, box.minY - other.maxY)
                     } else if other.minY >= box.maxY {
-                        bottom = min(bottom, (other.minY - box.maxY) / 2)
+                        bottom = min(bottom, other.minY - box.maxY)
                     } else {
                         top = 0
                         bottom = 0
