@@ -13,7 +13,7 @@ struct SettingsView: View {
 
     @AppStorage(DemoData.modeKey) private var demoModeOverride = false
     @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
-    @AppStorage(LiveScanEngine.autoAdvanceKey) private var autoAdvancePage = true
+    @AppStorage(LiveScanEngine.autoAdvanceKey) private var autoAdvancePage = LiveScanEngine.autoAdvanceDefault
     @AppStorage(ServerConfig.apiKey) private var apiBase = ServerConfig.defaultAPI
     @AppStorage(ServerConfig.predictKey) private var predictBase = ServerConfig.defaultPredict
     @AppStorage(ServerConfig.ocrGoogleKey) private var ocrGoogleBase = ServerConfig.defaultOCRGoogle

@@ -159,9 +159,13 @@ final class LiveScanEngine {
     /// cannot improve a reading. What the switch decides is whether the
     /// teacher gets to see the page settle before the view moves on.
     static let autoAdvanceKey = "scan.autoAdvancePage"
+    /// Off: a finished side stops for 紅筆對照 unless the teacher turns this on.
+    /// Only reaches devices where the switch was never touched — a stored
+    /// choice, either way, stays.
+    static let autoAdvanceDefault = false
 
     private static var autoAdvanceEnabled: Bool {
-        UserDefaults.standard.object(forKey: autoAdvanceKey) as? Bool ?? true
+        UserDefaults.standard.object(forKey: autoAdvanceKey) as? Bool ?? autoAdvanceDefault
     }
 
     private let template: ResolvedTemplate
