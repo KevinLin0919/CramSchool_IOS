@@ -97,11 +97,17 @@ struct ScannerView: View {
 
                 if let sheet = markingSheet {
                     markingSheetLayer(sheet, in: geo)
-                        // After a beat, for the same reason the page turn
+                        // In after a beat, for the same reason the page turn
                         // waits: the last cell resolves on the frame that
                         // finishes the page, and covering it at once means
-                        // nobody sees it land.
-                        .transition(AnyTransition.opacity.animation(.easeOut(duration: 0.25).delay(0.6)))
+                        // nobody sees it land. Out at once — 收起 is a tap,
+                        // and a sheet that lingers after it reads as a missed
+                        // tap.
+                        .transition(.asymmetric(
+                            insertion: AnyTransition.opacity
+                                .animation(.easeOut(duration: 0.25).delay(0.6)),
+                            removal: AnyTransition.opacity
+                                .animation(.easeOut(duration: 0.15))))
                 }
 
                 if model.selectedTemplate == nil {
