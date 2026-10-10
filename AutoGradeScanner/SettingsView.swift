@@ -13,7 +13,7 @@ struct SettingsView: View {
 
     @AppStorage(DemoData.modeKey) private var demoModeOverride = false
     @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
-    @AppStorage(LiveScanEngine.autoAdvanceKey) private var autoAdvancePage = true
+    @AppStorage(LiveScanEngine.autoAdvanceKey) private var autoAdvancePage = LiveScanEngine.autoAdvanceDefault
     @AppStorage(ServerConfig.apiKey) private var apiBase = ServerConfig.defaultAPI
     @AppStorage(ServerConfig.predictKey) private var predictBase = ServerConfig.defaultPredict
     @AppStorage(ServerConfig.ocrGoogleKey) private var ocrGoogleBase = ServerConfig.defaultOCRGoogle
@@ -371,9 +371,9 @@ struct SettingsView: View {
         } header: {
             Text("批改")
         } footer: {
-            Text("一頁的答案全部批完後，自動翻到下一個還沒批完的頁。"
-                 + "關掉之後，一頁批完會停下來顯示「紅筆對照」：只畫出這一頁錯的（紅）和待確認的（橘）格子，"
-                 + "旁邊寫正確答案，手機可以放下來照著用紅筆訂正；再按「翻到背面」或用下方頁籤切換。\n"
+            Text("預設關閉：一頁批完會停下來顯示「紅筆對照」，只畫出這一頁錯的（紅）和待確認的（橘）格子，"
+                 + "旁邊寫正確答案，手機可以放下來照著用紅筆訂正；再按「翻到背面」或用下方頁籤切換。"
+                 + "打開之後，一頁的答案全部批完就自動翻到下一個還沒批完的頁。\n"
                  + "兩種都不會改變批改結果——答案一旦判定就不再更動，而翻頁的條件正是"
                  + "這一頁每一格都已經判定完畢。")
         }

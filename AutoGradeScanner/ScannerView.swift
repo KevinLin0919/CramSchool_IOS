@@ -34,7 +34,7 @@ struct ScannerView: View {
     @StateObject private var papers = GradingStore.shared
 
     @AppStorage(CameraPreviewView.showsReadingKey) private var showsReading = false
-    @AppStorage(LiveScanEngine.autoAdvanceKey) private var autoAdvancePage = true
+    @AppStorage(LiveScanEngine.autoAdvanceKey) private var autoAdvancePage = LiveScanEngine.autoAdvanceDefault
 
     /// Sides whose 紅筆對照 the teacher has put away, for this paper only.
     /// Without it the sheet would come straight back on the next frame,
@@ -71,6 +71,9 @@ struct ScannerView: View {
     }
 
     private var stackSoFar: [StoredPaper] { papers.papers(inStack: currentStackKey) }
+
+    /// How many sides of the paper in view are fully graded.
+    private var finishedSides: Int { liveUpdate?.pages.filter(\.isComplete).count ?? 0 }
 
     /// Names the pages, not just the fact that some exist. "背面還有 10 題沒批改"
     /// can be acted on; "還有題目沒批改" sends someone hunting.
@@ -117,6 +120,20 @@ struct ScannerView: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .background(Color.black)
+        // Felt, not seen: the teacher's eyes are on the paper, not the screen.
+        // A tap when a side finishes, a firmer signal when the whole paper
+        // does — a warning one if some cells still need a look.
+        .sensoryFeedback(trigger: completedPaper?.id) { _, new in
+            guard new != nil, let paper = completedPaper else { return nil }
+            return paper.unsureCount == 0 ? .success : .warning
+        }
+        .sensoryFeedback(trigger: finishedSides) { old, new in
+            // Not on the side that finishes the paper: that one gets the
+            // paper's signal above, and two at once blur into one buzz.
+            guard new > old, let live = liveUpdate,
+                  live.pages.contains(where: { !$0.isComplete }) else { return nil }
+            return .impact(weight: .medium)
+        }
         .onAppear {
             if let template = model.selectedTemplate {
                 startLiveSession(for: template)
